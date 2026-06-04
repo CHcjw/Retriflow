@@ -1,0 +1,357 @@
+import axios, { AxiosError } from "axios";
+
+const API_BASE_URL = import.meta.env.VITE_RETRIFLOW_API_BASE_URL ?? "";
+
+const apiClient = axios.create({
+  baseURL: API_BASE_URL,
+  timeout: 30000
+});
+
+function toRequestError(error: unknown): Error {
+  if (error instanceof AxiosError) {
+    const message =
+      typeof error.response?.data === "object" &&
+      error.response?.data !== null &&
+      "detail" in error.response.data &&
+      typeof error.response.data.detail === "string"
+        ? error.response.data.detail
+        : error.message;
+    return new Error(message);
+  }
+
+  return error instanceof Error ? error : new Error("Unknown request error");
+}
+
+async function request<T>(config: {
+  url: string;
+  method?: "GET" | "POST";
+  data?: FormData | Record<string, unknown>;
+  headers?: Record<string, string>;
+}): Promise<T> {
+  try {
+    const response = await apiClient.request<T>({
+      url: config.url,
+      method: config.method ?? "GET",
+      data: config.data,
+      headers: config.headers
+    });
+    return response.data;
+  } catch (error) {
+    throw toRequestError(error);
+  }
+}
+
+export interface MetaResponse {
+  name: string;
+  version: string;
+  api_prefix: string;
+  frontend_name: string;
+  primary_routes: string[];
+}
+
+export interface SessionItem {
+  id: string;
+  title: string;
+  message_count: number;
+}
+
+export interface SessionListResponse {
+  items: SessionItem[];
+}
+
+export interface KnowledgeBaseItem {
+  id: string;
+  name: string;
+  product: string;
+  document_count: number;
+}
+
+export interface KnowledgeBaseListResponse {
+  items: KnowledgeBaseItem[];
+}
+
+export interface KnowledgeDocumentItem {
+  id: number;
+  knowledge_base_id: string;
+  title: string;
+  source_type: string;
+  status: string;
+  created_at: string;
+}
+
+export interface KnowledgeDocumentListResponse {
+  items: KnowledgeDocumentItem[];
+}
+
+export interface KnowledgeChunkItem {
+  id: number;
+  knowledge_base_id: string;
+  document_id: number;
+  chunk_index: number;
+  content: string;
+  char_count: number;
+  strategy: string;
+  document_type: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface KnowledgeChunkListResponse {
+  items: KnowledgeChunkItem[];
+}
+
+export interface IngestionTaskItem {
+  id: number;
+  knowledge_base_id: string;
+  document_id: number;
+  source_type: string;
+  status: string;
+  chunk_count: number;
+  message: string;
+  created_at: string;
+}
+
+export interface IngestionTaskListResponse {
+  items: IngestionTaskItem[];
+}
+
+export interface IngestionTaskNodeItem {
+  id: number;
+  task_id: number;
+  node_type: string;
+  node_order: number;
+  success: boolean;
+  message: string;
+  duration_ms: number;
+  created_at: string;
+}
+
+export interface IngestionTaskNodeListResponse {
+  items: IngestionTaskNodeItem[];
+}
+
+export interface ChatBootstrapResponse {
+  product: string;
+  capabilities: string[];
+}
+
+export interface ChatSourceItem {
+  chunk_id: number;
+  knowledge_base_id: string;
+  document_id: number;
+  document_title: string;
+  content: string;
+  score: number;
+}
+
+export interface ChatWorkflow {
+  name: string;
+  adapter: string;
+  retrieval_channels: string[];
+  retrieval_count: number;
+}
+
+export interface ChatMessageResponse {
+  session_id: string;
+  assistant_message: string;
+  sources: ChatSourceItem[];
+  workflow: ChatWorkflow;
+}
+
+export interface ConversationMessageItem {
+  id: number;
+  session_id: string;
+  role: "assistant" | "user";
+  content: string;
+  created_at: string;
+}
+
+export interface ConversationMessageListResponse {
+  items: ConversationMessageItem[];
+}
+
+export interface ChatStreamHandlers {
+  onWorkflow?: (workflow: ChatWorkflow) => void;
+  onSources?: (sources: ChatSourceItem[]) => void;
+  onDelta?: (delta: string) => void;
+  onDone?: (sessionId: string) => void;
+}
+
+export interface KnowledgeChunkingOptions {
+  documentType?: string;
+  chunkStrategy?: string;
+  chunkSize?: number;
+  chunkOverlap?: number;
+  recursiveSeparators?: string[];
+}
+
+export function fetchMeta(): Promise<MetaResponse> {
+  return request<MetaResponse>({ url: "/api/v1/meta" });
+}
+
+export function fetchSessions(): Promise<SessionListResponse> {
+  return request<SessionListResponse>({ url: "/api/v1/sessions" });
+}
+
+export function createSession(title: string): Promise<SessionItem> {
+  return request<SessionItem>({
+    url: "/api/v1/sessions",
+    method: "POST",
+    data: { title }
+  });
+}
+
+export function fetchKnowledgeBases(): Promise<KnowledgeBaseListResponse> {
+  return request<KnowledgeBaseListResponse>({ url: "/api/v1/knowledge-bases" });
+}
+
+export function createKnowledgeBase(name: string): Promise<KnowledgeBaseItem> {
+  return request<KnowledgeBaseItem>({
+    url: "/api/v1/knowledge-bases",
+    method: "POST",
+    data: { name }
+  });
+}
+
+export function fetchKnowledgeDocuments(knowledgeBaseId: string): Promise<KnowledgeDocumentListResponse> {
+  return request<KnowledgeDocumentListResponse>({
+    url: `/api/v1/knowledge-bases/${knowledgeBaseId}/documents`
+  });
+}
+
+export function createKnowledgeDocument(
+  knowledgeBaseId: string,
+  title: string,
+  content: string,
+  options?: KnowledgeChunkingOptions
+): Promise<KnowledgeDocumentItem> {
+  return request<KnowledgeDocumentItem>({
+    url: `/api/v1/knowledge-bases/${knowledgeBaseId}/documents`,
+    method: "POST",
+    data: {
+      title,
+      source_type: "manual",
+      content,
+      document_type: options?.documentType ?? "manual",
+      chunk_strategy: options?.chunkStrategy ?? "auto",
+      chunk_size: options?.chunkSize ?? 600,
+      chunk_overlap: options?.chunkOverlap ?? 120,
+      recursive_separators: options?.recursiveSeparators ?? []
+    }
+  });
+}
+
+export function uploadKnowledgeDocument(
+  knowledgeBaseId: string,
+  file: File,
+  options?: KnowledgeChunkingOptions
+): Promise<KnowledgeDocumentItem> {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("document_type", options?.documentType ?? "knowledge_base");
+  formData.append("chunk_strategy", options?.chunkStrategy ?? "auto");
+  formData.append("chunk_size", String(options?.chunkSize ?? 600));
+  formData.append("chunk_overlap", String(options?.chunkOverlap ?? 120));
+  if (options?.recursiveSeparators && options.recursiveSeparators.length > 0) {
+    formData.append("recursive_separators_text", options.recursiveSeparators.join("\n"));
+  }
+  return request<KnowledgeDocumentItem>({
+    url: `/api/v1/knowledge-bases/${knowledgeBaseId}/documents/upload`,
+    method: "POST",
+    data: formData
+  });
+}
+
+export function fetchKnowledgeChunks(
+  knowledgeBaseId: string,
+  documentId: number
+): Promise<KnowledgeChunkListResponse> {
+  return request<KnowledgeChunkListResponse>({
+    url: `/api/v1/knowledge-bases/${knowledgeBaseId}/documents/${documentId}/chunks`
+  });
+}
+
+export function fetchIngestionTasks(): Promise<IngestionTaskListResponse> {
+  return request<IngestionTaskListResponse>({ url: "/api/v1/ingestion/tasks" });
+}
+
+export function fetchIngestionTaskNodes(taskId: number): Promise<IngestionTaskNodeListResponse> {
+  return request<IngestionTaskNodeListResponse>({ url: `/api/v1/ingestion/tasks/${taskId}/nodes` });
+}
+
+export function fetchChatBootstrap(): Promise<ChatBootstrapResponse> {
+  return request<ChatBootstrapResponse>({ url: "/api/v1/chat/bootstrap" });
+}
+
+export function sendChatMessage(sessionId: string, message: string): Promise<ChatMessageResponse> {
+  return request<ChatMessageResponse>({
+    url: "/api/v1/chat/messages",
+    method: "POST",
+    data: { session_id: sessionId, message }
+  });
+}
+
+export async function streamChatMessage(
+  sessionId: string,
+  message: string,
+  handlers: ChatStreamHandlers,
+  signal?: AbortSignal
+): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/api/v1/chat/stream`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ session_id: sessionId, message }),
+    signal
+  });
+
+  if (!response.ok || !response.body) {
+    throw new Error(`Request failed: ${response.status}`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) {
+      break;
+    }
+
+    buffer += decoder.decode(value, { stream: true });
+    const events = buffer.split("\n\n");
+    buffer = events.pop() ?? "";
+
+    for (const rawEvent of events) {
+      const lines = rawEvent.split("\n");
+      const eventName = lines.find((line) => line.startsWith("event:"))?.slice(6).trim();
+      const data = lines
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).trim())
+        .join("\n");
+
+      if (!eventName || !data) {
+        continue;
+      }
+
+      if (eventName === "workflow") {
+        handlers.onWorkflow?.(JSON.parse(data) as ChatWorkflow);
+      }
+      if (eventName === "sources") {
+        handlers.onSources?.(JSON.parse(data) as ChatSourceItem[]);
+      }
+      if (eventName === "delta") {
+        handlers.onDelta?.((JSON.parse(data) as { content: string }).content);
+      }
+      if (eventName === "done") {
+        handlers.onDone?.((JSON.parse(data) as { session_id: string }).session_id);
+      }
+    }
+  }
+}
+
+export function fetchSessionMessages(sessionId: string): Promise<ConversationMessageListResponse> {
+  return request<ConversationMessageListResponse>({ url: `/api/v1/sessions/${sessionId}/messages` });
+}

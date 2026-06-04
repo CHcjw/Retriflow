@@ -1,0 +1,13 @@
+.git
+.idea
+.vscode
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+backend/data
+frontend/node_modules
+frontend/dist
+tools/tika/tika.stderr.log
+tools/tika/tika.stdout.log

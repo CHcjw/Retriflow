@@ -1,0 +1,82 @@
+import os
+import sys
+import tempfile
+import unittest
+import uuid
+from pathlib import Path
+from unittest.mock import patch
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[4]
+SRC_PATH = PROJECT_ROOT / "backend" / "src"
+sys.path.insert(0, str(SRC_PATH))
+
+
+class RetriFlowVectorStoreTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp_dir.name) / f"retriflow-{uuid.uuid4().hex}.db"
+        os.environ["RETRIFLOW_DATABASE_BACKEND"] = "sqlite"
+        os.environ["RETRIFLOW_DB_PATH"] = str(self.db_path)
+
+        from core.config import get_settings
+        from core.state import initialize_database
+
+        get_settings.cache_clear()
+        initialize_database()
+
+    def tearDown(self) -> None:
+        os.environ.pop("RETRIFLOW_DATABASE_BACKEND", None)
+        os.environ.pop("RETRIFLOW_DB_PATH", None)
+        os.environ.pop("RETRIFLOW_PGVECTOR_DSN", None)
+        from core.config import get_settings
+
+        get_settings.cache_clear()
+        try:
+            self.temp_dir.cleanup()
+        except PermissionError:
+            pass
+
+    def test_resolve_vector_store_returns_postgres_store_when_dsn_is_configured(self) -> None:
+        os.environ["RETRIFLOW_PGVECTOR_DSN"] = "postgresql://retriflow:retriflow@127.0.0.1:5433/retriflow"
+
+        from core.config import get_settings
+        from domain.vector_store import PostgresRetriFlowVectorStore, resolve_vector_store
+
+        get_settings.cache_clear()
+        store = resolve_vector_store()
+
+        self.assertIsInstance(store, PostgresRetriFlowVectorStore)
+
+    def test_knowledge_service_upserts_chunks_into_vector_store(self) -> None:
+        from domain.knowledge import RetriFlowKnowledgeService
+        from schemas.knowledge import KnowledgeDocumentCreateRequest
+
+        captured_records: list[object] = []
+
+        class FakeVectorStore:
+            def upsert_chunk_records(self, records) -> None:
+                captured_records.extend(records)
+
+            def similarity_search(self, query: str, k: int = 4):
+                return []
+
+        with patch("domain.knowledge.resolve_vector_store", return_value=FakeVectorStore()):
+            RetriFlowKnowledgeService().create_document(
+                "kb-demo-1",
+                KnowledgeDocumentCreateRequest(
+                    title="Vector sync notes",
+                    source_type="manual",
+                    content="RetriFlow should persist chunk vectors after ingestion.",
+                ),
+            )
+
+        self.assertGreaterEqual(len(captured_records), 1)
+        first_record = captured_records[0]
+        self.assertEqual(first_record.document_title, "Vector sync notes")
+        self.assertEqual(first_record.knowledge_base_id, "kb-demo-1")
+        self.assertIn("RetriFlow should persist chunk vectors", first_record.content)
+
+
+if __name__ == "__main__":
+    unittest.main()

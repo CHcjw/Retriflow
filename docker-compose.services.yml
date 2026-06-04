@@ -1,0 +1,39 @@
+services:
+  pgvector:
+    image: pgvector/pgvector:pg17
+    container_name: retriflow-pgvector
+    environment:
+      POSTGRES_DB: retriflow
+      POSTGRES_USER: retriflow
+      POSTGRES_PASSWORD: retriflow
+    ports:
+      - "5433:5432"
+    volumes:
+      - retriflow-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U retriflow -d retriflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  tika:
+    build:
+      context: .
+      dockerfile: tools/tika/Dockerfile
+    container_name: retriflow-tika
+    ports:
+      - "9998:9998"
+    restart: unless-stopped
+
+  ocr:
+    build:
+      context: .
+      dockerfile: tools/ocr/Dockerfile
+    container_name: retriflow-ocr
+    ports:
+      - "9889:9889"
+    restart: unless-stopped
+
+volumes:
+  retriflow-pgdata:
