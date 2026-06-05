@@ -18,3 +18,5 @@ ragent/
 .DS_Store
 
 .env
+.git-ssh-temp/
+.ssh-clean/
