@@ -1,6 +1,7 @@
 from collections.abc import Iterable
 from dataclasses import dataclass
 import json
+from typing import Any
 
 import httpx
 
@@ -16,6 +17,8 @@ class LLMProviderConfig:
 
 
 class RetriFlowLLMService:
+    NO_ANSWER_REPLY = "根据现有资料，暂时无法回答该问题。建议您联系人工客服获取更多帮助。"
+
     def __init__(self) -> None:
         self.settings = get_settings()
 
@@ -24,8 +27,8 @@ class RetriFlowLLMService:
         if provider is None:
             raise RuntimeError("no llm provider is configured")
 
-        payload = self._build_payload(question=question, sources=sources, stream=False)
-        data = self._post_json(provider=provider, payload=payload)
+        payload = self._build_chat_payload(question=question, sources=sources, stream=False)
+        data = self._post_json(provider=provider, payload=payload, path="/chat/completions")
 
         choices = data.get("choices", [])
         if not choices:
@@ -43,7 +46,7 @@ class RetriFlowLLMService:
         if provider is None:
             raise RuntimeError("no llm provider is configured")
 
-        payload = self._build_payload(question=question, sources=sources, stream=True)
+        payload = self._build_chat_payload(question=question, sources=sources, stream=True)
         headers = {
             "Authorization": f"Bearer {provider.api_key}",
             "Content-Type": "application/json",
@@ -73,37 +76,90 @@ class RetriFlowLLMService:
                 if chunk:
                     yield chunk
 
-    def _post_json(self, provider: LLMProviderConfig, payload: dict) -> dict:
+    def route_knowledge_bases(
+        self,
+        question: str,
+        knowledge_base_profiles: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        provider = self._resolve_provider()
+        if provider is None:
+            raise RuntimeError("no llm provider is configured")
+
+        payload = {
+            "model": self.settings.default_route_model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "你是 RetriFlow 的知识库路由器。"
+                        "请从候选知识库中选择最相关的 knowledge_base_ids。"
+                        "只返回严格 JSON，字段必须包含 mode、knowledge_base_ids、confidence、reason。"
+                        "如果没有明显匹配，请返回 mode='global' 且 knowledge_base_ids=[]。"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": self._build_route_prompt(
+                        question=question,
+                        knowledge_base_profiles=knowledge_base_profiles,
+                    ),
+                },
+            ],
+            "temperature": 0.0,
+            "response_format": {"type": "json_object"},
+            "stream": False,
+        }
+        data = self._post_json(provider=provider, payload=payload, path="/chat/completions")
+
+        choices = data.get("choices", [])
+        if not choices:
+            raise RuntimeError("llm route response did not contain choices")
+
+        message = choices[0].get("message", {})
+        content = self._extract_content(message.get("content"))
+        if not content:
+            raise RuntimeError("llm route response did not contain content")
+
+        return json.loads(content)
+
+    def _post_json(
+        self,
+        provider: LLMProviderConfig,
+        payload: dict[str, Any],
+        path: str,
+    ) -> dict[str, Any]:
         headers = {
             "Authorization": f"Bearer {provider.api_key}",
             "Content-Type": "application/json",
         }
         with httpx.Client(timeout=self.settings.llm_request_timeout_seconds) as client:
             response = client.post(
-                f"{provider.base_url.rstrip('/')}/chat/completions",
+                f"{provider.base_url.rstrip('/')}{path}",
                 json=payload,
                 headers=headers,
             )
             response.raise_for_status()
             return response.json()
 
-    def _build_payload(self, question: str, sources: list[ChatSourceItem], stream: bool) -> dict:
-        prompt = self._build_user_prompt(question, sources)
+    def _build_chat_payload(
+        self,
+        question: str,
+        sources: list[ChatSourceItem],
+        stream: bool,
+    ) -> dict[str, Any]:
         return {
             "model": self.settings.default_chat_model,
             "messages": [
                 {
                     "role": "system",
-                    "content": (
-                        "You are RetriFlow's RAG assistant. "
-                        "Answer in Chinese when the user asks in Chinese. "
-                        "Ground the answer in the provided context, cite the source titles when useful, "
-                        "and clearly admit uncertainty if the retrieved context is insufficient."
-                    ),
+                    "content": self._build_system_prompt(),
                 },
-                {"role": "user", "content": prompt},
+                {
+                    "role": "user",
+                    "content": self._build_user_prompt(question=question, sources=sources),
+                },
             ],
-            "temperature": 0.2,
+            "temperature": 0.1,
             "stream": stream,
         }
 
@@ -157,6 +213,20 @@ class RetriFlowLLMService:
 
         return None
 
+    @classmethod
+    def _build_system_prompt(cls) -> str:
+        return (
+            "【System】\n"
+            "你是一名专业的知识库问答助手。你的任务是根据【参考资料】中的信息，准确回答用户的问题。\n\n"
+            "请严格遵守以下规则：\n"
+            "1. 只基于【参考资料】中的内容回答问题，不要使用你自己的知识。\n"
+            f"2. 如果【参考资料】中没有足够的信息来回答用户的问题，请明确回答：\"{cls.NO_ANSWER_REPLY}\"\n"
+            "3. 不要编造任何【参考资料】中没有提到的信息，包括数字、日期、金额等具体细节。\n"
+            "4. 回答时请引用参考资料的编号，格式为 [1]、[2] 等，标注在相关句子的末尾。\n"
+            "5. 如果多条参考资料的信息存在冲突，请指出冲突，并提醒用户优先参考更新更晚、内容更具体的资料。\n"
+            "6. 回答时使用简洁、友好的语气，输出 Markdown。\n"
+        )
+
     @staticmethod
     def _extract_content(content: object) -> str:
         if isinstance(content, str):
@@ -180,22 +250,36 @@ class RetriFlowLLMService:
         message = choices[0].get("message", {})
         return RetriFlowLLMService._extract_content(message.get("content"))
 
-    @staticmethod
-    def _build_user_prompt(question: str, sources: list[ChatSourceItem]) -> str:
-        if sources:
-            context_blocks = []
-            for index, source in enumerate(sources[:4], start=1):
-                context_blocks.append(
-                    f"[资料{index}] 标题: {source.document_title}\n"
-                    f"相关度: {source.score:.3f}\n"
-                    f"内容: {source.content}"
-                )
-            context = "\n\n".join(context_blocks)
-        else:
-            context = "当前没有检索到可用知识片段。"
-
+    @classmethod
+    def _build_user_prompt(cls, question: str, sources: list[ChatSourceItem]) -> str:
         return (
-            f"用户问题:\n{question}\n\n"
-            f"检索上下文:\n{context}\n\n"
-            "请基于以上上下文回答。如果上下文不足，请明确说明，并给出下一步建议。"
+            "【参考资料】\n\n"
+            f"{cls._build_retrieved_context(sources)}\n\n"
+            "【用户问题】\n"
+            f"{question}"
+        )
+
+    @staticmethod
+    def _build_retrieved_context(sources: list[ChatSourceItem]) -> str:
+        if not sources:
+            return "暂无可用参考资料。"
+
+        blocks: list[str] = []
+        for index, source in enumerate(sources[:5], start=1):
+            meta_lines = [f"[{index}] 来源：{source.document_title}"]
+            if source.source_updated_at:
+                meta_lines.append(f"更新时间：{source.source_updated_at}")
+            meta_lines.append(f"知识库：{source.knowledge_base_id}")
+            block = "\n".join(meta_lines + [source.content])
+            blocks.append(block)
+        return "\n\n".join(blocks)
+
+    @staticmethod
+    def _build_route_prompt(question: str, knowledge_base_profiles: list[dict[str, Any]]) -> str:
+        serialized_profiles = json.dumps(knowledge_base_profiles, ensure_ascii=False, indent=2)
+        return (
+            f"用户问题：\n{question}\n\n"
+            f"候选知识库画像：\n{serialized_profiles}\n\n"
+            "请选择最相关的 knowledge_base_ids。"
+            "如果没有明显匹配，请返回 mode=global 和空 knowledge_base_ids。"
         )

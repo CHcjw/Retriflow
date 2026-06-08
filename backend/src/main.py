@@ -1,3 +1,5 @@
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
@@ -28,6 +30,6 @@ def create_app() -> FastAPI:
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=False)
-else:
+    uvicorn.run("main:create_app", host="127.0.0.1", port=8000, reload=False, factory=True)
+elif os.getenv("RETRIFLOW_EAGER_APP", "false").lower() == "true":
     app = create_app()

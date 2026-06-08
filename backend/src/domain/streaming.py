@@ -1,6 +1,7 @@
 import json
 from collections.abc import Iterable
 
+from domain.answer_postprocessor import RetriFlowAnswerPostprocessor
 from schemas.chat import ChatMessageRequest
 
 from domain.chat import RetriFlowChatService
@@ -9,6 +10,7 @@ from domain.chat import RetriFlowChatService
 class RetriFlowStreamingService:
     def __init__(self) -> None:
         self.chat_service = RetriFlowChatService()
+        self.answer_postprocessor = RetriFlowAnswerPostprocessor()
 
     def stream_events(self, request: ChatMessageRequest) -> Iterable[str]:
         workflow_result = self.chat_service.prepare_stream(request)
@@ -24,7 +26,8 @@ class RetriFlowStreamingService:
             assistant_parts.append(delta)
             yield self._format_event("delta", json.dumps({"content": delta}, ensure_ascii=False))
 
-        assistant_message = "".join(assistant_parts)
+        assistant_message = self.answer_postprocessor.finalize("".join(assistant_parts), workflow_result.sources)
+        yield self._format_event("final", json.dumps({"content": assistant_message}, ensure_ascii=False))
         self.chat_service.persist_stream_result(request=request, assistant_message=assistant_message)
 
         yield self._format_event(

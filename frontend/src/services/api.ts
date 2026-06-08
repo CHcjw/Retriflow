@@ -174,6 +174,7 @@ export interface ChatStreamHandlers {
   onWorkflow?: (workflow: ChatWorkflow) => void;
   onSources?: (sources: ChatSourceItem[]) => void;
   onDelta?: (delta: string) => void;
+  onFinal?: (content: string) => void;
   onDone?: (sessionId: string) => void;
 }
 
@@ -344,6 +345,9 @@ export async function streamChatMessage(
       }
       if (eventName === "delta") {
         handlers.onDelta?.((JSON.parse(data) as { content: string }).content);
+      }
+      if (eventName === "final") {
+        handlers.onFinal?.((JSON.parse(data) as { content: string }).content);
       }
       if (eventName === "done") {
         handlers.onDone?.((JSON.parse(data) as { session_id: string }).session_id);

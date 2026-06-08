@@ -47,14 +47,14 @@ export function useRetriFlowChat() {
   const sessions = ref<Awaited<ReturnType<typeof fetchSessions>>["items"]>([]);
   const activeSessionId = shallowRef(DEFAULT_SESSION_ID);
   const messages = ref<ChatMessage[]>([
-    buildMessage("assistant", "RetriFlow 聊天页已经接入后端接口，现在支持来源展示、工作流元数据和真实流式回复。")
+    buildMessage("assistant", "RetriFlow 聊天页面已接入后端接口，现在支持来源展示、工作流元数据和实时流式回复。")
   ]);
   const latestSources = ref<ChatSourceItem[]>([]);
   const latestWorkflow = ref<ChatWorkflow | null>(null);
 
   const statusText = computed(() => {
     if (requestPhase.value === "retrieving") {
-      return streamMode.value ? "正在检索知识并连接模型流..." : "正在生成回答...";
+      return streamMode.value ? "正在检索知识并连接模型..." : "正在生成回答...";
     }
     if (requestPhase.value === "streaming") {
       return "模型正在流式输出...";
@@ -85,9 +85,10 @@ export function useRetriFlowChat() {
 
   const loadMessages = async (sessionId = activeSessionId.value) => {
     const data = await fetchSessionMessages(sessionId);
-    messages.value = data.items.length > 0
-      ? data.items.map((item) => buildMessage(item.role, item.content))
-      : [createEmptySessionMessage()];
+    messages.value =
+      data.items.length > 0
+        ? data.items.map((item) => buildMessage(item.role, item.content))
+        : [createEmptySessionMessage()];
   };
 
   const selectSession = async (sessionId: string) => {
@@ -147,6 +148,11 @@ export function useRetriFlowChat() {
             onDelta: (delta) => {
               requestPhase.value = "streaming";
               assistantMessage.content = `${assistantMessage.content}${delta}`;
+              messages.value = [...messages.value];
+            },
+            onFinal: (content) => {
+              assistantMessage.content = content;
+              assistantMessage.state = "complete";
               messages.value = [...messages.value];
             },
             onDone: async () => {

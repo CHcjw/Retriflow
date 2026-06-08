@@ -20,6 +20,7 @@ class Settings(BaseModel):
     deep_thinking_model: str = "qwen3-max"
     default_embedding_model: str = "qwen-emb-8b"
     default_rerank_model: str = "qwen3-rerank"
+    default_route_model: str = "qwen3-max"
     sample_knowledge_dir: str = "backend/sample_data/knowledge"
     langsmith_tracing: bool = False
     langsmith_project: str = "retriflow"
@@ -43,6 +44,8 @@ class Settings(BaseModel):
     tika_ocr_enabled: bool = False
     tika_ocr_service_endpoint: str = "http://127.0.0.1:9889"
     tika_ocr_request_timeout_seconds: int = 30
+    route_use_llm: bool = False
+    route_confidence_threshold: float = 0.45
     cors_origins: list[str] = [
         "http://127.0.0.1:5173",
         "http://localhost:5173",
@@ -86,6 +89,7 @@ def get_settings() -> Settings:
         deep_thinking_model=resolve("RETRIFLOW_DEEP_THINKING_MODEL", "qwen3-max"),
         default_embedding_model=resolve("RETRIFLOW_DEFAULT_EMBEDDING_MODEL", "qwen-emb-8b"),
         default_rerank_model=resolve("RETRIFLOW_DEFAULT_RERANK_MODEL", "qwen3-rerank"),
+        default_route_model=resolve("RETRIFLOW_DEFAULT_ROUTE_MODEL", "qwen3-max"),
         sample_knowledge_dir=resolve("RETRIFLOW_SAMPLE_KNOWLEDGE_DIR", "backend/sample_data/knowledge"),
         langsmith_tracing=resolve("LANGSMITH_TRACING", "false").lower() == "true",
         langsmith_project=resolve("LANGSMITH_PROJECT", "retriflow"),
@@ -109,4 +113,6 @@ def get_settings() -> Settings:
         tika_ocr_enabled=resolve("RETRIFLOW_TIKA_OCR_ENABLED", "false").lower() == "true",
         tika_ocr_service_endpoint=resolve("RETRIFLOW_TIKA_OCR_SERVICE_ENDPOINT", "http://127.0.0.1:9889"),
         tika_ocr_request_timeout_seconds=int(resolve("RETRIFLOW_TIKA_OCR_REQUEST_TIMEOUT_SECONDS", "30")),
+        route_use_llm=resolve("RETRIFLOW_ROUTE_USE_LLM", "false").lower() == "true",
+        route_confidence_threshold=float(resolve("RETRIFLOW_ROUTE_CONFIDENCE_THRESHOLD", "0.45")),
     )

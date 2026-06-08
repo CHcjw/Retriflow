@@ -17,6 +17,24 @@ const props = defineProps<{
 const sourcesExpanded = shallowRef(true);
 const sourceToggleLabel = computed(() => (sourcesExpanded.value ? "折叠来源" : "展开来源"));
 const visibleSources = computed(() => (sourcesExpanded.value ? props.latestSources : []));
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function markdownToHtml(value: string): string {
+  const escaped = escapeHtml(value);
+  return escaped
+    .replace(/^##\s+(.+)$/gm, "<h4>$1</h4>")
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>')
+    .replace(/\[(\d+)\]/g, '<span class="citation">[$1]</span>')
+    .replace(/\n/g, "<br>");
+}
 </script>
 
 <template>
@@ -32,12 +50,12 @@ const visibleSources = computed(() => (sourcesExpanded.value ? props.latestSourc
       :class="[message.role, `is-${message.state}`]"
     >
       <div class="pane-title-row">
-        <strong>{{ message.role === "assistant" ? "RetriFlow" : "你" }}</strong>
+        <strong>{{ message.role === "assistant" ? "RetriFlow" : "用户" }}</strong>
         <span v-if="message.state === 'streaming'" class="message-state-pill">生成中</span>
         <span v-else-if="message.state === 'stopped'" class="message-state-pill muted">已停止</span>
         <span v-else-if="message.state === 'error'" class="message-state-pill error">失败</span>
       </div>
-      <p>{{ message.content || "正在等待模型返回..." }}</p>
+      <div class="message-body" v-html="markdownToHtml(message.content || '正在等待模型返回...')"></div>
     </div>
 
     <section v-if="latestWorkflow" class="sources-panel">
@@ -46,8 +64,8 @@ const visibleSources = computed(() => (sourcesExpanded.value ? props.latestSourc
         <span class="status-badge">{{ latestWorkflow.name }}</span>
       </div>
       <p class="status-copy">
-        adapter: {{ latestWorkflow.adapter }} ·
-        channels: {{ latestWorkflow.retrieval_channels.join(", ") }} ·
+        adapter: {{ latestWorkflow.adapter }}
+        channels: {{ latestWorkflow.retrieval_channels.join(", ") }}
         sources: {{ latestWorkflow.retrieval_count }}
       </p>
     </section>

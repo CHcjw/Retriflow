@@ -21,17 +21,16 @@
 - httpx
 - psycopg
 
-### 数据存储
+### 数据库与存储
 
 - PostgreSQL
-  - 作为业务主库
-  - 保存会话、消息、知识库、文档、chunks、structured blocks、ingestion tasks
+  - 业务主库
+  - 存储会话、消息、知识库、文档、chunks、structured blocks、ingestion tasks
 - pgvector
   - 与 PostgreSQL 同库部署
-  - 保存 `retriflow_chunk_vectors`
-  - 提供语义检索持久化能力
+  - 存储 `retriflow_chunk_vectors`
 - SQLite
-  - 仅保留为兼容模式和测试隔离用途
+  - 仅用于测试隔离与兼容模式
 
 ### 本地依赖服务
 
@@ -44,7 +43,6 @@
 ```text
 RetriFlow/
 |-- backend/
-|   |-- pyproject.toml
 |   `-- src/
 |       |-- api/
 |       |-- core/
@@ -56,36 +54,41 @@ RetriFlow/
 |-- docx/
 |-- docs/
 |-- tools/
-|   |-- tika/
-|   |-- ocr/
-|   `-- postgres/
 `-- docker-compose.services.yml
 ```
 
-### 关键后端模块
+### 核心后端模块
 
+- `backend/src/main.py`
+  - 应用工厂入口
+  - 使用 `create_app()` 启动，避免导入阶段提前初始化
 - `backend/src/core/config.py`
-  - 统一读取数据库、模型、Tika、OCR、LangSmith 配置
+  - 统一读取模型、数据库、Tika、OCR、LangSmith 配置
 - `backend/src/core/state.py`
   - 数据库连接抽象
-  - 支持 PostgreSQL 主模式和 SQLite 兼容模式
-  - 负责初始化业务表与种子数据
+  - PostgreSQL / SQLite 初始化
 - `backend/src/domain/document_parser.py`
-  - Tika 解析、结构化提取、文本类 fallback
+  - Tika 解析、结构化提取、文本 fallback
 - `backend/src/domain/ingestion.py`
-  - 文本标准化、结构化块持久化、分块策略执行
-- `backend/src/domain/embeddings.py`
-  - Embedding 服务封装与 fallback embedding
+  - 清洗、分块、后处理
 - `backend/src/domain/vector_store.py`
-  - pgvector 存储、相似度检索、主库 chunk 回填
+  - pgvector 持久化与向量检索
 - `backend/src/domain/retrieval.py`
-  - keyword + title + semantic 混合召回
+  - 混合检索主链路
+- `backend/src/domain/reranker.py`
+  - rerank 服务封装
+- `backend/src/domain/knowledge_route.py`
+  - 首页直聊知识库意图路由
+- `backend/src/domain/llm.py`
+  - 三段式 Prompt 与 LLM 调用
+- `backend/src/domain/answer_postprocessor.py`
+  - 引用、来源、冲突提示、安全过滤
 - `backend/src/domain/workflow_adapter.py`
-  - LangGraph 工作流适配层
+  - Fallback / LangGraph 工作流适配
 
 ## 数据模型
 
-### PostgreSQL 业务表
+### 业务表
 
 #### `sessions`
 
@@ -107,6 +110,14 @@ RetriFlow/
 - `name`
 - `product`
 - `document_count`
+
+#### `knowledge_base_route_profiles`
+
+- `knowledge_base_id`
+- `profile_text`
+- `sample_questions_json`
+- `keywords_json`
+- `updated_at`
 
 #### `knowledge_documents`
 
@@ -197,80 +208,105 @@ RetriFlow/
 
 ## 关键技术点
 
-### 1. PostgreSQL 主库 + pgvector 同库
+### 1. 首页直接聊天 + 知识库意图路由
 
-- 默认运行模式下，业务事实数据和向量数据都进入同一个 PostgreSQL 数据库
-- 业务表与向量表通过 `chunk_id` 对齐
-- 避免了原先 SQLite 主库与 PostgreSQL 向量库分裂后的运维复杂度
+- 用户先提问，不强制先选知识库
+- 路由服务先分析问题与知识库画像
+- 知识库画像持久化到 `knowledge_base_route_profiles`
+- 高置信度时限定到命中的知识库检索
+- 低置信度时回退到全局检索
+- 可选启用 LLM 路由，失败时自动退回本地画像匹配
 
-### 2. 数据访问兼容层
+### 2. 混合检索主链路
 
-- `core/state.py` 提供统一的 `get_connection()`
-- 上层业务服务不直接感知 `sqlite3` 或 `psycopg`
-- 测试可以继续显式切回 SQLite，降低迁移风险
+当前实现已经切换为标准链路：
 
-### 3. 向量持久化策略
+1. BM25 检索 Top80
+2. 纯向量检索 Top80
+3. RRF 融合 Top50
+4. rerank Top10
+5. 最终返回 Top5
 
-- chunk 入库后立即执行 embedding
-- 向量写入 `retriflow_chunk_vectors`
-- 若 pgvector 不可用，仍可回退到内存向量检索，保证开发环境可用性
+当前 `workflow.retrieval_channels` 返回：
 
-### 4. PostgreSQL SQL 脚本
+- `bm25`
+- `semantic`
+- `hybrid_rrf`
+- `rerank`
 
-当前只保留 3 个主入口脚本：
+### 3. 向量检索范围过滤
+
+- BM25 与向量检索都支持 `knowledge_base_ids` 范围过滤
+- 便于首页聊天先路由、后限定召回
+
+### 4. rerank 服务设计
+
+- 优先使用 OpenAI-compatible API 的 `/rerank`
+- 使用配置中的 `default_rerank_model`
+- 当 rerank 服务不可用时，回退到本地轻量排序逻辑
+
+### 5. 生成答案链路
+
+- 使用三段式 Prompt
+  - System Prompt
+  - Retrieved Context
+  - User Query
+- 生成温度固定为 `0.1`
+- 后处理负责：
+  - 自动补引用
+  - 自动追加 `## 参考来源`
+  - 冲突提示
+  - 基础安全过滤
+- 流式问答结束后会生成最终版答案并落库，而不是只保存原始分片
+
+### 6. 流式聊天容错
+
+- LangGraph 流式生成过程中，如果模型流在迭代阶段抛错，系统会自动降级为 fallback 文本
+- SSE 输出包含：
+  - `workflow`
+  - `sources`
+  - `delta`
+  - `final`
+  - `done`
+
+### 7. 应用启动方式
+
+- `backend/src/main.py` 采用工厂模式启动
+- CLI 启动方式：
+
+```powershell
+& .\.venv\Scripts\python.exe .\backend\src\main.py
+```
+
+- `uvicorn` 实际使用 `main:create_app` + `factory=True`
+- 避免测试和运行时在模块导入阶段提前初始化错误环境
+
+### 8. SQL 脚本入口
+
+保留 3 个主入口：
 
 - `tools/postgres/schema_pg.sql`
 - `tools/postgres/init_data_pg.sql`
 - `tools/postgres/inspect_pg.sql`
 
-对应职责：
+## 当前实现状态
 
-- `schema_pg.sql`
-  - 初始化业务表结构
-- `init_data_pg.sql`
-  - 初始化 demo 种子数据
-- `inspect_pg.sql`
-  - 巡检业务表和向量表
+### 已完成
 
-补充说明：
+- Tika 解析链路
+- 结构化 block 持久化
+- 多策略分块
+- 向量持久化
+- 首页直聊知识库路由
+- 混合检索
+- LangGraph 最小工作流
+- 同步 / 流式聊天
+- 生成答案与后处理
 
-- `retriflow_chunk_vectors` 改为由后端首次成功写入 embedding 时自动创建
-- 这样可以避免 HeidiSQL 等客户端在执行 `DO $$` 块时出现兼容问题
+### 待继续增强
 
-### 5. 文档解析链路
-
-- 优先使用 Apache Tika 解析 MIME、正文、结构化内容
-- OCR 服务用于补充图片文本识别
-- 文本类文件在 Tika 不可用时允许 UTF-8 fallback
-
-### 6. 分块策略体系
-
-- 固定大小分块
-- 重叠分块
-- 递归分块
-- Embedding 语义分块
-- 递归 + 语义混合分块
-- 自动策略选择
-
-### 7. 混合检索路径
-
-- keyword 通道：关键词匹配
-- title 通道：文档标题匹配
-- semantic 通道：pgvector 相似度检索
-- 最终统一去重与排序
-
-## 本地 PostgreSQL 连接信息
-
-- Host: `127.0.0.1`
-- Port: `5433`
-- Database: `retriflow`
-- Username: `retriflow`
-- Password: `retriflow`
-- Schema: `public`
-
-这些配置当前已经同步到：
-
-- `.env`
-- `.env.example`
-- `docker-compose.services.yml`
-- `docs/local-services.md`
+- 更强的 LLM 知识库路由
+- 更稳定的生产级 reranker 适配
+- 更复杂的 LangGraph 多节点编排
+- 检索评测与召回质量监控
+- 更强的前端来源富展示

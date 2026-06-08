@@ -11,24 +11,30 @@ from schemas.chat import (
 
 
 router = APIRouter(prefix="/api/v1/chat", tags=["chat"])
-service = RetriFlowChatService()
-streaming_service = RetriFlowStreamingService()
+
+
+def _chat_service() -> RetriFlowChatService:
+    return RetriFlowChatService()
+
+
+def _streaming_service() -> RetriFlowStreamingService:
+    return RetriFlowStreamingService()
 
 
 @router.get("/bootstrap", response_model=ChatBootstrapResponse)
 def get_chat_bootstrap() -> ChatBootstrapResponse:
-    return service.get_bootstrap()
+    return _chat_service().get_bootstrap()
 
 
 @router.post("/messages", response_model=ChatMessageWithSourcesResponse)
 def send_chat_message(request: ChatMessageRequest) -> ChatMessageWithSourcesResponse:
-    return service.send_message(request)
+    return _chat_service().send_message(request)
 
 
 @router.post("/stream")
 def stream_chat_message(request: ChatMessageRequest) -> StreamingResponse:
     return StreamingResponse(
-        streaming_service.stream_events(request),
+        _streaming_service().stream_events(request),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )

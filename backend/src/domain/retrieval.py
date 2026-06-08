@@ -6,12 +6,9 @@ from pydantic import ConfigDict, PrivateAttr
 
 from schemas.chat import ChatSourceItem
 
-from domain.retrieval_channels import (
-    DocumentTitleSearchChannel,
-    KeywordSearchChannel,
-    RetrievalChannel,
-)
-from domain.retrieval_postprocessors import deduplicate_and_rank
+from domain.reranker import RetriFlowRerankService
+from domain.retrieval_channels import BM25SearchChannel, RetrievalChannel
+from domain.retrieval_postprocessors import reciprocal_rank_fusion
 from domain.vector_store import resolve_vector_store
 
 
@@ -25,25 +22,42 @@ class RetriFlowHybridRetriever(BaseRetriever):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     _channels: list[RetrievalChannel] = PrivateAttr()
+    _knowledge_base_ids: list[str] | None = PrivateAttr(default=None)
+    _vector_top_k: int = PrivateAttr(default=80)
+    _fusion_top_k: int = PrivateAttr(default=50)
+    _rerank_top_k: int = PrivateAttr(default=10)
+    _final_top_k: int = PrivateAttr(default=5)
 
-    def __init__(self) -> None:
+    def __init__(self, knowledge_base_ids: list[str] | None = None) -> None:
         super().__init__()
-        self._channels = [
-            KeywordSearchChannel(),
-            DocumentTitleSearchChannel(),
-        ]
+        self._channels = [BM25SearchChannel()]
+        self._knowledge_base_ids = knowledge_base_ids
 
     @property
     def channel_names(self) -> list[str]:
-        return [channel.name for channel in self._channels] + ["semantic"]
+        return ["bm25", "semantic", "hybrid_rrf", "rerank"]
 
     def _get_relevant_documents(self, query: str) -> list[Document]:
         records = []
         for channel in self._channels:
-            records.extend(channel.retrieve(query))
-        records.extend(resolve_vector_store().similarity_search(query, k=4))
+            records.append(
+                channel.retrieve(
+                    query,
+                    knowledge_base_ids=self._knowledge_base_ids,
+                    top_k=self._vector_top_k,
+                )
+            )
 
-        ranked = deduplicate_and_rank(records)
+        semantic_records = self._similarity_search(query=query)
+        records.append(semantic_records)
+
+        fused_records = reciprocal_rank_fusion(records, top_k=self._fusion_top_k)
+        reranked_records = RetriFlowRerankService().rerank(
+            question=query,
+            records=fused_records,
+            limit=self._rerank_top_k,
+        )
+        ranked = reranked_records[: self._final_top_k]
         return [
             Document(
                 page_content=item.content,
@@ -59,14 +73,35 @@ class RetriFlowHybridRetriever(BaseRetriever):
             for item in ranked
         ]
 
+    def _similarity_search(self, query: str):
+        vector_store = resolve_vector_store()
+        if self._knowledge_base_ids:
+            try:
+                return vector_store.similarity_search(
+                    query,
+                    k=self._vector_top_k,
+                    knowledge_base_ids=self._knowledge_base_ids,
+                )
+            except TypeError:
+                return vector_store.similarity_search(query, k=self._vector_top_k)
+        return vector_store.similarity_search(query, k=self._vector_top_k)
+
 
 class RetriFlowRetrievalEngine:
     def __init__(self) -> None:
-        self.retriever = RetriFlowHybridRetriever()
+        self._default_retriever = RetriFlowHybridRetriever()
 
-    def retrieve(self, question: str) -> RetrievalResult:
-        channel_names = self.retriever.channel_names
-        ranked = self.retriever.invoke(question)
+    def retrieve(
+        self,
+        question: str,
+        knowledge_base_ids: list[str] | None = None,
+    ) -> RetrievalResult:
+        retriever = self._default_retriever
+        if knowledge_base_ids:
+            retriever = RetriFlowHybridRetriever(knowledge_base_ids=knowledge_base_ids)
+
+        channel_names = retriever.channel_names
+        ranked = retriever.invoke(question)
         sources = [
             ChatSourceItem(
                 chunk_id=int(item.metadata["chunk_id"]),
@@ -75,6 +110,11 @@ class RetriFlowRetrievalEngine:
                 document_title=str(item.metadata["document_title"]),
                 content=item.page_content,
                 score=float(item.metadata["score"]),
+                source_link=(
+                    f"/api/v1/knowledge-bases/{item.metadata['knowledge_base_id']}"
+                    f"/documents/{item.metadata['document_id']}/chunks"
+                ),
+                source_updated_at=str(item.metadata.get("source_updated_at", "")),
             )
             for item in ranked
         ]

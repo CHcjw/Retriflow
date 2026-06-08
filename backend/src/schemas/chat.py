@@ -23,6 +23,8 @@ class ChatSourceItem(BaseModel):
     document_title: str
     content: str
     score: float
+    source_link: str = ""
+    source_updated_at: str = ""
 
 
 class ChatWorkflowMetadata(BaseModel):

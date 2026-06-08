@@ -17,7 +17,10 @@ from schemas.knowledge import (
 
 
 router = APIRouter(prefix="/api/v1/knowledge-bases", tags=["knowledge"])
-service = RetriFlowKnowledgeService()
+
+
+def _service() -> RetriFlowKnowledgeService:
+    return RetriFlowKnowledgeService()
 
 
 def _parse_recursive_separators_text(value: str | None) -> list[str] | None:
@@ -30,17 +33,17 @@ def _parse_recursive_separators_text(value: str | None) -> list[str] | None:
 
 @router.get("", response_model=KnowledgeBaseListResponse)
 def list_knowledge_bases() -> KnowledgeBaseListResponse:
-    return service.list_knowledge_bases()
+    return _service().list_knowledge_bases()
 
 
 @router.post("", response_model=KnowledgeBaseItem, status_code=status.HTTP_201_CREATED)
 def create_knowledge_base(request: KnowledgeBaseCreateRequest) -> KnowledgeBaseItem:
-    return service.create_knowledge_base(request)
+    return _service().create_knowledge_base(request)
 
 
 @router.get("/{knowledge_base_id}/documents", response_model=KnowledgeDocumentListResponse)
 def list_documents(knowledge_base_id: str) -> KnowledgeDocumentListResponse:
-    return service.list_documents(knowledge_base_id)
+    return _service().list_documents(knowledge_base_id)
 
 
 @router.post(
@@ -52,7 +55,7 @@ def create_document(
     knowledge_base_id: str,
     request: KnowledgeDocumentCreateRequest,
 ) -> KnowledgeDocumentItem:
-    return service.create_document(knowledge_base_id, request)
+    return _service().create_document(knowledge_base_id, request)
 
 
 @router.post(
@@ -70,7 +73,7 @@ async def upload_document(
     recursive_separators_text: Annotated[str | None, Form()] = None,
 ) -> KnowledgeDocumentItem:
     content = await file.read()
-    return service.upload_document(
+    return _service().upload_document(
         knowledge_base_id,
         file.filename or "uploaded-document.txt",
         content,
@@ -89,7 +92,7 @@ async def upload_document(
     status_code=status.HTTP_201_CREATED,
 )
 def import_sample_documents(knowledge_base_id: str) -> KnowledgeSampleImportResponse:
-    imported_count = service.import_sample_directory(knowledge_base_id)
+    imported_count = _service().import_sample_directory(knowledge_base_id)
     return KnowledgeSampleImportResponse(imported_count=imported_count)
 
 
@@ -98,7 +101,7 @@ def import_sample_documents(knowledge_base_id: str) -> KnowledgeSampleImportResp
     response_model=KnowledgeChunkListResponse,
 )
 def list_document_chunks(knowledge_base_id: str, document_id: int) -> KnowledgeChunkListResponse:
-    return service.list_document_chunks(knowledge_base_id, document_id)
+    return _service().list_document_chunks(knowledge_base_id, document_id)
 
 
 @router.get(
@@ -109,4 +112,4 @@ def list_document_structured_blocks(
     knowledge_base_id: str,
     document_id: int,
 ) -> KnowledgeDocumentStructuredBlockListResponse:
-    return service.list_document_structured_blocks(knowledge_base_id, document_id)
+    return _service().list_document_structured_blocks(knowledge_base_id, document_id)

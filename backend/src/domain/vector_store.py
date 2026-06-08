@@ -28,7 +28,12 @@ class RetriFlowVectorStore(Protocol):
     def upsert_chunk_records(self, records: list[VectorChunkRecord]) -> None:
         ...
 
-    def similarity_search(self, query: str, k: int = 4) -> list[RetrievedChunkRecord]:
+    def similarity_search(
+        self,
+        query: str,
+        k: int = 4,
+        knowledge_base_ids: list[str] | None = None,
+    ) -> list[RetrievedChunkRecord]:
         ...
 
 
@@ -40,8 +45,13 @@ class InMemoryRetriFlowVectorStore:
         # The primary relational store remains the source of truth for fallback mode.
         _ = records
 
-    def similarity_search(self, query: str, k: int = 4) -> list[RetrievedChunkRecord]:
-        rows = load_chunk_rows()
+    def similarity_search(
+        self,
+        query: str,
+        k: int = 4,
+        knowledge_base_ids: list[str] | None = None,
+    ) -> list[RetrievedChunkRecord]:
+        rows = load_chunk_rows(knowledge_base_ids=knowledge_base_ids)
         if not rows:
             return []
 
@@ -56,6 +66,7 @@ class InMemoryRetriFlowVectorStore:
                     "document_id": row["document_id"],
                     "document_title": row["document_title"],
                     "channel": "semantic",
+                    "source_updated_at": row["source_updated_at"],
                 },
             )
             for row in rows
@@ -72,6 +83,7 @@ class InMemoryRetriFlowVectorStore:
                 content=document.page_content,
                 score=float(score),
                 channel="semantic",
+                source_updated_at=str(document.metadata.get("source_updated_at", "")),
             )
             for document, score in results
         ]
@@ -119,7 +131,12 @@ class PostgresRetriFlowVectorStore:
         except Exception:
             self.fallback_store.upsert_chunk_records(records)
 
-    def similarity_search(self, query: str, k: int = 4) -> list[RetrievedChunkRecord]:
+    def similarity_search(
+        self,
+        query: str,
+        k: int = 4,
+        knowledge_base_ids: list[str] | None = None,
+    ) -> list[RetrievedChunkRecord]:
         try:
             query_vector = self.embedding_service.embed_query(query)
             dimension = len(query_vector)
@@ -134,9 +151,10 @@ class PostgresRetriFlowVectorStore:
                 self._maybe_backfill(connection)
                 with connection.cursor() as cursor:
                     cursor.execute(
-                        self._build_search_sql(),
+                        self._build_search_sql(knowledge_base_ids=knowledge_base_ids),
                         (
                             numpy.array(query_vector, dtype=numpy.float32),
+                            *(knowledge_base_ids or []),
                             numpy.array(query_vector, dtype=numpy.float32),
                             k,
                         ),
@@ -148,15 +166,16 @@ class PostgresRetriFlowVectorStore:
                     chunk_id=row[0],
                     knowledge_base_id=row[1],
                     document_id=row[2],
-                    document_title=row[3],
-                    content=row[4],
-                    score=float(row[5]),
-                    channel="semantic",
-                )
-                for row in rows
-            ]
+                document_title=row[3],
+                content=row[4],
+                score=float(row[5]),
+                channel="semantic",
+                source_updated_at=str(row[6] if len(row) > 6 else ""),
+            )
+            for row in rows
+        ]
         except Exception:
-            return self.fallback_store.similarity_search(query, k=k)
+            return self.fallback_store.similarity_search(query, k=k, knowledge_base_ids=knowledge_base_ids)
 
     def _connect(self):
         psycopg = self._import_psycopg()
@@ -254,8 +273,12 @@ class PostgresRetriFlowVectorStore:
                 updated_at = now()
         """
 
-    def _build_search_sql(self) -> str:
+    def _build_search_sql(self, knowledge_base_ids: list[str] | None = None) -> str:
         table = self.settings.pgvector_table
+        where_clause = ""
+        if knowledge_base_ids:
+            placeholders = ", ".join("%s" for _ in knowledge_base_ids)
+            where_clause = f"where knowledge_base_id in ({placeholders})"
         return f"""
             select
                 chunk_id,
@@ -263,8 +286,10 @@ class PostgresRetriFlowVectorStore:
                 document_id,
                 document_title,
                 content,
-                1 - (embedding <=> %s) as score
+                1 - (embedding <=> %s) as score,
+                updated_at
             from {table}
+            {where_clause}
             order by embedding <=> %s
             limit %s
         """

@@ -60,6 +60,7 @@ class RetriFlowKnowledgeService:
                 """,
                 (knowledge_base_id, request.name, "RetriFlow", 0),
             )
+            self._sync_knowledge_base_route_profile(connection, knowledge_base_id)
             connection.commit()
 
         return KnowledgeBaseItem(
@@ -426,6 +427,7 @@ class RetriFlowKnowledgeService:
                 """,
                 (knowledge_base_id, knowledge_base_id),
             )
+            self._sync_knowledge_base_route_profile(connection, knowledge_base_id)
             connection.commit()
 
             row = connection.execute(
@@ -649,3 +651,82 @@ class RetriFlowKnowledgeService:
         if hasattr(value, "isoformat"):
             return value.isoformat()
         return str(value)
+
+    @staticmethod
+    def _sync_knowledge_base_route_profile(connection, knowledge_base_id: str) -> None:
+        kb_row = connection.execute(
+            """
+            select id, name
+            from knowledge_bases
+            where id = ?
+            """,
+            (knowledge_base_id,),
+        ).fetchone()
+        if kb_row is None:
+            return
+
+        doc_rows = connection.execute(
+            """
+            select title, content
+            from knowledge_documents
+            where knowledge_base_id = ?
+            order by id
+            """,
+            (knowledge_base_id,),
+        ).fetchall()
+
+        name = str(kb_row["name"])
+        titles = [str(row["title"]) for row in doc_rows]
+        snippets = [str(row["content"])[:240] for row in doc_rows[:4]]
+        profile_text = " ".join([name, *titles[:8], *snippets]).strip()
+        keywords = RetriFlowKnowledgeService._extract_route_keywords(name=name, titles=titles, snippets=snippets)
+        sample_questions = RetriFlowKnowledgeService._build_route_sample_questions(name=name, keywords=keywords)
+
+        connection.execute(
+            """
+            insert into knowledge_base_route_profiles (
+                knowledge_base_id,
+                profile_text,
+                sample_questions_json,
+                keywords_json,
+                updated_at
+            )
+            values (?, ?, ?, ?, current_timestamp)
+            on conflict (knowledge_base_id) do update set
+                profile_text = excluded.profile_text,
+                sample_questions_json = excluded.sample_questions_json,
+                keywords_json = excluded.keywords_json,
+                updated_at = current_timestamp
+            """,
+            (
+                knowledge_base_id,
+                profile_text,
+                json.dumps(sample_questions, ensure_ascii=False),
+                json.dumps(keywords, ensure_ascii=False),
+            ),
+        )
+
+    @staticmethod
+    def _extract_route_keywords(name: str, titles: list[str], snippets: list[str]) -> list[str]:
+        import re
+
+        text = " ".join([name, *titles, *snippets]).lower()
+        english_tokens = re.findall(r"[a-z][a-z0-9_-]{2,}", text)
+        keywords: list[str] = []
+        for token in english_tokens:
+            if token not in keywords:
+                keywords.append(token)
+        return keywords[:16]
+
+    @staticmethod
+    def _build_route_sample_questions(name: str, keywords: list[str]) -> list[str]:
+        if keywords:
+            lead_keyword = keywords[0]
+            return [
+                f"{name} 主要覆盖什么内容？",
+                f"{lead_keyword} 相关流程有哪些？",
+            ]
+        return [
+            f"{name} 主要覆盖什么内容？",
+            f"{name} 的常见问题有哪些？",
+        ]
