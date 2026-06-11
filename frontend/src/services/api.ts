@@ -1,11 +1,42 @@
 import axios, { AxiosError } from "axios";
 
 const API_BASE_URL = import.meta.env.VITE_RETRIFLOW_API_BASE_URL ?? "";
+const UNAUTHORIZED_EVENT = "retriflow:unauthorized";
+let accessToken = "";
 
 const apiClient = axios.create({
   baseURL: API_BASE_URL,
   timeout: 30000
 });
+
+apiClient.interceptors.request.use((config) => {
+  if (accessToken) {
+    config.headers = config.headers ?? {};
+    config.headers.Authorization = `Bearer ${accessToken}`;
+  }
+  return config;
+});
+
+apiClient.interceptors.response.use(
+  (response) => response,
+  (error: AxiosError) => {
+    if (error.response?.status === 401) {
+      accessToken = "";
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT));
+      }
+    }
+    return Promise.reject(error);
+  }
+);
+
+export function setAccessToken(token: string) {
+  accessToken = token.trim();
+}
+
+export function getUnauthorizedEventName(): string {
+  return UNAUTHORIZED_EVENT;
+}
 
 function toRequestError(error: unknown): Error {
   if (error instanceof AxiosError) {
@@ -24,7 +55,7 @@ function toRequestError(error: unknown): Error {
 
 async function request<T>(config: {
   url: string;
-  method?: "GET" | "POST";
+  method?: "DELETE" | "GET" | "POST";
   data?: FormData | Record<string, unknown>;
   headers?: Record<string, string>;
 }): Promise<T> {
@@ -47,6 +78,32 @@ export interface MetaResponse {
   api_prefix: string;
   frontend_name: string;
   primary_routes: string[];
+  database_backend: string;
+  runtime_database_backend: string;
+  database_schema: string;
+}
+
+export interface AuthRegisterRequest {
+  username: string;
+  password: string;
+  role?: string;
+}
+
+export interface AuthLoginRequest {
+  username: string;
+  password: string;
+}
+
+export interface AuthUser {
+  id: string;
+  username: string;
+  role: string;
+}
+
+export interface AuthLoginResponse {
+  access_token: string;
+  token_type: "bearer";
+  user: AuthUser;
 }
 
 export interface SessionItem {
@@ -76,6 +133,9 @@ export interface KnowledgeDocumentItem {
   title: string;
   source_type: string;
   status: string;
+  vector_index_status: string;
+  vector_chunk_count: number;
+  vector_indexed_at: string;
   created_at: string;
 }
 
@@ -142,6 +202,8 @@ export interface ChatSourceItem {
   document_title: string;
   content: string;
   score: number;
+  source_link?: string;
+  source_updated_at?: string;
 }
 
 export interface ChatWorkflow {
@@ -149,6 +211,18 @@ export interface ChatWorkflow {
   adapter: string;
   retrieval_channels: string[];
   retrieval_count: number;
+  retrieval_stage_counts: Record<string, number>;
+  rewritten_queries: string[];
+  rewrite_query_count: number;
+  route_mode: string;
+  mcp_tool_count: number;
+}
+
+export interface ChatMcpCallItem {
+  tool_id: string;
+  arguments: Record<string, unknown>;
+  content: string;
+  is_error: boolean;
 }
 
 export interface ChatMessageResponse {
@@ -156,6 +230,7 @@ export interface ChatMessageResponse {
   assistant_message: string;
   sources: ChatSourceItem[];
   workflow: ChatWorkflow;
+  mcp_calls: ChatMcpCallItem[];
 }
 
 export interface ConversationMessageItem {
@@ -171,11 +246,29 @@ export interface ConversationMessageListResponse {
 }
 
 export interface ChatStreamHandlers {
-  onWorkflow?: (workflow: ChatWorkflow) => void;
-  onSources?: (sources: ChatSourceItem[]) => void;
-  onDelta?: (delta: string) => void;
-  onFinal?: (content: string) => void;
-  onDone?: (sessionId: string) => void;
+  onWorkflow?: (workflow: ChatWorkflow) => void | Promise<void>;
+  onSources?: (sources: ChatSourceItem[]) => void | Promise<void>;
+  onMcpCalls?: (mcpCalls: ChatMcpCallItem[]) => void | Promise<void>;
+  onDelta?: (delta: string) => void | Promise<void>;
+  onFinal?: (payload: ChatFinalEvent) => void | Promise<void>;
+  onDone?: (sessionId: string) => void | Promise<void>;
+}
+
+export interface ChatFinalEvent {
+  status: string;
+  mode?: "append" | "replace";
+  content?: string;
+  content_delta?: string;
+}
+
+async function yieldForPaint(): Promise<void> {
+  await new Promise<void>((resolve) => {
+    if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+      window.requestAnimationFrame(() => resolve());
+      return;
+    }
+    setTimeout(resolve, 0);
+  });
 }
 
 export interface KnowledgeChunkingOptions {
@@ -190,6 +283,26 @@ export function fetchMeta(): Promise<MetaResponse> {
   return request<MetaResponse>({ url: "/api/v1/meta" });
 }
 
+export function registerUser(payload: AuthRegisterRequest): Promise<AuthUser> {
+  return request<AuthUser>({
+    url: "/api/v1/auth/register",
+    method: "POST",
+    data: payload
+  });
+}
+
+export function loginWithPassword(payload: AuthLoginRequest): Promise<AuthLoginResponse> {
+  return request<AuthLoginResponse>({
+    url: "/api/v1/auth/login",
+    method: "POST",
+    data: payload
+  });
+}
+
+export function fetchCurrentUser(): Promise<AuthUser> {
+  return request<AuthUser>({ url: "/api/v1/auth/me" });
+}
+
 export function fetchSessions(): Promise<SessionListResponse> {
   return request<SessionListResponse>({ url: "/api/v1/sessions" });
 }
@@ -202,6 +315,13 @@ export function createSession(title: string): Promise<SessionItem> {
   });
 }
 
+export function deleteSession(sessionId: string): Promise<void> {
+  return request<void>({
+    url: `/api/v1/sessions/${sessionId}`,
+    method: "DELETE"
+  });
+}
+
 export function fetchKnowledgeBases(): Promise<KnowledgeBaseListResponse> {
   return request<KnowledgeBaseListResponse>({ url: "/api/v1/knowledge-bases" });
 }
@@ -211,6 +331,13 @@ export function createKnowledgeBase(name: string): Promise<KnowledgeBaseItem> {
     url: "/api/v1/knowledge-bases",
     method: "POST",
     data: { name }
+  });
+}
+
+export function deleteKnowledgeBase(knowledgeBaseId: string): Promise<void> {
+  return request<void>({
+    url: `/api/v1/knowledge-bases/${knowledgeBaseId}`,
+    method: "DELETE"
   });
 }
 
@@ -263,6 +390,24 @@ export function uploadKnowledgeDocument(
   });
 }
 
+export function reindexKnowledgeDocument(
+  knowledgeBaseId: string,
+  documentId: number,
+  options?: KnowledgeChunkingOptions
+): Promise<KnowledgeDocumentItem> {
+  return request<KnowledgeDocumentItem>({
+    url: `/api/v1/knowledge-bases/${knowledgeBaseId}/documents/${documentId}/reindex`,
+    method: "POST",
+    data: {
+      document_type: options?.documentType,
+      chunk_strategy: options?.chunkStrategy ?? "auto",
+      chunk_size: options?.chunkSize ?? 600,
+      chunk_overlap: options?.chunkOverlap ?? 120,
+      recursive_separators: options?.recursiveSeparators ?? []
+    }
+  });
+}
+
 export function fetchKnowledgeChunks(
   knowledgeBaseId: string,
   documentId: number
@@ -301,13 +446,17 @@ export async function streamChatMessage(
   const response = await fetch(`${API_BASE_URL}/api/v1/chat/stream`, {
     method: "POST",
     headers: {
-      "Content-Type": "application/json"
+      "Content-Type": "application/json",
+      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {})
     },
     body: JSON.stringify({ session_id: sessionId, message }),
     signal
   });
 
   if (!response.ok || !response.body) {
+    if (response.status === 401 && typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT));
+    }
     throw new Error(`Request failed: ${response.status}`);
   }
 
@@ -338,19 +487,24 @@ export async function streamChatMessage(
       }
 
       if (eventName === "workflow") {
-        handlers.onWorkflow?.(JSON.parse(data) as ChatWorkflow);
+        await handlers.onWorkflow?.(JSON.parse(data) as ChatWorkflow);
       }
       if (eventName === "sources") {
-        handlers.onSources?.(JSON.parse(data) as ChatSourceItem[]);
+        await handlers.onSources?.(JSON.parse(data) as ChatSourceItem[]);
+      }
+      if (eventName === "mcp_calls") {
+        await handlers.onMcpCalls?.(JSON.parse(data) as ChatMcpCallItem[]);
       }
       if (eventName === "delta") {
-        handlers.onDelta?.((JSON.parse(data) as { content: string }).content);
+        await handlers.onDelta?.((JSON.parse(data) as { content: string }).content);
+        await yieldForPaint();
       }
       if (eventName === "final") {
-        handlers.onFinal?.((JSON.parse(data) as { content: string }).content);
+        await handlers.onFinal?.(JSON.parse(data) as ChatFinalEvent);
+        await yieldForPaint();
       }
       if (eventName === "done") {
-        handlers.onDone?.((JSON.parse(data) as { session_id: string }).session_id);
+        await handlers.onDone?.((JSON.parse(data) as { session_id: string }).session_id);
       }
     }
   }

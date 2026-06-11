@@ -28,6 +28,9 @@ class RetriFlowVectorStore(Protocol):
     def upsert_chunk_records(self, records: list[VectorChunkRecord]) -> None:
         ...
 
+    def delete_document_records(self, document_id: int) -> None:
+        ...
+
     def similarity_search(
         self,
         query: str,
@@ -44,6 +47,9 @@ class InMemoryRetriFlowVectorStore:
     def upsert_chunk_records(self, records: list[VectorChunkRecord]) -> None:
         # The primary relational store remains the source of truth for fallback mode.
         _ = records
+
+    def delete_document_records(self, document_id: int) -> None:
+        _ = document_id
 
     def similarity_search(
         self,
@@ -176,6 +182,18 @@ class PostgresRetriFlowVectorStore:
         ]
         except Exception:
             return self.fallback_store.similarity_search(query, k=k, knowledge_base_ids=knowledge_base_ids)
+
+    def delete_document_records(self, document_id: int) -> None:
+        try:
+            with self._connect() as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        f"delete from {self.settings.pgvector_table} where document_id = %s",
+                        (document_id,),
+                    )
+                connection.commit()
+        except Exception:
+            self.fallback_store.delete_document_records(document_id)
 
     def _connect(self):
         psycopg = self._import_psycopg()
@@ -339,10 +357,26 @@ class PostgresRetriFlowVectorStore:
                 content=str(row["content"]),
                 document_type=str(row["document_type"]),
                 strategy=str(row["strategy"]),
-                metadata=json.loads(row["metadata_json"] or "{}"),
+                metadata=PostgresRetriFlowVectorStore._parse_json_field(
+                    row["metadata_json"],
+                    default={},
+                ),
             )
             for row in rows
         ]
+
+    @staticmethod
+    def _parse_json_field(value, *, default):
+        if value is None:
+            return default
+        if isinstance(value, (list, dict)):
+            return value
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return default
+            return json.loads(text)
+        return default
 
 
 def resolve_vector_store() -> RetriFlowVectorStore:

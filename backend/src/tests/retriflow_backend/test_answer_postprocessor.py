@@ -77,5 +77,32 @@ class RetriFlowAnswerPostprocessorTests(unittest.TestCase):
         self.assertIn("优先参考较新的资料 [2]", result)
 
 
+    def test_finalize_formats_reference_links_as_markdown(self) -> None:
+        from domain.answer_postprocessor import RetriFlowAnswerPostprocessor
+        from schemas.chat import ChatSourceItem
+
+        sources = [
+            ChatSourceItem(
+                chunk_id=5,
+                knowledge_base_id="kb-demo-1",
+                document_id=5,
+                document_title="FAQ document",
+                content="Return shipping is paid by the seller for quality issues.",
+                score=0.88,
+                source_link="/api/v1/knowledge-bases/kb-demo-1/documents/5/chunks",
+                source_updated_at="2026-02-01T00:00:00",
+            )
+        ]
+
+        result = RetriFlowAnswerPostprocessor().finalize(
+            "Quality issue returns are paid by the seller.[1]",
+            sources,
+        )
+
+        self.assertIn("- [1] FAQ document", result)
+        self.assertIn("[查看来源](/api/v1/knowledge-bases/kb-demo-1/documents/5/chunks)", result)
+        self.assertIn("- 更新时间：2026-02-01T00:00:00", result)
+
+
 if __name__ == "__main__":
     unittest.main()

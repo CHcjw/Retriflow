@@ -1,3 +1,4 @@
+import hashlib
 import re
 import sqlite3
 from pathlib import Path
@@ -91,7 +92,9 @@ def get_connection() -> DatabaseConnection:
         try:
             return _get_postgres_connection()
         except Exception:
-            return _get_sqlite_connection()
+            if _should_allow_sqlite_fallback():
+                return _get_sqlite_connection()
+            raise
     return _get_sqlite_connection()
 
 
@@ -102,8 +105,10 @@ def initialize_database() -> None:
             _initialize_postgres_database()
             return
         except Exception:
-            _initialize_sqlite_database()
-            return
+            if _should_allow_sqlite_fallback():
+                _initialize_sqlite_database()
+                return
+            raise
     _initialize_sqlite_database()
 
 
@@ -124,6 +129,18 @@ def _resolve_database_backend() -> str:
     if settings.database_dsn.strip() or settings.pgvector_dsn.strip():
         return "pg"
     return "sqlite"
+
+
+def _should_allow_sqlite_fallback() -> bool:
+    settings = get_settings()
+    if settings.allow_sqlite_fallback:
+        return True
+    requested = settings.database_backend.strip().lower()
+    if requested == "sqlite":
+        return True
+    if requested in {"pg", "postgres", "postgresql"}:
+        return False
+    return not (settings.database_dsn.strip() or settings.pgvector_dsn.strip())
 
 
 def _get_sqlite_connection() -> DatabaseConnection:
@@ -154,7 +171,20 @@ def _initialize_sqlite_database() -> None:
             create table if not exists sessions (
                 id text primary key,
                 title text not null,
-                message_count integer not null default 0
+                message_count integer not null default 0,
+                owner_id text not null default ''
+            )
+            """
+        )
+        _ensure_sqlite_column(connection, "sessions", "owner_id", "text not null default ''")
+        connection.execute(
+            """
+            create table if not exists users (
+                id text primary key,
+                username text not null unique,
+                password_hash text not null,
+                role text not null default 'user',
+                created_at text not null default current_timestamp
             )
             """
         )
@@ -189,11 +219,17 @@ def _initialize_sqlite_database() -> None:
                 source_type text not null,
                 content text not null,
                 status text not null default 'indexed',
+                vector_index_status text not null default 'pending',
+                vector_chunk_count integer not null default 0,
+                vector_indexed_at text,
                 created_at text not null default current_timestamp,
                 foreign key (knowledge_base_id) references knowledge_bases (id)
             )
             """
         )
+        _ensure_sqlite_column(connection, "knowledge_documents", "vector_index_status", "text not null default 'pending'")
+        _ensure_sqlite_column(connection, "knowledge_documents", "vector_chunk_count", "integer not null default 0")
+        _ensure_sqlite_column(connection, "knowledge_documents", "vector_indexed_at", "text")
         connection.execute(
             """
             create table if not exists knowledge_chunks (
@@ -293,6 +329,45 @@ def _initialize_sqlite_database() -> None:
             )
             """
         )
+        connection.execute(
+            """
+            create table if not exists conversation_memory_summaries (
+                id integer primary key autoincrement,
+                session_id text not null,
+                content text not null,
+                last_message_id integer not null,
+                updated_at text not null default current_timestamp,
+                expires_at text
+            )
+            """
+        )
+        connection.execute(
+            """
+            create table if not exists conversation_mid_memories (
+                id integer primary key autoincrement,
+                session_id text not null,
+                memory_type text not null default 'topic',
+                content text not null,
+                status text not null default 'active',
+                updated_at text not null default current_timestamp,
+                expires_at text
+            )
+            """
+        )
+        connection.execute(
+            """
+            create table if not exists conversation_long_memories (
+                id integer primary key autoincrement,
+                owner_type text not null default 'session',
+                owner_id text not null,
+                memory_type text not null default 'preference',
+                content text not null,
+                status text not null default 'active',
+                updated_at text not null default current_timestamp,
+                expires_at text
+            )
+            """
+        )
         _seed_demo_data(connection)
         connection.commit()
 
@@ -315,7 +390,25 @@ def _initialize_postgres_database() -> None:
                 create table if not exists sessions (
                     id text primary key,
                     title text not null,
-                    message_count integer not null default 0
+                    message_count integer not null default 0,
+                    owner_id text not null default ''
+                )
+                """
+            )
+            _ensure_postgres_column(
+                cursor,
+                "sessions",
+                "owner_id",
+                "text not null default ''",
+            )
+            cursor.execute(
+                """
+                create table if not exists users (
+                    id text primary key,
+                    username text not null unique,
+                    password_hash text not null,
+                    role text not null default 'user',
+                    created_at timestamptz not null default now()
                 )
                 """
             )
@@ -349,9 +442,30 @@ def _initialize_postgres_database() -> None:
                     source_type text not null,
                     content text not null,
                     status text not null default 'indexed',
+                    vector_index_status text not null default 'pending',
+                    vector_chunk_count integer not null default 0,
+                    vector_indexed_at timestamptz,
                     created_at timestamptz not null default now()
                 )
                 """
+            )
+            _ensure_postgres_column(
+                cursor,
+                "knowledge_documents",
+                "vector_index_status",
+                "text not null default 'pending'",
+            )
+            _ensure_postgres_column(
+                cursor,
+                "knowledge_documents",
+                "vector_chunk_count",
+                "integer not null default 0",
+            )
+            _ensure_postgres_column(
+                cursor,
+                "knowledge_documents",
+                "vector_indexed_at",
+                "timestamptz",
             )
             cursor.execute(
                 """
@@ -368,6 +482,24 @@ def _initialize_postgres_database() -> None:
                     created_at timestamptz not null default now()
                 )
                 """
+            )
+            _ensure_postgres_column(
+                cursor,
+                "knowledge_chunks",
+                "strategy",
+                "text not null default 'recursive'",
+            )
+            _ensure_postgres_column(
+                cursor,
+                "knowledge_chunks",
+                "document_type",
+                "text not null default 'manual'",
+            )
+            _ensure_postgres_column(
+                cursor,
+                "knowledge_chunks",
+                "metadata_json",
+                "jsonb not null default '{}'::jsonb",
             )
             cursor.execute(
                 """
@@ -441,6 +573,45 @@ def _initialize_postgres_database() -> None:
                 )
                 """
             )
+            cursor.execute(
+                """
+                create table if not exists conversation_memory_summaries (
+                    id bigint generated by default as identity primary key,
+                    session_id text not null references sessions(id) on delete cascade,
+                    content text not null,
+                    last_message_id bigint not null,
+                    updated_at timestamptz not null default now(),
+                    expires_at timestamptz
+                )
+                """
+            )
+            cursor.execute(
+                """
+                create table if not exists conversation_mid_memories (
+                    id bigint generated by default as identity primary key,
+                    session_id text not null references sessions(id) on delete cascade,
+                    memory_type text not null default 'topic',
+                    content text not null,
+                    status text not null default 'active',
+                    updated_at timestamptz not null default now(),
+                    expires_at timestamptz
+                )
+                """
+            )
+            cursor.execute(
+                """
+                create table if not exists conversation_long_memories (
+                    id bigint generated by default as identity primary key,
+                    owner_type text not null default 'session',
+                    owner_id text not null,
+                    memory_type text not null default 'preference',
+                    content text not null,
+                    status text not null default 'active',
+                    updated_at timestamptz not null default now(),
+                    expires_at timestamptz
+                )
+                """
+            )
             cursor.execute("create index if not exists idx_knowledge_documents_kb on knowledge_documents (knowledge_base_id)")
             cursor.execute("create index if not exists idx_knowledge_chunks_doc on knowledge_chunks (document_id, chunk_index)")
             cursor.execute("create index if not exists idx_structured_blocks_doc on knowledge_document_blocks (document_id, block_index)")
@@ -448,20 +619,37 @@ def _initialize_postgres_database() -> None:
             cursor.execute("create index if not exists idx_ingestion_tasks_doc on ingestion_tasks (document_id, created_at desc)")
             cursor.execute("create index if not exists idx_ingestion_task_nodes_task on ingestion_task_nodes (task_id, node_order)")
             cursor.execute("create index if not exists idx_conversation_messages_session on conversation_messages (session_id, id)")
+            cursor.execute("create index if not exists idx_conversation_memory_summaries_session on conversation_memory_summaries (session_id, id desc)")
+            cursor.execute("create index if not exists idx_conversation_mid_memories_session on conversation_mid_memories (session_id, id desc)")
+            cursor.execute("create index if not exists idx_conversation_long_memories_owner on conversation_long_memories (owner_type, owner_id, id desc)")
 
         _seed_demo_data(connection)
         connection.commit()
 
 
 def _seed_demo_data(connection: DatabaseConnection) -> None:
+    settings = get_settings()
+    user_count = connection.execute("select count(*) from users").fetchone()[0]
+    if user_count == 0:
+        connection.execute(
+            """
+            insert into users (id, username, password_hash, role)
+            values (?, ?, ?, ?)
+            """,
+            ("user-admin", "admin", _seed_password_hash("admin"), "admin"),
+        )
+
+    if not settings.seed_demo_content:
+        return
+
     session_count = connection.execute("select count(*) from sessions").fetchone()[0]
     if session_count == 0:
         connection.execute(
             """
-            insert into sessions (id, title, message_count)
-            values (?, ?, ?)
+            insert into sessions (id, title, message_count, owner_id)
+            values (?, ?, ?, ?)
             """,
-            ("session-demo-1", "RetriFlow migration planning", 6),
+            ("session-demo-1", "RetriFlow migration planning", 6, ""),
         )
 
     knowledge_count = connection.execute("select count(*) from knowledge_bases").fetchone()[0]
@@ -497,8 +685,18 @@ def _seed_demo_data(connection: DatabaseConnection) -> None:
     if document_count == 0:
         connection.execute(
             """
-            insert into knowledge_documents (id, knowledge_base_id, title, source_type, content, status)
-            values (?, ?, ?, ?, ?, ?)
+            insert into knowledge_documents (
+                id,
+                knowledge_base_id,
+                title,
+                source_type,
+                content,
+                status,
+                vector_index_status,
+                vector_chunk_count,
+                vector_indexed_at
+            )
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 1,
@@ -507,6 +705,9 @@ def _seed_demo_data(connection: DatabaseConnection) -> None:
                 "manual",
                 "RetriFlow migrates ragent capabilities into a Python and Vue stack.",
                 "indexed",
+                "indexed",
+                1,
+                "2026-06-09 10:00:00",
             ),
         )
 
@@ -586,6 +787,34 @@ def _ensure_sqlite_column(
     if column_name in existing_columns:
         return
     connection.execute(f"alter table {table_name} add column {column_name} {column_sql}")
+
+
+def _ensure_postgres_column(
+    cursor,
+    table_name: str,
+    column_name: str,
+    column_sql: str,
+) -> None:
+    cursor.execute(
+        """
+        select 1
+        from information_schema.columns
+        where table_schema = current_schema()
+          and table_name = %s
+          and column_name = %s
+        limit 1
+        """,
+        (table_name, column_name),
+    )
+    if cursor.fetchone() is not None:
+        return
+    cursor.execute(f"alter table {table_name} add column {column_name} {column_sql}")
+
+
+def _seed_password_hash(password: str) -> str:
+    salt = "retriflow-seed-salt"
+    digest = hashlib.sha256(f"{salt}:{password}".encode("utf-8")).hexdigest()
+    return f"{salt}${digest}"
 
 
 def _validated_identifier(identifier: str) -> str:

@@ -46,6 +46,9 @@ class RetriFlowEmbeddingService(Embeddings):
     def __init__(self) -> None:
         self.settings = get_settings()
         self.fallback_embeddings = DeterministicHashEmbeddings()
+        from domain.llm import RetriFlowLLMService
+
+        self.llm_service = RetriFlowLLMService()
 
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
         return self.embed_documents(texts)
@@ -76,12 +79,14 @@ class RetriFlowEmbeddingService(Embeddings):
         return result[0] if result else self.fallback_embeddings.embed_query(text)
 
     def _request_embeddings(self, provider: EmbeddingProviderConfig, inputs: list[str]) -> list[list[float]]:
-        headers = {
-            "Authorization": f"Bearer {provider.api_key}",
-            "Content-Type": "application/json",
-        }
+        headers = {"Content-Type": "application/json"}
+        if provider.api_key:
+            headers["Authorization"] = f"Bearer {provider.api_key}"
         payload = {
-            "model": self.settings.default_embedding_model,
+            "model": self.llm_service._resolve_model(
+                capability="embedding",
+                provider_name=provider.name,
+            ),
             "input": inputs,
         }
 
@@ -105,51 +110,11 @@ class RetriFlowEmbeddingService(Embeddings):
         return embeddings
 
     def _resolve_provider(self) -> EmbeddingProviderConfig | None:
-        if self.settings.llm_api_key and self.settings.llm_base_url:
-            return EmbeddingProviderConfig(
-                name=self.settings.llm_provider,
-                base_url=self.settings.llm_base_url,
-                api_key=self.settings.llm_api_key,
-            )
-
-        requested = self.settings.llm_provider.lower().strip()
-        providers = {
-            "bailian": EmbeddingProviderConfig(
-                name="bailian",
-                base_url=self.settings.dashscope_base_url,
-                api_key=self.settings.bailian_api_key,
-            ),
-            "aihubmix": EmbeddingProviderConfig(
-                name="aihubmix",
-                base_url=self.settings.aihubmix_base_url,
-                api_key=self.settings.aihubmix_api_key,
-            ),
-            "siliconflow": EmbeddingProviderConfig(
-                name="siliconflow",
-                base_url=self.settings.siliconflow_base_url,
-                api_key=self.settings.siliconflow_api_key,
-            ),
-            "deepseek": EmbeddingProviderConfig(
-                name="deepseek",
-                base_url=self.settings.deepseek_base_url,
-                api_key=self.settings.deepseek_api_key,
-            ),
-            "groq": EmbeddingProviderConfig(
-                name="groq",
-                base_url=self.settings.groq_base_url,
-                api_key=self.settings.groq_api_key,
-            ),
-        }
-
-        if requested and requested not in {"", "auto", "disabled"}:
-            provider = providers.get(requested)
-            if provider and provider.api_key and provider.base_url:
-                return provider
+        provider = self.llm_service._resolve_provider(capability="embedding")
+        if provider is None or provider.name == "disabled":
             return None
-
-        for provider_name in ("bailian", "siliconflow", "aihubmix", "deepseek", "groq"):
-            provider = providers[provider_name]
-            if provider.api_key and provider.base_url:
-                return provider
-
-        return None
+        return EmbeddingProviderConfig(
+            name=provider.name,
+            base_url=provider.base_url,
+            api_key=provider.api_key,
+        )

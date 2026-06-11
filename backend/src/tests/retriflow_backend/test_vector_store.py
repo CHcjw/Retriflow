@@ -77,6 +77,51 @@ class RetriFlowVectorStoreTests(unittest.TestCase):
         self.assertEqual(first_record.knowledge_base_id, "kb-demo-1")
         self.assertIn("RetriFlow should persist chunk vectors", first_record.content)
 
+    def test_knowledge_service_reindex_replaces_document_vectors(self) -> None:
+        from domain.knowledge import RetriFlowKnowledgeService
+        from schemas.knowledge import KnowledgeDocumentCreateRequest, KnowledgeDocumentReindexRequest
+
+        operation_log: list[tuple[str, object]] = []
+
+        class FakeVectorStore:
+            def upsert_chunk_records(self, records) -> None:
+                operation_log.append(("upsert", [record.chunk_id for record in records]))
+
+            def delete_document_records(self, document_id: int) -> None:
+                operation_log.append(("delete", document_id))
+
+            def similarity_search(self, query: str, k: int = 4):
+                return []
+
+        with patch("domain.knowledge.resolve_vector_store", return_value=FakeVectorStore()):
+            service = RetriFlowKnowledgeService()
+            created = service.create_document(
+                "kb-demo-1",
+                KnowledgeDocumentCreateRequest(
+                    title="Vector reindex target",
+                    source_type="manual",
+                    content=(
+                        "RetriFlow should remove stale vectors before writing the fresh chunk embeddings. "
+                        "This keeps hybrid retrieval aligned with the latest chunk strategy."
+                    ),
+                ),
+            )
+            operation_log.clear()
+            service.reindex_document(
+                "kb-demo-1",
+                created.id,
+                KnowledgeDocumentReindexRequest(
+                    chunk_strategy="fixed",
+                    chunk_size=48,
+                    chunk_overlap=8,
+                ),
+            )
+
+        self.assertGreaterEqual(len(operation_log), 2)
+        self.assertEqual(operation_log[0], ("delete", created.id))
+        self.assertEqual(operation_log[1][0], "upsert")
+        self.assertGreaterEqual(len(operation_log[1][1]), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3,18 +3,21 @@ import { computed, onMounted, ref, shallowRef, watch } from "vue";
 import {
   createKnowledgeBase,
   createKnowledgeDocument,
+  deleteKnowledgeBase,
   fetchIngestionTaskNodes,
   fetchIngestionTasks,
   fetchKnowledgeBases,
   fetchKnowledgeChunks,
   fetchKnowledgeDocuments,
   fetchMeta,
+  reindexKnowledgeDocument,
   uploadKnowledgeDocument
 } from "../services/api";
+import { useAuthStore } from "../stores/auth";
 
 const DEFAULT_CHUNK_SIZE = 600;
 const DEFAULT_CHUNK_OVERLAP = 120;
-const DEFAULT_RECURSIVE_SEPARATOR_TEXT = ["\\n\\n", "\\n", "。 ", "！ ", "？ ", ". ", "! ", "? ", "[space]"].join("\n");
+const DEFAULT_RECURSIVE_SEPARATOR_TEXT = ["\\n\\n", "\\n", "。", "！", "？", ". ", "! ", "? ", "[space]"].join("\n");
 
 const documentTypeOptions = [
   { value: "manual", label: "普通文本" },
@@ -38,12 +41,12 @@ const chunkStrategyOptions = [
 
 const autoStrategyRecommendations: Record<string, string> = {
   manual: "普通文本默认推荐递归分块，优先按段落和句子边界切分。",
-  knowledge_base: "知识库文档默认推荐递归分块，兼顾章节结构与上下文连续性。",
-  faq: "FAQ / 问答默认推荐递归分块，便于保留问题和答案的成对关系。",
-  contract: "合同 / 法律文本默认推荐 Embedding 语义分块，更适合条款语义聚合。",
-  log: "日志默认推荐固定大小分块，便于稳定切片和时间序列回溯。",
-  html: "HTML 页面默认推荐递归分块，优先保留段落与标题层级。",
-  ocr: "OCR 文本默认推荐重叠分块，用重叠窗口缓解识别噪声带来的断句问题。",
+  knowledge_base: "知识库文档默认推荐递归分块，兼顾章节结构和上下文连续性。",
+  faq: "FAQ 默认推荐递归分块，便于保留问题与答案的成对关系。",
+  contract: "合同 / 法律文本默认推荐 Embedding 语义分块，更适合按条款语义聚合。",
+  log: "日志默认推荐固定大小分块，便于稳定切片和时序检索。",
+  html: "HTML 页面默认推荐递归分块，优先保留标题层级和段落结构。",
+  ocr: "OCR 文本默认推荐重叠分块，用重叠窗口缓解识别噪声造成的断句问题。",
   mixed_knowledge: "混合企业知识默认推荐递归 + 语义混合分块，先按结构粗切，再做语义细切。"
 };
 
@@ -111,7 +114,8 @@ function createChunkingPresentation(
     return separators.length > 0 ? `${separators.length} 个分隔符` : "使用默认分隔符";
   });
   const chunkSummary = computed(
-    () => `chunk size ${chunkSize.value} / overlap ${chunkOverlap.value}（建议 overlap 约为 chunk size 的 10% - 25%）`
+    () =>
+      `chunk size ${chunkSize.value} / overlap ${chunkOverlap.value}，建议 overlap 约为 chunk size 的 10% - 25%。`
   );
 
   return {
@@ -125,12 +129,16 @@ function createChunkingPresentation(
 }
 
 export function useRetriFlowAdmin() {
+  const authStore = useAuthStore();
+
   const loading = shallowRef(true);
   const documentLoading = shallowRef(false);
   const chunkLoading = shallowRef(false);
   const taskNodeLoading = shallowRef(false);
   const uploadLoading = shallowRef(false);
+  const reindexLoading = shallowRef(false);
   const error = shallowRef("");
+  const infoMessage = shallowRef("");
 
   const meta = ref<Awaited<ReturnType<typeof fetchMeta>> | null>(null);
   const knowledgeBases = ref<Awaited<ReturnType<typeof fetchKnowledgeBases>>["items"]>([]);
@@ -156,6 +164,15 @@ export function useRetriFlowAdmin() {
   const uploadChunkOverlap = shallowRef(DEFAULT_CHUNK_OVERLAP);
   const uploadRecursiveSeparatorsText = shallowRef(DEFAULT_RECURSIVE_SEPARATOR_TEXT);
 
+  const isAdmin = computed(() => authStore.isAdmin);
+  const canManageKnowledge = computed(() => isAdmin.value);
+  const canViewIngestion = computed(() => isAdmin.value);
+  const readonlyNotice = computed(() =>
+    canManageKnowledge.value
+      ? ""
+      : "你当前处于只读模式：可以查看知识库、文档和分块内容，但不能新建知识库、上传文档、手动入库或查看 ingestion 日志。"
+  );
+
   const selectedKnowledgeBase = computed(() =>
     knowledgeBases.value.find((item) => item.id === selectedKnowledgeBaseId.value) ?? null
   );
@@ -163,10 +180,23 @@ export function useRetriFlowAdmin() {
     documents.value.find((item) => item.id === selectedDocumentId.value) ?? null
   );
   const canCreateDocument = computed(() =>
-    Boolean(selectedKnowledgeBaseId.value && documentTitle.value.trim() && documentContent.value.trim())
+    Boolean(
+      canManageKnowledge.value &&
+        selectedKnowledgeBaseId.value &&
+        documentTitle.value.trim() &&
+        documentContent.value.trim()
+    )
   );
   const relatedTask = computed(() =>
     ingestionTasks.value.find((item) => item.document_id === selectedDocumentId.value) ?? null
+  );
+  const canReindexDocument = computed(() =>
+    Boolean(
+      canManageKnowledge.value &&
+        selectedKnowledgeBaseId.value &&
+        selectedDocumentId.value !== null &&
+        !reindexLoading.value
+    )
   );
 
   const manualPresentation = createChunkingPresentation(
@@ -184,8 +214,12 @@ export function useRetriFlowAdmin() {
     uploadRecursiveSeparatorsText
   );
 
+  function denyManagementAction() {
+    error.value = "当前账号没有后台管理权限，请使用 admin 账号执行知识库维护操作。";
+  }
+
   const loadTaskNodes = async (taskId: number | null) => {
-    if (taskId === null) {
+    if (!canViewIngestion.value || taskId === null) {
       ingestionTaskNodes.value = [];
       return;
     }
@@ -248,14 +282,10 @@ export function useRetriFlowAdmin() {
     error.value = "";
 
     try {
-      const [metaData, knowledgeData, taskData] = await Promise.all([
-        fetchMeta(),
-        fetchKnowledgeBases(),
-        fetchIngestionTasks()
-      ]);
+      const [metaData, knowledgeData] = await Promise.all([fetchMeta(), fetchKnowledgeBases()]);
       meta.value = metaData;
       knowledgeBases.value = knowledgeData.items;
-      ingestionTasks.value = taskData.items;
+      ingestionTasks.value = canViewIngestion.value ? (await fetchIngestionTasks()).items : [];
 
       if (!selectedKnowledgeBaseId.value && knowledgeData.items.length > 0) {
         selectedKnowledgeBaseId.value = knowledgeData.items[0].id;
@@ -277,9 +307,38 @@ export function useRetriFlowAdmin() {
   };
 
   const addKnowledgeBase = async () => {
+    if (!canManageKnowledge.value) {
+      denyManagementAction();
+      return;
+    }
+
     const created = await createKnowledgeBase(`RetriFlow 知识库 ${knowledgeBases.value.length + 1}`);
     selectedKnowledgeBaseId.value = created.id;
+    infoMessage.value = "知识库已创建。";
     await load();
+  };
+
+  const removeKnowledgeBase = async (knowledgeBaseId: string) => {
+    if (!canManageKnowledge.value) {
+      denyManagementAction();
+      return;
+    }
+
+    await deleteKnowledgeBase(knowledgeBaseId);
+    infoMessage.value = "知识库已删除。";
+
+    if (selectedKnowledgeBaseId.value === knowledgeBaseId) {
+      selectedKnowledgeBaseId.value = "";
+      selectedDocumentId.value = null;
+      documents.value = [];
+      chunks.value = [];
+      ingestionTaskNodes.value = [];
+    }
+
+    await load();
+    if (!selectedKnowledgeBaseId.value) {
+      selectedKnowledgeBaseId.value = knowledgeBases.value[0]?.id ?? "";
+    }
   };
 
   const selectKnowledgeBase = (knowledgeBaseId: string) => {
@@ -291,6 +350,11 @@ export function useRetriFlowAdmin() {
   };
 
   const addDocument = async () => {
+    if (!canManageKnowledge.value) {
+      denyManagementAction();
+      return;
+    }
+
     if (!canCreateDocument.value) {
       return;
     }
@@ -310,16 +374,23 @@ export function useRetriFlowAdmin() {
 
     documentTitle.value = "";
     documentContent.value = "";
+    infoMessage.value = "文档已加入知识库。";
     await refreshKnowledgeData(created.id);
   };
 
   const uploadDocument = async (file: File | null) => {
+    if (!canManageKnowledge.value) {
+      denyManagementAction();
+      return;
+    }
+
     if (!file || !selectedKnowledgeBaseId.value) {
       return;
     }
 
     uploadLoading.value = true;
     error.value = "";
+    infoMessage.value = "";
     uploadFileName.value = file.name;
 
     try {
@@ -330,11 +401,43 @@ export function useRetriFlowAdmin() {
         chunkOverlap: uploadChunkOverlap.value,
         recursiveSeparators: parseRecursiveSeparatorsText(uploadRecursiveSeparatorsText.value)
       });
+      infoMessage.value = "上传文档已完成入库。";
       await refreshKnowledgeData(created.id);
     } catch (err) {
       error.value = err instanceof Error ? err.message : "上传文档失败";
     } finally {
       uploadLoading.value = false;
+    }
+  };
+
+  const reindexDocument = async () => {
+    if (!canManageKnowledge.value) {
+      denyManagementAction();
+      return;
+    }
+
+    if (!selectedKnowledgeBaseId.value || selectedDocumentId.value === null) {
+      return;
+    }
+
+    reindexLoading.value = true;
+    error.value = "";
+    infoMessage.value = "";
+
+    try {
+      const reindexed = await reindexKnowledgeDocument(selectedKnowledgeBaseId.value, selectedDocumentId.value, {
+        documentType: documentType.value,
+        chunkStrategy: chunkStrategy.value,
+        chunkSize: chunkSize.value,
+        chunkOverlap: chunkOverlap.value,
+        recursiveSeparators: parseRecursiveSeparatorsText(recursiveSeparatorsText.value)
+      });
+      infoMessage.value = `文档《${reindexed.title}》已完成重建索引。`;
+      await refreshKnowledgeData(reindexed.id);
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : "重建索引失败";
+    } finally {
+      reindexLoading.value = false;
     }
   };
 
@@ -391,7 +494,7 @@ export function useRetriFlowAdmin() {
   );
 
   watch(
-    [selectedKnowledgeBaseId, selectedDocumentId],
+    [selectedKnowledgeBaseId, selectedDocumentId, canViewIngestion],
     ([knowledgeBaseId, documentId]) => {
       void loadChunks(knowledgeBaseId, documentId);
       const task = ingestionTasks.value.find((item) => item.document_id === documentId) ?? null;
@@ -410,7 +513,9 @@ export function useRetriFlowAdmin() {
     chunkLoading,
     taskNodeLoading,
     uploadLoading,
+    reindexLoading,
     error,
+    infoMessage,
     meta,
     knowledgeBases,
     selectedKnowledgeBase,
@@ -421,6 +526,10 @@ export function useRetriFlowAdmin() {
     chunks,
     ingestionTaskNodes,
     relatedTask,
+    isAdmin,
+    canManageKnowledge,
+    canViewIngestion,
+    readonlyNotice,
     documentTitle,
     documentContent,
     documentType,
@@ -449,10 +558,13 @@ export function useRetriFlowAdmin() {
     manualRecursiveSeparatorSummary: manualPresentation.recursiveSeparatorSummary,
     uploadRecursiveSeparatorSummary: uploadPresentation.recursiveSeparatorSummary,
     canCreateDocument,
+    canReindexDocument,
     addKnowledgeBase,
+    removeKnowledgeBase,
     selectKnowledgeBase,
     selectDocument,
     addDocument,
-    uploadDocument
+    uploadDocument,
+    reindexDocument
   };
 }

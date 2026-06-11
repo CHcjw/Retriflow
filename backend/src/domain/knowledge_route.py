@@ -163,8 +163,14 @@ class RetriFlowKnowledgeRouteService:
 
         profiles: list[dict[str, Any]] = []
         for row in rows:
-            sample_questions = json.loads(row["sample_questions_json"] or "[]")
-            keywords = json.loads(row["keywords_json"] or "[]")
+            sample_questions = RetriFlowKnowledgeRouteService._parse_json_field(
+                row["sample_questions_json"],
+                default=[],
+            )
+            keywords = RetriFlowKnowledgeRouteService._parse_json_field(
+                row["keywords_json"],
+                default=[],
+            )
             profiles.append(
                 {
                     "id": str(row["id"]),
@@ -175,3 +181,16 @@ class RetriFlowKnowledgeRouteService:
                 }
             )
         return profiles
+
+    @staticmethod
+    def _parse_json_field(value: Any, *, default: Any) -> Any:
+        if value is None:
+            return default
+        if isinstance(value, (list, dict)):
+            return value
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return default
+            return json.loads(text)
+        return default

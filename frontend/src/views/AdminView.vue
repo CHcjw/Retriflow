@@ -9,7 +9,9 @@ const {
   chunkLoading,
   taskNodeLoading,
   uploadLoading,
+  reindexLoading,
   error,
+  infoMessage,
   meta,
   knowledgeBases,
   selectedKnowledgeBase,
@@ -20,6 +22,10 @@ const {
   chunks,
   ingestionTaskNodes,
   relatedTask,
+  isAdmin,
+  canManageKnowledge,
+  canViewIngestion,
+  readonlyNotice,
   documentTitle,
   documentContent,
   documentType,
@@ -48,11 +54,14 @@ const {
   manualRecursiveSeparatorSummary,
   uploadRecursiveSeparatorSummary,
   canCreateDocument,
+  canReindexDocument,
   addKnowledgeBase,
+  removeKnowledgeBase,
   selectKnowledgeBase,
   selectDocument,
   addDocument,
-  uploadDocument
+  uploadDocument,
+  reindexDocument
 } = useRetriFlowAdmin();
 
 const uploadAccept =
@@ -68,7 +77,7 @@ const chunkPreviewMap = computed(() => {
         chunk.strategy ? `策略: ${chunk.strategy}` : null
       ]
         .filter(Boolean)
-        .join(" · ");
+        .join(" / ");
 
       return [chunk.id, summary];
     })
@@ -92,27 +101,69 @@ const onFileChange = async (event: Event) => {
 
     <div class="toolbar-row">
       <p v-if="meta" class="hero-copy">
-        当前后台已接入 {{ meta.name }} 的知识库、文档、分块结果、ingestion tasks 和 pipeline node logs。
+        当前后台已接入 {{ meta.name }} 的知识库、文档、分块结构，以及管理员可见的 ingestion 任务与节点日志。
       </p>
-      <button type="button" class="secondary-button" @click="addKnowledgeBase">新增知识库</button>
+      <button v-if="canManageKnowledge" type="button" class="secondary-button" @click="addKnowledgeBase">
+        新增知识库
+      </button>
     </div>
 
+    <div v-if="meta" class="feature-grid">
+      <article class="feature-card">
+        <h3>配置后端</h3>
+        <p>{{ meta.database_backend }}</p>
+      </article>
+      <article class="feature-card">
+        <h3>实际后端</h3>
+        <p>{{ meta.runtime_database_backend }}</p>
+      </article>
+      <article class="feature-card">
+        <h3>Schema</h3>
+        <p>{{ meta.database_schema }}</p>
+      </article>
+      <article class="feature-card">
+        <h3>知识库数量</h3>
+        <p>{{ knowledgeBases.length }}</p>
+      </article>
+    </div>
+
+    <div v-if="readonlyNotice" class="info-card">
+      <strong>{{ isAdmin ? "管理员模式" : "只读模式" }}</strong>
+      <p>{{ readonlyNotice }}</p>
+    </div>
+
+    <p v-if="infoMessage" class="status-copy">{{ infoMessage }}</p>
     <p v-if="loading" class="status-copy">正在加载后台数据...</p>
     <p v-else-if="error" class="status-copy error-copy">{{ error }}</p>
 
     <div class="admin-grid">
-      <button
+      <article
         v-for="knowledgeBase in knowledgeBases"
         :key="knowledgeBase.id"
-        type="button"
-        class="admin-card admin-card-button"
+        class="admin-card"
         :class="{ active: knowledgeBase.id === selectedKnowledgeBaseId }"
-        @click="selectKnowledgeBase(knowledgeBase.id)"
       >
-        <span class="card-title">{{ knowledgeBase.name }}</span>
-        <span>产品：{{ knowledgeBase.product }}</span>
-        <span>文档数：{{ knowledgeBase.document_count }}</span>
-      </button>
+        <div class="pane-title-row">
+          <span class="card-title">{{ knowledgeBase.name }}</span>
+          <button
+            v-if="canManageKnowledge"
+            type="button"
+            class="secondary-button compact-button danger-button"
+            @click.stop="removeKnowledgeBase(knowledgeBase.id)"
+          >
+            删除
+          </button>
+        </div>
+        <button
+          type="button"
+          class="admin-card-button"
+          :class="{ active: knowledgeBase.id === selectedKnowledgeBaseId }"
+          @click="selectKnowledgeBase(knowledgeBase.id)"
+        >
+          <span>产品：{{ knowledgeBase.product }}</span>
+          <span>文档数：{{ knowledgeBase.document_count }}</span>
+        </button>
+      </article>
     </div>
 
     <section v-if="selectedKnowledgeBase" class="document-panel">
@@ -124,7 +175,7 @@ const onFileChange = async (event: Event) => {
         <p class="status-copy">当前 {{ documents.length }} 篇</p>
       </div>
 
-      <form class="document-form" @submit.prevent="addDocument">
+      <form v-if="canManageKnowledge" class="document-form" @submit.prevent="addDocument">
         <input v-model="documentTitle" type="text" placeholder="文档标题" aria-label="文档标题" />
 
         <div class="form-grid">
@@ -179,7 +230,7 @@ const onFileChange = async (event: Event) => {
         </div>
 
         <p v-if="manualShowChunkSizeControls" class="field-hint">
-          {{ manualChunkSummary }}。默认值为 `600 / 120`，适合大多数 200 - 1000 字符范围的分块。
+          {{ manualChunkSummary }} 默认值为 `600 / 120`，适合大多数 `200 - 1000` 字符范围的分块。
         </p>
 
         <div v-if="manualShowRecursiveSeparatorControls" class="field-stack">
@@ -188,7 +239,7 @@ const onFileChange = async (event: Event) => {
             v-model="recursiveSeparatorsText"
             class="compact-textarea"
             aria-label="递归分隔符列表"
-            placeholder="每行一个分隔符，例如：\n\n、\n、[space]"
+            placeholder="每行一个分隔符，例如：\n\n\n\n\n[space]"
           ></textarea>
           <p class="field-hint">
             当前使用：{{ manualRecursiveSeparatorSummary }}。支持输入 `\n\n`、`\n`、`[space]`、`[tab]` 或任意自定义分隔符。
@@ -205,10 +256,21 @@ const onFileChange = async (event: Event) => {
           placeholder="粘贴文档内容，保存后会自动经过 normalize、segment、chunk、index 四个阶段"
           aria-label="文档内容"
         ></textarea>
-        <button type="submit" :disabled="!canCreateDocument">加入知识库</button>
+
+        <div class="inline-actions">
+          <button type="submit" :disabled="!canCreateDocument">加入知识库</button>
+          <button
+            type="button"
+            class="secondary-button"
+            :disabled="!canReindexDocument"
+            @click="reindexDocument"
+          >
+            {{ reindexLoading ? "重建中..." : "对当前文档重建索引" }}
+          </button>
+        </div>
       </form>
 
-      <div class="upload-panel">
+      <div v-if="canManageKnowledge" class="upload-panel">
         <div class="pane-title-row">
           <div>
             <p class="eyebrow">Upload</p>
@@ -268,7 +330,7 @@ const onFileChange = async (event: Event) => {
         </div>
 
         <p v-if="uploadShowChunkSizeControls" class="field-hint">
-          {{ uploadChunkSummary }}。上传文档将沿用你当前选择的文档类型和分块策略。
+          {{ uploadChunkSummary }} 上传文档将沿用你当前选择的文档类型和分块策略。
         </p>
 
         <div v-if="uploadShowRecursiveSeparatorControls" class="field-stack">
@@ -277,7 +339,7 @@ const onFileChange = async (event: Event) => {
             v-model="uploadRecursiveSeparatorsText"
             class="compact-textarea"
             aria-label="上传递归分隔符列表"
-            placeholder="每行一个分隔符，例如：\n\n、\n、[space]"
+            placeholder="每行一个分隔符，例如：\n\n\n\n\n[space]"
           ></textarea>
           <p class="field-hint">
             当前使用：{{ uploadRecursiveSeparatorSummary }}。这组配置会连同上传任务一起发送给后端。
@@ -319,6 +381,8 @@ const onFileChange = async (event: Event) => {
             <span class="status-badge">{{ document.status }}</span>
           </div>
           <p>来源：{{ document.source_type }}</p>
+          <p>向量索引：{{ document.vector_index_status }} / {{ document.vector_chunk_count }} chunks</p>
+          <p>索引时间：{{ document.vector_indexed_at || "未建立" }}</p>
           <p>创建时间：{{ document.created_at }}</p>
         </button>
       </div>
@@ -329,8 +393,8 @@ const onFileChange = async (event: Event) => {
             <p class="eyebrow">Chunks</p>
             <h3>{{ selectedDocument.title }} 的分块结果</h3>
           </div>
-          <span v-if="relatedTask" class="status-copy">
-            task #{{ relatedTask.id }} · {{ relatedTask.status }} · {{ relatedTask.chunk_count }} chunks
+          <span v-if="relatedTask && canViewIngestion" class="status-copy">
+            task #{{ relatedTask.id }} / {{ relatedTask.status }} / {{ relatedTask.chunk_count }} chunks
           </span>
         </div>
 
@@ -346,7 +410,7 @@ const onFileChange = async (event: Event) => {
             </div>
             <p class="chunk-meta">
               文档类型：{{ chunk.document_type }}
-              <span v-if="chunkPreviewMap.get(chunk.id)"> · {{ chunkPreviewMap.get(chunk.id) }} </span>
+              <span v-if="chunkPreviewMap.get(chunk.id)"> / {{ chunkPreviewMap.get(chunk.id) }} </span>
             </p>
             <p>{{ chunk.content }}</p>
           </article>
@@ -356,21 +420,28 @@ const onFileChange = async (event: Event) => {
           <div class="pane-title-row">
             <div>
               <p class="eyebrow">Pipeline</p>
-              <h3>默认 ingestion 节点日志</h3>
+              <h3>Ingestion 节点日志</h3>
             </div>
           </div>
 
-          <p v-if="taskNodeLoading" class="status-copy">正在加载节点日志...</p>
-          <div v-else class="document-list">
-            <article v-for="node in ingestionTaskNodes" :key="node.id" class="message-card">
-              <div class="pane-title-row">
-                <strong>{{ node.node_order }}. {{ node.node_type }}</strong>
-                <span class="status-badge">{{ node.success ? "success" : "failed" }}</span>
-              </div>
-              <p>{{ node.message }}</p>
-              <p>{{ node.duration_ms }} ms</p>
-            </article>
+          <div v-if="!canViewIngestion" class="info-card">
+            <strong>管理员可见</strong>
+            <p>ingestion 任务和节点日志仅对 admin 开放，普通用户可查看文档与分块结果。</p>
           </div>
+
+          <template v-else>
+            <p v-if="taskNodeLoading" class="status-copy">正在加载节点日志...</p>
+            <div v-else class="document-list">
+              <article v-for="node in ingestionTaskNodes" :key="node.id" class="message-card">
+                <div class="pane-title-row">
+                  <strong>{{ node.node_order }}. {{ node.node_type }}</strong>
+                  <span class="status-badge">{{ node.success ? "success" : "failed" }}</span>
+                </div>
+                <p>{{ node.message }}</p>
+                <p>{{ node.duration_ms }} ms</p>
+              </article>
+            </div>
+          </template>
         </section>
       </section>
     </section>

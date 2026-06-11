@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
+from api.deps.auth import CurrentUser
 from domain.chat import RetriFlowChatService
 from domain.streaming import RetriFlowStreamingService
 from schemas.chat import (
@@ -27,14 +28,14 @@ def get_chat_bootstrap() -> ChatBootstrapResponse:
 
 
 @router.post("/messages", response_model=ChatMessageWithSourcesResponse)
-def send_chat_message(request: ChatMessageRequest) -> ChatMessageWithSourcesResponse:
-    return _chat_service().send_message(request)
+def send_chat_message(request: ChatMessageRequest, user: CurrentUser) -> ChatMessageWithSourcesResponse:
+    return _chat_service().send_message(request, user.id)
 
 
 @router.post("/stream")
-def stream_chat_message(request: ChatMessageRequest) -> StreamingResponse:
+def stream_chat_message(request: ChatMessageRequest, user: CurrentUser) -> StreamingResponse:
     return StreamingResponse(
-        _streaming_service().stream_events(request),
+        _streaming_service().build_event_stream(request, user.id),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )

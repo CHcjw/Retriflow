@@ -1,16 +1,27 @@
 -- RetriFlow PostgreSQL seed data
--- Reference style: ragent/resources/database/init_data_pg.sql
---
 -- Usage:
 -- 1. Run tools/postgres/schema_pg.sql first.
 -- 2. Then run this file to insert demo seed data.
 
 -- ============================================
+-- Seed User
+-- ============================================
+
+INSERT INTO users (id, username, password_hash, role)
+VALUES (
+    'user-admin',
+    'admin',
+    'retriflow-seed-salt$8078289143f985c2ba21842d4eea08f4abf0f6ad8a191f3d67fae9bb7789b1ac',
+    'admin'
+)
+ON CONFLICT (id) DO NOTHING;
+
+-- ============================================
 -- Seed Sessions
 -- ============================================
 
-INSERT INTO sessions (id, title, message_count)
-VALUES ('session-demo-1', 'RetriFlow migration planning', 6)
+INSERT INTO sessions (id, title, message_count, owner_id)
+VALUES ('session-demo-1', 'RetriFlow migration planning', 6, '')
 ON CONFLICT (id) DO NOTHING;
 
 -- ============================================
@@ -21,18 +32,45 @@ INSERT INTO knowledge_bases (id, name, product, document_count)
 VALUES ('kb-demo-1', 'RetriFlow product knowledge base', 'RetriFlow', 1)
 ON CONFLICT (id) DO NOTHING;
 
+INSERT INTO knowledge_base_route_profiles (
+    knowledge_base_id,
+    profile_text,
+    sample_questions_json,
+    keywords_json
+)
+VALUES (
+    'kb-demo-1',
+    'RetriFlow product knowledge base migration python vue rag langgraph langchain',
+    '["RetriFlow 是什么？", "RetriFlow 的迁移目标是什么？"]'::jsonb,
+    '["retriflow", "langgraph", "langchain", "migration", "rag"]'::jsonb
+)
+ON CONFLICT (knowledge_base_id) DO NOTHING;
+
 -- ============================================
 -- Seed Knowledge Document
 -- ============================================
 
-INSERT INTO knowledge_documents (id, knowledge_base_id, title, source_type, content, status)
+INSERT INTO knowledge_documents (
+    id,
+    knowledge_base_id,
+    title,
+    source_type,
+    content,
+    status,
+    vector_index_status,
+    vector_chunk_count,
+    vector_indexed_at
+)
 VALUES (
     1,
     'kb-demo-1',
     'RetriFlow migration baseline',
     'manual',
     'RetriFlow migrates ragent capabilities into a Python and Vue stack.',
-    'indexed'
+    'indexed',
+    'indexed',
+    1,
+    '2026-06-09 10:00:00+08'
 )
 ON CONFLICT (id) DO NOTHING;
 

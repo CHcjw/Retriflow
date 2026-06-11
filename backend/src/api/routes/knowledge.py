@@ -2,6 +2,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, File, Form, UploadFile, status
 
+from api.deps.auth import AdminUser, CurrentUser
 from domain.knowledge import RetriFlowKnowledgeService
 from schemas.knowledge import (
     KnowledgeBaseCreateRequest,
@@ -11,6 +12,7 @@ from schemas.knowledge import (
     KnowledgeDocumentCreateRequest,
     KnowledgeDocumentItem,
     KnowledgeDocumentListResponse,
+    KnowledgeDocumentReindexRequest,
     KnowledgeDocumentStructuredBlockListResponse,
     KnowledgeSampleImportResponse,
 )
@@ -32,17 +34,22 @@ def _parse_recursive_separators_text(value: str | None) -> list[str] | None:
 
 
 @router.get("", response_model=KnowledgeBaseListResponse)
-def list_knowledge_bases() -> KnowledgeBaseListResponse:
+def list_knowledge_bases(user: CurrentUser) -> KnowledgeBaseListResponse:
     return _service().list_knowledge_bases()
 
 
 @router.post("", response_model=KnowledgeBaseItem, status_code=status.HTTP_201_CREATED)
-def create_knowledge_base(request: KnowledgeBaseCreateRequest) -> KnowledgeBaseItem:
+def create_knowledge_base(request: KnowledgeBaseCreateRequest, user: AdminUser) -> KnowledgeBaseItem:
     return _service().create_knowledge_base(request)
 
 
+@router.delete("/{knowledge_base_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_knowledge_base(knowledge_base_id: str, user: AdminUser) -> None:
+    _service().delete_knowledge_base(knowledge_base_id)
+
+
 @router.get("/{knowledge_base_id}/documents", response_model=KnowledgeDocumentListResponse)
-def list_documents(knowledge_base_id: str) -> KnowledgeDocumentListResponse:
+def list_documents(knowledge_base_id: str, user: CurrentUser) -> KnowledgeDocumentListResponse:
     return _service().list_documents(knowledge_base_id)
 
 
@@ -54,8 +61,22 @@ def list_documents(knowledge_base_id: str) -> KnowledgeDocumentListResponse:
 def create_document(
     knowledge_base_id: str,
     request: KnowledgeDocumentCreateRequest,
+    user: AdminUser,
 ) -> KnowledgeDocumentItem:
     return _service().create_document(knowledge_base_id, request)
+
+
+@router.post(
+    "/{knowledge_base_id}/documents/{document_id}/reindex",
+    response_model=KnowledgeDocumentItem,
+)
+def reindex_document(
+    knowledge_base_id: str,
+    document_id: int,
+    request: KnowledgeDocumentReindexRequest,
+    user: AdminUser,
+) -> KnowledgeDocumentItem:
+    return _service().reindex_document(knowledge_base_id, document_id, request)
 
 
 @router.post(
@@ -65,6 +86,7 @@ def create_document(
 )
 async def upload_document(
     knowledge_base_id: str,
+    user: AdminUser,
     file: UploadFile = File(...),
     document_type: Annotated[str, Form()] = "knowledge_base",
     chunk_strategy: Annotated[str, Form()] = "auto",
@@ -91,7 +113,7 @@ async def upload_document(
     response_model=KnowledgeSampleImportResponse,
     status_code=status.HTTP_201_CREATED,
 )
-def import_sample_documents(knowledge_base_id: str) -> KnowledgeSampleImportResponse:
+def import_sample_documents(knowledge_base_id: str, user: AdminUser) -> KnowledgeSampleImportResponse:
     imported_count = _service().import_sample_directory(knowledge_base_id)
     return KnowledgeSampleImportResponse(imported_count=imported_count)
 
@@ -100,7 +122,11 @@ def import_sample_documents(knowledge_base_id: str) -> KnowledgeSampleImportResp
     "/{knowledge_base_id}/documents/{document_id}/chunks",
     response_model=KnowledgeChunkListResponse,
 )
-def list_document_chunks(knowledge_base_id: str, document_id: int) -> KnowledgeChunkListResponse:
+def list_document_chunks(
+    knowledge_base_id: str,
+    document_id: int,
+    user: CurrentUser,
+) -> KnowledgeChunkListResponse:
     return _service().list_document_chunks(knowledge_base_id, document_id)
 
 
@@ -111,5 +137,6 @@ def list_document_chunks(knowledge_base_id: str, document_id: int) -> KnowledgeC
 def list_document_structured_blocks(
     knowledge_base_id: str,
     document_id: int,
+    user: CurrentUser,
 ) -> KnowledgeDocumentStructuredBlockListResponse:
     return _service().list_document_structured_blocks(knowledge_base_id, document_id)

@@ -20,6 +20,7 @@ class RetriFlowPersistenceApiTests(unittest.TestCase):
         self.db_path = Path(self.temp_dir.name) / f"retriflow-{uuid.uuid4().hex}.db"
         os.environ["RETRIFLOW_DATABASE_BACKEND"] = "sqlite"
         os.environ["RETRIFLOW_DB_PATH"] = str(self.db_path)
+        os.environ["RETRIFLOW_LLM_PROVIDER"] = "disabled"
 
         from core.config import get_settings
 
@@ -27,11 +28,18 @@ class RetriFlowPersistenceApiTests(unittest.TestCase):
         from main import create_app
 
         self.client = TestClient(create_app())
+        login_response = self.client.post(
+            "/api/v1/auth/login",
+            json={"username": "admin", "password": "admin"},
+        )
+        self.token = login_response.json()["access_token"]
+        self.client.headers.update({"Authorization": f"Bearer {self.token}"})
 
     def tearDown(self) -> None:
         self.client.close()
         os.environ.pop("RETRIFLOW_DATABASE_BACKEND", None)
         os.environ.pop("RETRIFLOW_DB_PATH", None)
+        os.environ.pop("RETRIFLOW_LLM_PROVIDER", None)
         from core.config import get_settings
 
         get_settings.cache_clear()

@@ -9,6 +9,7 @@
 - Vite
 - Vue Router
 - Axios
+- Pinia
 
 ### 后端
 
@@ -21,11 +22,17 @@
 - httpx
 - psycopg
 
+### 认证
+
+- 本地用户表
+- Bearer Token
+- 请求级当前用户上下文
+
 ### 数据库与存储
 
 - PostgreSQL
   - 业务主库
-  - 存储会话、消息、知识库、文档、chunks、structured blocks、ingestion tasks
+  - 存储会话、消息、知识库、文档、chunk、structured blocks、ingestion tasks
 - pgvector
   - 与 PostgreSQL 同库部署
   - 存储 `retriflow_chunk_vectors`
@@ -57,34 +64,47 @@ RetriFlow/
 `-- docker-compose.services.yml
 ```
 
-### 核心后端模块
+### 后端模块划分
 
 - `backend/src/main.py`
   - 应用工厂入口
-  - 使用 `create_app()` 启动，避免导入阶段提前初始化
 - `backend/src/core/config.py`
-  - 统一读取模型、数据库、Tika、OCR、LangSmith 配置
+  - 统一读取模型、数据库、Tika、OCR、LangSmith、MCP、记忆相关配置
 - `backend/src/core/state.py`
-  - 数据库连接抽象
-  - PostgreSQL / SQLite 初始化
+  - PostgreSQL / SQLite 连接与表初始化
 - `backend/src/domain/document_parser.py`
-  - Tika 解析、结构化提取、文本 fallback
+  - Tika 解析
+  - MIME / 文本提取
+  - 结构化内容提取与标准化清洗
 - `backend/src/domain/ingestion.py`
-  - 清洗、分块、后处理
+  - 入库工作流
+  - 文档标准化、分块、后处理、入库
 - `backend/src/domain/vector_store.py`
   - pgvector 持久化与向量检索
 - `backend/src/domain/retrieval.py`
-  - 混合检索主链路
+  - BM25、向量、RRF、rerank 主链路
 - `backend/src/domain/reranker.py`
-  - rerank 服务封装
+  - reranker 服务封装
 - `backend/src/domain/knowledge_route.py`
-  - 首页直聊知识库意图路由
+  - 首页直聊的知识库路由
+- `backend/src/domain/intent_classifier.py`
+  - 四类意图识别
+  - 规则 + LLM 混合分类
+- `backend/src/domain/query_rewrite.py`
+  - 查询重写与多意图拆分
+- `backend/src/domain/memory.py`
+  - 短期 / 中期 / 长期记忆
+  - 已支持 TTL、Prompt 注入上限、基于 query 的相关性注入
+- `backend/src/domain/mcp/`
+  - MCP 工具注册、参数提取、执行编排
 - `backend/src/domain/llm.py`
-  - 三段式 Prompt 与 LLM 调用
+  - 三段式 Prompt 组装
+  - 记忆注入
+  - LLM 调用与摘要生成
 - `backend/src/domain/answer_postprocessor.py`
-  - 引用、来源、冲突提示、安全过滤
+  - 引用、来源、冲突提示、安全过滤、格式化
 - `backend/src/domain/workflow_adapter.py`
-  - Fallback / LangGraph 工作流适配
+  - LangGraph 风格工作流适配
 
 ## 数据模型
 
@@ -95,6 +115,15 @@ RetriFlow/
 - `id`
 - `title`
 - `message_count`
+- `owner_id`
+
+#### `users`
+
+- `id`
+- `username`
+- `password_hash`
+- `role`
+- `created_at`
 
 #### `conversation_messages`
 
@@ -103,6 +132,50 @@ RetriFlow/
 - `role`
 - `content`
 - `created_at`
+
+#### `conversation_memory_summaries`
+
+- `id`
+- `session_id`
+- `content`
+- `last_message_id`
+- `updated_at`
+- `expires_at`
+
+用途：
+
+- 保存短期记忆摘要
+- 记录摘要已覆盖到哪一条消息
+- 支持 TTL 过期清理
+
+#### `conversation_mid_memories`
+
+- `id`
+- `session_id`
+- `memory_type`
+- `content`
+- `status`
+- `updated_at`
+- `expires_at`
+
+用途：
+
+- 保存中期记忆，如阶段目标、约束、已解决事项、待确认事项
+
+#### `conversation_long_memories`
+
+- `id`
+- `owner_type`
+- `owner_id`
+- `memory_type`
+- `content`
+- `status`
+- `updated_at`
+- `expires_at`
+
+用途：
+
+- 保存长期记忆，如用户偏好、稳定约束、身份画像、稳定事实
 
 #### `knowledge_bases`
 
@@ -127,6 +200,9 @@ RetriFlow/
 - `source_type`
 - `content`
 - `status`
+- `vector_index_status`
+- `vector_chunk_count`
+- `vector_indexed_at`
 - `created_at`
 
 #### `knowledge_chunks`
@@ -208,105 +284,168 @@ RetriFlow/
 
 ## 关键技术点
 
-### 1. 首页直接聊天 + 知识库意图路由
+### 0. 登录认证
+
+- 参考 `ragent` 的“登录后有当前用户上下文”的思路
+- RetriFlow 当前采用轻量 Bearer Token 方案
+- 已支持：
+  - `/api/v1/auth/register`
+  - `/api/v1/auth/login`
+  - `/api/v1/auth/me`
+- 前端已支持：
+  - `/login` 登录/注册切换页
+  - `frontend/src/stores/auth.ts` 统一管理登录态
+  - `frontend/src/services/api.ts` 自动注入 Bearer Token
+  - 401 响应触发前端自动清理登录态并跳转登录页
+  - `frontend/src/router/index.ts` 通过 `meta.requiresAuth` 守卫聊天页和后台页
+  - `frontend/src/composables/useRetriFlowAdmin.ts` 根据角色切换管理员模式与只读模式
+  - `frontend/src/views/AdminView.vue` 对非 `admin` 明确展示只读提示并隐藏管理操作
+  - `admin` 可在后台页直接调用文档 reindex，并查看 `vector_index_status / vector_chunk_count / vector_indexed_at`
+- 当前受保护接口：
+  - `sessions`
+  - `chat`
+- 当前后台权限细分：
+  - `knowledge-bases` 读取接口需要登录
+  - `knowledge-bases` 写入、上传、reindex、样例导入需要 `admin`
+  - `ingestion/tasks` 与 `ingestion/tasks/{id}/nodes` 需要 `admin`
+- 会话创建默认绑定当前登录用户
+- 默认调试账号：
+  - `admin / admin`
+
+### 1. 首页直聊 + 知识库路由
 
 - 用户先提问，不强制先选知识库
-- 路由服务先分析问题与知识库画像
-- 知识库画像持久化到 `knowledge_base_route_profiles`
-- 高置信度时限定到命中的知识库检索
+- 先做意图识别，再做知识库路由，再决定检索或工具调用
+- 高置信度时走限定知识库召回
 - 低置信度时回退到全局检索
-- 可选启用 LLM 路由，失败时自动退回本地画像匹配
 
-### 2. 混合检索主链路
+### 2. 四类意图识别
 
-当前实现已经切换为标准链路：
+- 类型
+  - `knowledge_retrieval`
+  - `tool_call`
+  - `chitchat`
+  - `clarification`
+- 顺序
+  - `memory -> intent -> rewrite -> route/retrieve`
+- 实现
+  - 规则快速过滤
+  - LLM 精分类
+- 当前模型选择
+  - 默认 `intent_provider=ollama`
+  - 通过 `RetriFlowLLMService.extract_json_object(..., capability="intent")` 调用
+  - 若本地 Ollama 可用，默认走 `RETRIFLOW_OLLAMA_CHAT_MODEL`
+  - 若关闭或不可用，则回退为规则 / fallback
 
-1. BM25 检索 Top80
-2. 纯向量检索 Top80
-3. RRF 融合 Top50
-4. rerank Top10
-5. 最终返回 Top5
+### 3. 查询重写
 
-当前 `workflow.retrieval_channels` 返回：
+- 在记忆之后、检索之前执行
+- 支持指代消解、上下文补全、口语转正式、多意图拆分
+- 输出严格 JSON
+- 失败自动回退原始问题
 
-- `bm25`
-- `semantic`
-- `hybrid_rrf`
-- `rerank`
+### 4. 混合检索主链路
 
-### 3. 向量检索范围过滤
+标准链路：
 
-- BM25 与向量检索都支持 `knowledge_base_ids` 范围过滤
-- 便于首页聊天先路由、后限定召回
+1. Query Rewrite / 多子查询
+2. BM25 Top80
+3. 向量 Top80
+4. RRF Top50
+5. rerank Top10
+6. final Top5
 
-### 4. rerank 服务设计
+当前工作流返回：
 
-- 优先使用 OpenAI-compatible API 的 `/rerank`
-- 使用配置中的 `default_rerank_model`
-- 当 rerank 服务不可用时，回退到本地轻量排序逻辑
+- `workflow.retrieval_channels`
+- `workflow.retrieval_stage_counts`
+- `workflow.rewritten_queries`
 
-### 5. 生成答案链路
+### 5. 会话记忆架构
 
-- 使用三段式 Prompt
+#### 短期记忆
+
+- 采用“摘要 + 最近 N 轮”混合策略
+- 摘要表支持 TTL
+- 历史消息不直接删除
+
+#### 中期记忆第二版
+
+- 提取类型
+  - `goal`
+  - `constraint`
+  - `resolved_item`
+  - `open_item`
+- 已支持
+  - 独立 TTL
+  - 去重
+  - 数量裁剪
+  - Prompt 注入上限
+  - 基于 query 的相关性排序注入
+- 仍待增强
+  - 冲突合并
+  - 状态流转
+  - 重要性评分
+
+#### 长期记忆第二版
+
+- 提取类型
+  - `preference`
+  - `constraint`
+  - `profile`
+  - `stable_fact`
+- 已支持
+  - 独立 TTL
+  - 去重
+  - 数量裁剪
+  - Prompt 注入上限
+  - 基于 query 的相关性排序注入
+- 会优先基于 `sessions.owner_id` 挂到 `user` owner
+- 若 session 未绑定 owner，则回退到 `session` owner
+- 同一 owner 下新增同类型长期记忆时，会将旧 active 记录置为 inactive
+- 仍待增强
+  - 冲突合并
+  - 生命周期治理
+
+### 6. 文档解析与结构化提取
+
+- 使用 Apache Tika 解析常见文档
+- 支持 PDF、DOC、DOCX、Markdown、表格类文档
+- 提取标题、正文、表格、图片说明、页码
+- 表格保留 header / row / col 关系
+- 使用 Pydantic 做关键字段 schema 校验
+
+### 7. 文档重建索引
+
+支持：
+
+- 按新的分块策略重新切 chunk
+- 删除旧向量后重写入
+- 保留 ingestion task 审计记录
+- 刷新 `vector_index_status / vector_chunk_count / vector_indexed_at`
+
+### 8. MCP 设计
+
+- 采用程序控制的 MCP 调用模式
+- 支持内置工具与远程 MCP Server
+- 支持单轮命中多个工具
+- 支持串行 / 并行执行
+- 支持 `fail_fast`
+
+### 9. 答案生成
+
+- 三段式 Prompt
   - System Prompt
   - Retrieved Context
   - User Query
-- 生成温度固定为 `0.1`
-- 后处理负责：
-  - 自动补引用
-  - 自动追加 `## 参考来源`
-  - 冲突提示
-  - 基础安全过滤
-- 流式问答结束后会生成最终版答案并落库，而不是只保存原始分片
+- 低 temperature 抑制幻觉
+- 答案后处理补齐引用与来源
 
-### 6. 流式聊天容错
+## 当前实现补充
 
-- LangGraph 流式生成过程中，如果模型流在迭代阶段抛错，系统会自动降级为 fallback 文本
-- SSE 输出包含：
-  - `workflow`
-  - `sources`
-  - `delta`
-  - `final`
-  - `done`
-
-### 7. 应用启动方式
-
-- `backend/src/main.py` 采用工厂模式启动
-- CLI 启动方式：
-
-```powershell
-& .\.venv\Scripts\python.exe .\backend\src\main.py
-```
-
-- `uvicorn` 实际使用 `main:create_app` + `factory=True`
-- 避免测试和运行时在模块导入阶段提前初始化错误环境
-
-### 8. SQL 脚本入口
-
-保留 3 个主入口：
-
-- `tools/postgres/schema_pg.sql`
-- `tools/postgres/init_data_pg.sql`
-- `tools/postgres/inspect_pg.sql`
-
-## 当前实现状态
-
-### 已完成
-
-- Tika 解析链路
-- 结构化 block 持久化
-- 多策略分块
-- 向量持久化
-- 首页直聊知识库路由
-- 混合检索
-- LangGraph 最小工作流
-- 同步 / 流式聊天
-- 生成答案与后处理
-
-### 待继续增强
-
-- 更强的 LLM 知识库路由
-- 更稳定的生产级 reranker 适配
-- 更复杂的 LangGraph 多节点编排
-- 检索评测与召回质量监控
-- 更强的前端来源富展示
+- 当前默认 reranker 模型为 `Qwen/Qwen3-Reranker-8B`
+- 当前默认意图识别模型入口走 Ollama provider
+- 记忆服务相关测试已覆盖
+  - TTL
+  - Prompt 注入
+  - query 相关性排序

@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 
+from api.deps.auth import AdminUser
 from domain.ingestion import RetriFlowIngestionService
 from schemas.knowledge import IngestionTaskListResponse, IngestionTaskNodeListResponse
 
@@ -12,10 +13,10 @@ def _service() -> RetriFlowIngestionService:
 
 
 @router.get("/tasks", response_model=IngestionTaskListResponse)
-def list_tasks() -> IngestionTaskListResponse:
+def list_tasks(user: AdminUser) -> IngestionTaskListResponse:
     return _service().list_tasks()
 
 
 @router.get("/tasks/{task_id}/nodes", response_model=IngestionTaskNodeListResponse)
-def list_task_nodes(task_id: int) -> IngestionTaskNodeListResponse:
+def list_task_nodes(task_id: int, user: AdminUser) -> IngestionTaskNodeListResponse:
     return _service().list_task_nodes(task_id)

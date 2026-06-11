@@ -27,8 +27,8 @@ class RetriFlowRerankService:
         if not records:
             return []
 
-        provider = self.llm_service._resolve_provider()
-        if provider is None:
+        provider = self.llm_service._resolve_provider(capability="rerank")
+        if provider is None or provider.name == "disabled":
             return self._fallback_rerank(question=question, records=records, limit=limit)
 
         try:
@@ -62,27 +62,29 @@ class RetriFlowRerankService:
         records: list[RetrievedChunkRecord],
         limit: int,
     ) -> list[RerankItem]:
-        payload = {
-            "model": self.settings.default_rerank_model,
-            "query": question,
-            "documents": [f"{record.document_title}\n{record.content}" for record in records],
-            "top_n": min(limit, len(records)),
-            "return_documents": False,
-        }
-        headers = {
-            "Authorization": f"Bearer {provider.api_key}",
-            "Content-Type": "application/json",
-        }
+        payload = self._build_payload(
+            provider=provider,
+            question=question,
+            records=records,
+            limit=limit,
+        )
+        headers = {"Content-Type": "application/json"}
+        if provider.api_key:
+            headers["Authorization"] = f"Bearer {provider.api_key}"
         with httpx.Client(timeout=self.settings.llm_request_timeout_seconds) as client:
             response = client.post(
-                f"{provider.base_url.rstrip('/')}/rerank",
+                self._resolve_rerank_url(provider),
                 json=payload,
                 headers=headers,
             )
             response.raise_for_status()
             data = response.json()
 
-        raw_items = data.get("results") or data.get("data") or []
+        raw_items = (
+            data.get("results")
+            or data.get("data")
+            or data.get("output", {}).get("results", [])
+        )
         ranked_items: list[RerankItem] = []
         for raw_item in raw_items:
             if not isinstance(raw_item, dict):
@@ -95,6 +97,48 @@ class RetriFlowRerankService:
 
         ranked_items.sort(key=lambda item: (-item.relevance_score, item.index))
         return ranked_items[:limit]
+
+    def _build_payload(
+        self,
+        *,
+        provider: LLMProviderConfig,
+        question: str,
+        records: list[RetrievedChunkRecord],
+        limit: int,
+    ) -> dict:
+        model = self.llm_service._resolve_model(
+            capability="rerank",
+            provider_name=provider.name,
+        )
+        documents = [f"{record.document_title}\n{record.content}" for record in records]
+        top_n = min(limit, len(records))
+
+        if provider.name == "bailian":
+            return {
+                "model": model,
+                "input": {
+                    "query": question,
+                    "documents": documents,
+                },
+                "parameters": {
+                    "top_n": top_n,
+                    "return_documents": False,
+                },
+            }
+
+        return {
+            "model": model,
+            "query": question,
+            "documents": documents,
+            "top_n": top_n,
+            "return_documents": False,
+        }
+
+    @staticmethod
+    def _resolve_rerank_url(provider: LLMProviderConfig) -> str:
+        if provider.name == "bailian":
+            return "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
+        return f"{provider.base_url.rstrip('/')}/rerank"
 
     @staticmethod
     def _fallback_rerank(

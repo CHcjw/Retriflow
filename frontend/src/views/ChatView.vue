@@ -22,18 +22,19 @@ const {
   createNewSession,
   errorMessage,
   hasMessages,
+  latestMcpCalls,
   latestSources,
   latestWorkflow,
   loadMessages,
   loadSessions,
   loading,
   messages,
+  removeSession,
   retryLastQuestion,
   selectSession,
   sessions,
-  stopStreaming,
   statusText,
-  streamMode
+  stopStreaming
 } = useRetriFlowChat();
 
 const submitPrompt = async (prompt?: string) => {
@@ -60,6 +61,7 @@ watch(
     messages.value[messages.value.length - 1]?.content ?? "",
     latestSources.value.length,
     latestWorkflow.value?.retrieval_count ?? 0,
+    latestMcpCalls.value.length,
     loading.value
   ],
   () => {
@@ -85,8 +87,7 @@ onMounted(() => {
 
     <div class="toolbar-row">
       <p class="hero-copy">
-        当前聊天页支持同步问答与真实流式问答，回答会同时返回来源片段和工作流元数据，方便对齐 LangGraph
-        的执行结果。
+        当前聊天页默认使用流式回答，并同步展示参考来源与工具调用结果，让对话体验更接近真实产品，而不是调试面板。
       </p>
     </div>
 
@@ -96,6 +97,7 @@ onMounted(() => {
         :loading="loading"
         :sessions="sessions"
         @create-session="createNewSession"
+        @delete-session="removeSession"
         @select-session="selectSession"
       />
 
@@ -104,6 +106,7 @@ onMounted(() => {
           <RetriFlowChatTranscript
             :error-message="errorMessage"
             :has-messages="hasMessages"
+            :latest-mcp-calls="latestMcpCalls"
             :latest-sources="latestSources"
             :latest-workflow="latestWorkflow"
             :loading="loading"
@@ -114,14 +117,13 @@ onMounted(() => {
 
         <RetriFlowChatComposer
           v-model:draft="draft"
-          v-model:stream-mode="streamMode"
           :can-stop="canStop"
           :can-retry="canRetry"
           :loading="loading"
           :prompts="starterPrompts"
           :status-text="statusText"
-          @stop="stopStreaming"
           @retry="retryLastQuestion"
+          @stop="stopStreaming"
           @submit="submitPrompt()"
           @submit-prompt="submitPrompt"
         />

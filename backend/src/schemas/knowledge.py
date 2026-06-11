@@ -24,6 +24,9 @@ class KnowledgeDocumentItem(BaseModel):
     title: str
     source_type: str
     status: str
+    vector_index_status: str = "pending"
+    vector_chunk_count: int = 0
+    vector_indexed_at: str = ""
     created_at: str
 
 
@@ -39,6 +42,24 @@ class KnowledgeDocumentCreateRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_chunk_settings(self) -> "KnowledgeDocumentCreateRequest":
+        if self.chunk_size < 1:
+            raise ValueError("chunk_size must be positive")
+        if self.chunk_overlap < 0:
+            raise ValueError("chunk_overlap must be non-negative")
+        if self.chunk_overlap >= self.chunk_size:
+            raise ValueError("chunk_overlap must be smaller than chunk_size")
+        return self
+
+
+class KnowledgeDocumentReindexRequest(BaseModel):
+    document_type: str | None = None
+    chunk_strategy: str = "auto"
+    chunk_size: int = 600
+    chunk_overlap: int = 120
+    recursive_separators: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_chunk_settings(self) -> "KnowledgeDocumentReindexRequest":
         if self.chunk_size < 1:
             raise ValueError("chunk_size must be positive")
         if self.chunk_overlap < 0:

@@ -9,10 +9,16 @@ from schemas.session import (
 
 
 class RetriFlowSessionService:
-    def list_sessions(self) -> SessionListResponse:
+    def list_sessions(self, user_id: str) -> SessionListResponse:
         with get_connection() as connection:
             rows = connection.execute(
-                "select id, title, message_count from sessions order by id"
+                """
+                select id, title, message_count, owner_id
+                from sessions
+                where owner_id = ?
+                order by id desc
+                """,
+                (user_id,),
             ).fetchall()
         return SessionListResponse(
             items=[
@@ -20,27 +26,35 @@ class RetriFlowSessionService:
                     id=row["id"],
                     title=row["title"],
                     message_count=row["message_count"],
+                    owner_id=str(row.get("owner_id", "") or ""),
                 )
                 for row in rows
             ]
         )
 
-    def create_session(self, request: SessionCreateRequest) -> SessionItem:
+    def create_session(self, request: SessionCreateRequest, user_id: str) -> SessionItem:
         with get_connection() as connection:
-            next_index = connection.execute("select count(*) from sessions").fetchone()[0] + 1
+            existing_ids = connection.execute("select id from sessions").fetchall()
+            next_index = self._next_numeric_suffix([str(row["id"]) for row in existing_ids], prefix="session-")
             session_id = f"session-{next_index}"
             connection.execute(
                 """
-                insert into sessions (id, title, message_count)
-                values (?, ?, ?)
+                insert into sessions (id, title, message_count, owner_id)
+                values (?, ?, ?, ?)
                 """,
-                (session_id, request.title, 0),
+                (session_id, request.title, 0, user_id),
             )
             connection.commit()
 
-        return SessionItem(id=session_id, title=request.title, message_count=0)
+        return SessionItem(
+            id=session_id,
+            title=request.title,
+            message_count=0,
+            owner_id=user_id,
+        )
 
-    def list_messages(self, session_id: str) -> ConversationMessageListResponse:
+    def list_messages(self, session_id: str, user_id: str) -> ConversationMessageListResponse:
+        self.ensure_session_access(session_id, user_id, claim_unowned=False)
         with get_connection() as connection:
             rows = connection.execute(
                 """
@@ -65,6 +79,50 @@ class RetriFlowSessionService:
             ]
         )
 
+    def delete_session(self, session_id: str, user_id: str) -> None:
+        self.ensure_session_access(session_id, user_id, claim_unowned=False)
+        with get_connection() as connection:
+            connection.execute("delete from conversation_messages where session_id = ?", (session_id,))
+            connection.execute("delete from conversation_memory_summaries where session_id = ?", (session_id,))
+            connection.execute("delete from conversation_mid_memories where session_id = ?", (session_id,))
+            connection.execute(
+                """
+                delete from conversation_long_memories
+                where owner_type = ? and owner_id = ?
+                """,
+                ("session", session_id),
+            )
+            connection.execute("delete from sessions where id = ?", (session_id,))
+            connection.commit()
+
+    def ensure_session_access(self, session_id: str, user_id: str, *, claim_unowned: bool) -> None:
+        with get_connection() as connection:
+            row = connection.execute(
+                """
+                select owner_id
+                from sessions
+                where id = ?
+                limit 1
+                """,
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError("session not found")
+
+            owner_id = str(row.get("owner_id", "") or "").strip()
+            if owner_id and owner_id != user_id:
+                raise PermissionError("forbidden session")
+            if not owner_id and claim_unowned:
+                connection.execute(
+                    """
+                    update sessions
+                    set owner_id = ?
+                    where id = ?
+                    """,
+                    (user_id, session_id),
+                )
+                connection.commit()
+
     @staticmethod
     def _serialize_timestamp(value) -> str:
         if isinstance(value, str):
@@ -72,3 +130,14 @@ class RetriFlowSessionService:
         if hasattr(value, "isoformat"):
             return value.isoformat()
         return str(value)
+
+    @staticmethod
+    def _next_numeric_suffix(existing_ids: list[str], *, prefix: str) -> int:
+        max_suffix = 0
+        for item in existing_ids:
+            if not item.startswith(prefix):
+                continue
+            suffix = item[len(prefix):]
+            if suffix.isdigit():
+                max_suffix = max(max_suffix, int(suffix))
+        return max_suffix + 1

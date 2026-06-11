@@ -5,10 +5,12 @@ class SessionItem(BaseModel):
     id: str
     title: str
     message_count: int
+    owner_id: str = ""
 
 
 class SessionCreateRequest(BaseModel):
     title: str
+    owner_id: str = ""
 
 
 class SessionListResponse(BaseModel):

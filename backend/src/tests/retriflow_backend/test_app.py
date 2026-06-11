@@ -1,5 +1,6 @@
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -23,12 +24,28 @@ class RetriFlowAppImportTests(unittest.TestCase):
     def test_settings_expose_default_model_and_vector_preferences(self) -> None:
         from core.config import get_settings
 
-        settings = get_settings()
+        get_settings.cache_clear()
+        with patch("core.config._read_env_file", return_value={}):
+            settings = get_settings()
 
         self.assertEqual(settings.default_chat_model, "qwen3-max")
         self.assertEqual(settings.default_embedding_model, "qwen-emb-8b")
-        self.assertEqual(settings.default_rerank_model, "qwen3-rerank")
+        self.assertEqual(settings.default_rerank_model, "Qwen/Qwen3-Reranker-8B")
         self.assertEqual(settings.vector_store_type, "pg")
+
+    def test_settings_expose_default_rag_retrieval_pipeline_preferences(self) -> None:
+        from core.config import get_settings
+
+        get_settings.cache_clear()
+        with patch("core.config._read_env_file", return_value={}):
+            settings = get_settings()
+
+        self.assertEqual(settings.default_rerank_model, "Qwen/Qwen3-Reranker-8B")
+        self.assertEqual(settings.retrieval_bm25_top_k, 80)
+        self.assertEqual(settings.retrieval_vector_top_k, 80)
+        self.assertEqual(settings.retrieval_rrf_top_k, 50)
+        self.assertEqual(settings.retrieval_rerank_top_k, 10)
+        self.assertEqual(settings.retrieval_final_top_k, 5)
 
     def test_settings_expose_default_tika_and_ocr_service_endpoints(self) -> None:
         from core.config import get_settings

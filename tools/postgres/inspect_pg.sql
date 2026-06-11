@@ -1,6 +1,6 @@
 -- RetriFlow PostgreSQL inspection script
--- Use this file in DBeaver / DataGrip / pgAdmin to inspect the current
--- business tables and vector table status.
+-- Use this file in HeidiSQL / DBeaver / DataGrip / pgAdmin to inspect the
+-- current business tables and vector table status.
 
 -- ============================================
 -- Runtime Environment
@@ -27,14 +27,19 @@ FROM information_schema.tables
 WHERE table_schema = current_schema()
   AND table_name IN (
       'sessions',
+      'users',
       'conversation_messages',
       'knowledge_bases',
+      'knowledge_base_route_profiles',
       'knowledge_documents',
       'knowledge_chunks',
       'knowledge_document_blocks',
       'knowledge_document_table_cells',
       'ingestion_tasks',
       'ingestion_task_nodes',
+      'conversation_memory_summaries',
+      'conversation_mid_memories',
+      'conversation_long_memories',
       'retriflow_chunk_vectors'
   )
 ORDER BY table_name;
@@ -45,9 +50,13 @@ ORDER BY table_name;
 
 SELECT 'sessions' AS table_name, COUNT(*) AS row_count FROM sessions
 UNION ALL
+SELECT 'users', COUNT(*) FROM users
+UNION ALL
 SELECT 'conversation_messages', COUNT(*) FROM conversation_messages
 UNION ALL
 SELECT 'knowledge_bases', COUNT(*) FROM knowledge_bases
+UNION ALL
+SELECT 'knowledge_base_route_profiles', COUNT(*) FROM knowledge_base_route_profiles
 UNION ALL
 SELECT 'knowledge_documents', COUNT(*) FROM knowledge_documents
 UNION ALL
@@ -60,6 +69,12 @@ UNION ALL
 SELECT 'ingestion_tasks', COUNT(*) FROM ingestion_tasks
 UNION ALL
 SELECT 'ingestion_task_nodes', COUNT(*) FROM ingestion_task_nodes
+UNION ALL
+SELECT 'conversation_memory_summaries', COUNT(*) FROM conversation_memory_summaries
+UNION ALL
+SELECT 'conversation_mid_memories', COUNT(*) FROM conversation_mid_memories
+UNION ALL
+SELECT 'conversation_long_memories', COUNT(*) FROM conversation_long_memories
 ORDER BY table_name;
 
 -- ============================================
@@ -69,9 +84,29 @@ ORDER BY table_name;
 SELECT
     id,
     title,
-    message_count
+    message_count,
+    owner_id
 FROM sessions
 ORDER BY id
+LIMIT 20;
+
+SELECT
+    id,
+    username,
+    role,
+    created_at
+FROM users
+ORDER BY created_at DESC, id DESC
+LIMIT 20;
+
+SELECT
+    knowledge_base_id,
+    LEFT(profile_text, 120) AS profile_preview,
+    sample_questions_json,
+    keywords_json,
+    updated_at
+FROM knowledge_base_route_profiles
+ORDER BY updated_at DESC
 LIMIT 20;
 
 SELECT
@@ -80,6 +115,9 @@ SELECT
     title,
     source_type,
     status,
+    vector_index_status,
+    vector_chunk_count,
+    vector_indexed_at,
     created_at
 FROM knowledge_documents
 ORDER BY id DESC
@@ -126,6 +164,40 @@ SELECT
 FROM knowledge_document_table_cells
 GROUP BY block_id
 ORDER BY cell_count DESC, block_id ASC
+LIMIT 20;
+
+-- ============================================
+-- Memory Overview
+-- ============================================
+
+SELECT
+    session_id,
+    last_message_id,
+    updated_at,
+    expires_at
+FROM conversation_memory_summaries
+ORDER BY updated_at DESC
+LIMIT 20;
+
+SELECT
+    session_id,
+    memory_type,
+    status,
+    updated_at,
+    expires_at
+FROM conversation_mid_memories
+ORDER BY updated_at DESC
+LIMIT 20;
+
+SELECT
+    owner_type,
+    owner_id,
+    memory_type,
+    status,
+    updated_at,
+    expires_at
+FROM conversation_long_memories
+ORDER BY updated_at DESC
 LIMIT 20;
 
 -- ============================================

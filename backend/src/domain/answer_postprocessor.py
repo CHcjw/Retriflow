@@ -1,5 +1,7 @@
-import re
+from __future__ import annotations
+
 from datetime import datetime
+import re
 
 from schemas.chat import ChatSourceItem
 
@@ -12,10 +14,10 @@ class RetriFlowAnswerPostprocessor:
         safe_answer = self._apply_safety_filter(normalized)
 
         if not safe_answer.strip():
-            safe_answer = self.DEFAULT_NO_ANSWER
+            return self.DEFAULT_NO_ANSWER
 
         if sources and not self._contains_any_citation(safe_answer):
-            safe_answer = safe_answer.rstrip("。 \n") + "。[1]"
+            safe_answer = safe_answer.rstrip("。\n ") + "。[1]"
 
         sections = [safe_answer]
 
@@ -23,14 +25,16 @@ class RetriFlowAnswerPostprocessor:
         if conflict_notice:
             sections.append(conflict_notice)
 
-        if sources:
-            sections.append(f"## 参考来源\n{self._build_reference_section(sources)}")
-
         return "\n\n".join(section for section in sections if section.strip())
 
     @staticmethod
     def _normalize(answer: str) -> str:
-        return answer.replace("\r\n", "\n").strip()
+        normalized = answer.replace("\r\n", "\n").strip()
+        normalized = re.sub(r"\*\*(\s*)", "", normalized)
+        normalized = re.sub(r"__(\s*)", "", normalized)
+        normalized = re.sub(r"\n{3,}", "\n\n", normalized)
+        normalized = re.sub(r"(?m)^\s*\d+\.\s*", lambda match: "\n" + match.group(0).strip(), normalized)
+        return normalized.strip()
 
     def _apply_safety_filter(self, answer: str) -> str:
         blocked_patterns = [
@@ -52,19 +56,17 @@ class RetriFlowAnswerPostprocessor:
         if not conflict_pairs:
             return ""
 
-        latest_index = self._find_latest_source_index(sources)
-        latest_hint = ""
-        if latest_index is not None:
-            latest_hint = f"\n优先参考较新的资料 [{latest_index + 1}]。"
-
         lines = ["## 冲突提示"]
         for left_index, right_index in conflict_pairs:
             lines.append(
-                f"资料 [{left_index + 1}]《{sources[left_index].document_title}》"
-                f" 与资料 [{right_index + 1}]《{sources[right_index].document_title}》存在信息冲突。"
+                f"资料 [{left_index + 1}]《{sources[left_index].document_title}》与资料 "
+                f"[{right_index + 1}]《{sources[right_index].document_title}》存在信息冲突。"
             )
-        if latest_hint:
-            lines.append(latest_hint.strip())
+
+        latest_index = self._find_latest_source_index(sources)
+        if latest_index is not None:
+            lines.append(f"优先参考较新的资料 [{latest_index + 1}]。")
+
         return "\n".join(lines)
 
     def _detect_conflicts(self, sources: list[ChatSourceItem]) -> list[tuple[int, int]]:
@@ -113,14 +115,3 @@ class RetriFlowAnswerPostprocessor:
             return datetime.fromisoformat(value.replace("Z", "+00:00"))
         except ValueError:
             return None
-
-    @staticmethod
-    def _build_reference_section(sources: list[ChatSourceItem]) -> str:
-        lines: list[str] = []
-        for index, source in enumerate(sources, start=1):
-            lines.append(f"[{index}] {source.document_title}")
-            if source.source_updated_at:
-                lines.append(f"更新时间：{source.source_updated_at}")
-            if source.source_link:
-                lines.append(f"链接：{source.source_link}")
-        return "\n".join(lines)

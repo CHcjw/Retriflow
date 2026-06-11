@@ -52,6 +52,11 @@ class RetriFlowRetrievalEngineTests(unittest.TestCase):
         os.environ.pop("RETRIFLOW_PGVECTOR_DSN", None)
         os.environ.pop("RETRIFLOW_VECTOR_STORE_TYPE", None)
         os.environ.pop("RETRIFLOW_LLM_PROVIDER", None)
+        os.environ.pop("RETRIFLOW_RETRIEVAL_BM25_TOP_K", None)
+        os.environ.pop("RETRIFLOW_RETRIEVAL_VECTOR_TOP_K", None)
+        os.environ.pop("RETRIFLOW_RETRIEVAL_RRF_TOP_K", None)
+        os.environ.pop("RETRIFLOW_RETRIEVAL_RERANK_TOP_K", None)
+        os.environ.pop("RETRIFLOW_RETRIEVAL_FINAL_TOP_K", None)
         from core.config import get_settings
 
         get_settings.cache_clear()
@@ -165,6 +170,119 @@ class RetriFlowRetrievalEngineTests(unittest.TestCase):
         self.assertEqual(result.sources[0].chunk_id, 3)
         self.assertIn("bm25", result.channels)
         self.assertIn("semantic", result.channels)
+        self.assertEqual(result.stage_counts["bm25"], 2)
+        self.assertEqual(result.stage_counts["semantic"], 2)
+        self.assertEqual(result.stage_counts["hybrid_rrf"], 3)
+        self.assertEqual(result.stage_counts["rerank"], 3)
+        self.assertEqual(result.stage_counts["final"], 3)
+
+    def test_retrieval_engine_supports_multi_queries_before_rerank(self) -> None:
+        from domain.retrieval import RetriFlowRetrievalEngine
+        from domain.retrieval_channels import RetrievedChunkRecord
+
+        bm25_by_query = {
+            "insurance claim process": [
+                RetrievedChunkRecord(1, "kb-demo-1", 1, "Claim Doc", "claim content", 12.0, "bm25"),
+            ],
+            "underwriting policy rules": [
+                RetrievedChunkRecord(2, "kb-demo-1", 2, "Underwriting Doc", "underwriting content", 11.0, "bm25"),
+            ],
+        }
+        semantic_by_query = {
+            "insurance claim process": [
+                RetrievedChunkRecord(1, "kb-demo-1", 1, "Claim Doc", "claim content", 0.91, "semantic"),
+            ],
+            "underwriting policy rules": [
+                RetrievedChunkRecord(2, "kb-demo-1", 2, "Underwriting Doc", "underwriting content", 0.89, "semantic"),
+            ],
+        }
+
+        class FakeVectorStore:
+            def similarity_search(self, query: str, k: int = 80):
+                return semantic_by_query[query]
+
+            def upsert_chunk_records(self, records) -> None:
+                _ = records
+
+        class FakeReranker:
+            def rerank(self, question: str, records: list[RetrievedChunkRecord], limit: int = 10) -> list[RetrievedChunkRecord]:
+                self.last_question = question
+                self.last_limit = limit
+                return records[:limit]
+
+        with (
+            patch("domain.retrieval.resolve_vector_store", return_value=FakeVectorStore()),
+            patch("domain.retrieval.BM25SearchChannel.retrieve", side_effect=lambda query, knowledge_base_ids=None, top_k=80: bm25_by_query[query]) as bm25_retrieve,
+            patch("domain.retrieval.RetriFlowRerankService", return_value=FakeReranker()),
+        ):
+            result = RetriFlowRetrievalEngine().retrieve(
+                "原始问题",
+                queries=["insurance claim process", "underwriting policy rules"],
+            )
+
+        self.assertEqual(bm25_retrieve.call_count, 2)
+        self.assertEqual(len(result.sources), 2)
+        self.assertEqual({item.document_title for item in result.sources}, {"Claim Doc", "Underwriting Doc"})
+        self.assertEqual(result.stage_counts["bm25"], 2)
+        self.assertEqual(result.stage_counts["semantic"], 2)
+        self.assertEqual(result.stage_counts["final"], 2)
+
+    def test_retrieval_engine_uses_configured_hybrid_top_k_pipeline(self) -> None:
+        os.environ["RETRIFLOW_RETRIEVAL_BM25_TOP_K"] = "7"
+        os.environ["RETRIFLOW_RETRIEVAL_VECTOR_TOP_K"] = "9"
+        os.environ["RETRIFLOW_RETRIEVAL_RRF_TOP_K"] = "4"
+        os.environ["RETRIFLOW_RETRIEVAL_RERANK_TOP_K"] = "3"
+        os.environ["RETRIFLOW_RETRIEVAL_FINAL_TOP_K"] = "2"
+
+        from core.config import get_settings
+        from domain.retrieval import RetriFlowRetrievalEngine
+        from domain.retrieval_channels import RetrievedChunkRecord
+
+        get_settings.cache_clear()
+
+        bm25_records = [
+            RetrievedChunkRecord(1, "kb-demo-1", 1, "Doc A", "shared hit", 12.0, "bm25"),
+            RetrievedChunkRecord(2, "kb-demo-1", 2, "Doc B", "bm25 only", 11.0, "bm25"),
+            RetrievedChunkRecord(3, "kb-demo-1", 3, "Doc C", "another hit", 10.0, "bm25"),
+        ]
+        semantic_records = [
+            RetrievedChunkRecord(1, "kb-demo-1", 1, "Doc A", "shared hit", 0.91, "semantic"),
+            RetrievedChunkRecord(4, "kb-demo-1", 4, "Doc D", "vector only", 0.89, "semantic"),
+            RetrievedChunkRecord(5, "kb-demo-1", 5, "Doc E", "vector extra", 0.87, "semantic"),
+        ]
+
+        class FakeVectorStore:
+            def similarity_search(self, query: str, k: int = 80):
+                self.last_query = query
+                self.last_k = k
+                return semantic_records
+
+            def upsert_chunk_records(self, records) -> None:
+                _ = records
+
+        class FakeReranker:
+            def rerank(self, question: str, records: list[RetrievedChunkRecord], limit: int = 10) -> list[RetrievedChunkRecord]:
+                self.last_question = question
+                self.last_limit = limit
+                return records[:limit]
+
+        fake_vector_store = FakeVectorStore()
+        fake_reranker = FakeReranker()
+
+        with (
+            patch("domain.retrieval.resolve_vector_store", return_value=fake_vector_store),
+            patch("domain.retrieval.BM25SearchChannel.retrieve", return_value=bm25_records) as bm25_retrieve,
+            patch("domain.retrieval.RetriFlowRerankService", return_value=fake_reranker),
+        ):
+            result = RetriFlowRetrievalEngine().retrieve("configured top k query")
+
+        self.assertEqual(bm25_retrieve.call_args.kwargs["top_k"], 7)
+        self.assertEqual(fake_vector_store.last_k, 9)
+        self.assertEqual(fake_reranker.last_limit, 3)
+        self.assertEqual(result.stage_counts["hybrid_rrf"], 4)
+        self.assertEqual(result.stage_counts["rerank"], 3)
+        self.assertEqual(result.stage_counts["final"], 2)
+        self.assertEqual(len(result.sources), 2)
 
 
 if __name__ == "__main__":
