@@ -19,7 +19,7 @@ class FakeExecutor:
         self.should_fail = should_fail
 
     def get_definition(self):
-        from domain.mcp.models import McpToolDefinition
+        from modules.mcp.models import McpToolDefinition
 
         return McpToolDefinition(
             tool_id=self.tool_id,
@@ -29,7 +29,7 @@ class FakeExecutor:
         )
 
     def execute(self, arguments):
-        from domain.mcp.models import McpToolCallResult
+        from modules.mcp.models import McpToolCallResult
 
         if self.delay_seconds:
             time.sleep(self.delay_seconds)
@@ -68,7 +68,7 @@ class RetriFlowMcpServiceTests(unittest.TestCase):
         get_settings.cache_clear()
 
     def test_route_question_matches_weather_tool(self) -> None:
-        from domain.mcp.service import RetriFlowMcpService
+        from modules.mcp.service import RetriFlowMcpService
 
         service = RetriFlowMcpService()
         decision = service.route_question("上海今天天气如何？")
@@ -78,7 +78,7 @@ class RetriFlowMcpServiceTests(unittest.TestCase):
         self.assertGreater(decision.confidence, 0.4)
 
     def test_execute_question_returns_tool_call_and_context(self) -> None:
-        from domain.mcp.service import RetriFlowMcpService
+        from modules.mcp.service import RetriFlowMcpService
 
         service = RetriFlowMcpService()
         result = service.execute_question("华东本月销售额怎么样？")
@@ -90,7 +90,7 @@ class RetriFlowMcpServiceTests(unittest.TestCase):
         self.assertIn("Tool: sales_query", result.context)
 
     def test_execute_question_supports_multiple_builtin_tools(self) -> None:
-        from domain.mcp.service import RetriFlowMcpService
+        from modules.mcp.service import RetriFlowMcpService
 
         service = RetriFlowMcpService()
         result = service.execute_question("请同时告诉我北京今天天气和华东本月销售额情况")
@@ -106,8 +106,8 @@ class RetriFlowMcpServiceTests(unittest.TestCase):
     def test_execute_question_parallel_preserves_route_order(self) -> None:
         os.environ["RETRIFLOW_MCP_EXECUTION_MODE"] = "parallel"
         from core.config import get_settings
-        from domain.mcp.models import McpRouteDecision
-        from domain.mcp.service import RetriFlowMcpService
+        from modules.mcp.models import McpRouteDecision
+        from modules.mcp.service import RetriFlowMcpService
 
         get_settings.cache_clear()
         service = RetriFlowMcpService()
@@ -135,8 +135,8 @@ class RetriFlowMcpServiceTests(unittest.TestCase):
         self.assertEqual([call.tool_id for call in result.calls], ["tool_slow", "tool_fast"])
 
     def test_execute_question_continues_after_single_tool_failure_when_fail_fast_is_false(self) -> None:
-        from domain.mcp.models import McpRouteDecision
-        from domain.mcp.service import RetriFlowMcpService
+        from modules.mcp.models import McpRouteDecision
+        from modules.mcp.service import RetriFlowMcpService
 
         service = RetriFlowMcpService()
         executors = {
@@ -169,8 +169,8 @@ class RetriFlowMcpServiceTests(unittest.TestCase):
     def test_execute_question_stops_on_failure_when_fail_fast_is_true(self) -> None:
         os.environ["RETRIFLOW_MCP_FAIL_FAST"] = "true"
         from core.config import get_settings
-        from domain.mcp.models import McpRouteDecision
-        from domain.mcp.service import RetriFlowMcpService
+        from modules.mcp.models import McpRouteDecision
+        from modules.mcp.service import RetriFlowMcpService
 
         get_settings.cache_clear()
         service = RetriFlowMcpService()
@@ -205,8 +205,8 @@ class RetriFlowMcpServiceTests(unittest.TestCase):
             '[{"name":"finance-remote","url":"http://mcp.example"}]'
         )
         from core.config import get_settings
-        from domain.mcp.models import McpToolCallResult, McpToolDefinition
-        from domain.mcp.service import RetriFlowMcpService
+        from modules.mcp.models import McpToolCallResult, McpToolDefinition
+        from modules.mcp.service import RetriFlowMcpService
 
         get_settings.cache_clear()
 
@@ -223,13 +223,13 @@ class RetriFlowMcpServiceTests(unittest.TestCase):
         )
 
         with (
-            patch("domain.mcp.registry.RetriFlowRemoteMcpClient.list_tools", return_value=[remote_tool]),
+            patch("modules.mcp.registry.RetriFlowRemoteMcpClient.list_tools", return_value=[remote_tool]),
             patch(
-                "domain.mcp.parameter_extractor.RetriFlowMcpParameterExtractor.extract",
+                "modules.mcp.parameter_extractor.RetriFlowMcpParameterExtractor.extract",
                 return_value={"ticker": "600519"},
             ),
             patch(
-                "domain.mcp.client.RetriFlowRemoteMcpClient.call_tool",
+                "modules.mcp.client.RetriFlowRemoteMcpClient.call_tool",
                 return_value=McpToolCallResult(
                     tool_id="stock_query",
                     arguments={"ticker": "600519"},

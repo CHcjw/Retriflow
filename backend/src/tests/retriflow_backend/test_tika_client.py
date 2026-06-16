@@ -30,7 +30,7 @@ class RetriFlowTikaClientTests(unittest.TestCase):
         get_settings.cache_clear()
 
     def test_parse_bytes_returns_valid_raw_parsed_document(self) -> None:
-        from domain.tika_client import RetriFlowTikaClient
+        from infra.document_parser.tika_client import RetriFlowTikaClient
 
         xml_response = httpx.Response(
             200,
@@ -50,7 +50,7 @@ class RetriFlowTikaClientTests(unittest.TestCase):
             ],
         )
 
-        with patch("domain.tika_client.httpx.put", side_effect=[xml_response, meta_response]):
+        with patch("infra.document_parser.tika_client.httpx.put", side_effect=[xml_response, meta_response]):
             parsed = RetriFlowTikaClient().parse_bytes(
                 filename="retriflow-spec.docx",
                 content_bytes=b"fake-docx",
@@ -64,7 +64,7 @@ class RetriFlowTikaClientTests(unittest.TestCase):
         self.assertEqual(parsed.metadata["dc:title"], "RetriFlow Spec")
 
     def test_parse_bytes_rejects_empty_rmeta_payload(self) -> None:
-        from domain.tika_client import RetriFlowTikaClient
+        from infra.document_parser.tika_client import RetriFlowTikaClient
 
         xml_response = httpx.Response(
             200,
@@ -72,7 +72,7 @@ class RetriFlowTikaClientTests(unittest.TestCase):
         )
         meta_response = httpx.Response(200, json=[])
 
-        with patch("domain.tika_client.httpx.put", side_effect=[xml_response, meta_response]):
+        with patch("infra.document_parser.tika_client.httpx.put", side_effect=[xml_response, meta_response]):
             with self.assertRaises(ValueError):
                 RetriFlowTikaClient().parse_bytes(
                     filename="broken.docx",
@@ -81,11 +81,11 @@ class RetriFlowTikaClientTests(unittest.TestCase):
                 )
 
     def test_detect_content_type_returns_tika_detected_mime(self) -> None:
-        from domain.tika_client import RetriFlowTikaClient
+        from infra.document_parser.tika_client import RetriFlowTikaClient
 
         detect_response = httpx.Response(200, text="application/pdf")
 
-        with patch("domain.tika_client.httpx.put", return_value=detect_response) as detect_mock:
+        with patch("infra.document_parser.tika_client.httpx.put", return_value=detect_response) as detect_mock:
             detected = RetriFlowTikaClient().detect_content_type(
                 filename="unknown.bin",
                 content_bytes=b"%PDF-1.4 fake",
@@ -96,11 +96,11 @@ class RetriFlowTikaClientTests(unittest.TestCase):
         detect_mock.assert_called_once()
 
     def test_detect_content_type_falls_back_when_tika_detect_fails(self) -> None:
-        from domain.tika_client import RetriFlowTikaClient
+        from infra.document_parser.tika_client import RetriFlowTikaClient
 
         detect_response = httpx.Response(500, text="boom")
 
-        with patch("domain.tika_client.httpx.put", return_value=detect_response):
+        with patch("infra.document_parser.tika_client.httpx.put", return_value=detect_response):
             detected = RetriFlowTikaClient().detect_content_type(
                 filename="unknown.bin",
                 content_bytes=b"fake",

@@ -3,9 +3,12 @@ import { computed, nextTick, ref, shallowRef } from "vue";
 import {
   createSession,
   deleteSession,
+  fetchKnowledgeBases,
+  fetchRouteProfile,
   fetchSessionMessages,
   fetchSessions,
   streamChatMessage,
+  updateSession,
   type ChatMcpCallItem,
   type ChatSourceItem,
   type ChatWorkflow
@@ -110,6 +113,10 @@ function sleep(ms: number): Promise<void> {
   });
 }
 
+function normalizeForFinalComparison(value: string): string {
+  return value.replace(/\s+/g, "").trim();
+}
+
 export function useRetriFlowChat() {
   const loading = shallowRef(false);
   const requestPhase = shallowRef<RequestPhase>("idle");
@@ -117,6 +124,7 @@ export function useRetriFlowChat() {
   const errorMessage = shallowRef("");
   const infoMessage = shallowRef("");
   const lastSubmittedQuestion = shallowRef("");
+  const lastSubmittedDeepThinking = shallowRef(false);
   const activeStreamController = shallowRef<AbortController | null>(null);
   const sessions = ref<Awaited<ReturnType<typeof fetchSessions>>["items"]>([]);
   const activeSessionId = shallowRef("");
@@ -124,6 +132,11 @@ export function useRetriFlowChat() {
   const latestSources = ref<ChatSourceItem[]>([]);
   const latestWorkflow = ref<ChatWorkflow | null>(null);
   const latestMcpCalls = ref<ChatMcpCallItem[]>([]);
+  const starterPrompts = ref<string[]>([
+    "RetriFlow 一期应该先做什么？",
+    "这个知识库主要覆盖什么内容？",
+    "帮我总结一下当前项目的 RAG 流程。"
+  ]);
 
   const statusText = computed(() => {
     if (requestPhase.value === "stopping" || streamStage.value === "stopping") {
@@ -202,24 +215,66 @@ export function useRetriFlowChat() {
     streamStage.value = "idle";
     messages.value = [];
   };
-
   const removeSession = async (sessionId: string) => {
-    await deleteSession(sessionId);
-    if (activeSessionId.value === sessionId) {
-      latestSources.value = [];
-      latestWorkflow.value = null;
-      latestMcpCalls.value = [];
-      errorMessage.value = "";
-      infoMessage.value = "会话已删除。";
-    }
-    await loadSessions();
-    if (activeSessionId.value === sessionId) {
-      activeSessionId.value = sessions.value[0]?.id ?? "";
-      await loadMessages(activeSessionId.value);
+    const wasActiveSession = activeSessionId.value === sessionId;
+    const previousSessions = sessions.value;
+    sessions.value = sessions.value.filter((session) => session.id !== sessionId);
+    try {
+      await deleteSession(sessionId);
+      if (wasActiveSession) {
+        latestSources.value = [];
+        latestWorkflow.value = null;
+        latestMcpCalls.value = [];
+        errorMessage.value = "";
+        infoMessage.value = "??????";
+        messages.value = [];
+      }
+      await loadSessions();
+      if (wasActiveSession) {
+        await loadMessages(activeSessionId.value);
+      }
+    } catch (error) {
+      sessions.value = previousSessions;
+      errorMessage.value = error instanceof Error ? error.message : "?????????????";
     }
   };
 
-  const ask = async (question: string) => {
+  const renameSession = async (sessionId: string, title: string) => {
+    if (!title.trim()) {
+      return;
+    }
+    await updateSession(sessionId, title);
+    await loadSessions();
+  };
+
+  const loadStarterPrompts = async () => {
+    try {
+      const knowledgeBaseData = await fetchKnowledgeBases();
+      const profiles = await Promise.all(
+        knowledgeBaseData.items.slice(0, 8).map((item) => fetchRouteProfile(item.id))
+      );
+      const configuredPrompts = profiles
+        .flatMap((profile) => profile.sample_questions)
+        .map((prompt) => prompt.trim())
+        .filter(Boolean);
+      starterPrompts.value = Array.from(new Set(configuredPrompts)).slice(0, 6);
+      if (starterPrompts.value.length === 0) {
+        starterPrompts.value = [
+          "RetriFlow 一期应该先做什么？",
+          "这个知识库主要覆盖什么内容？",
+          "帮我总结一下当前项目的 RAG 流程。"
+        ];
+      }
+    } catch {
+      starterPrompts.value = [
+        "RetriFlow 一期应该先做什么？",
+        "这个知识库主要覆盖什么内容？",
+        "帮我总结一下当前项目的 RAG 流程。"
+      ];
+    }
+  };
+
+  const ask = async (question: string, options: { deepThinking?: boolean } = {}) => {
     const trimmedQuestion = question.trim();
     if (!trimmedQuestion) {
       return;
@@ -235,6 +290,7 @@ export function useRetriFlowChat() {
     errorMessage.value = "";
     infoMessage.value = "";
     lastSubmittedQuestion.value = trimmedQuestion;
+    lastSubmittedDeepThinking.value = Boolean(options.deepThinking);
     latestSources.value = [];
     latestWorkflow.value = null;
     latestMcpCalls.value = [];
@@ -298,7 +354,12 @@ export function useRetriFlowChat() {
             if (payload?.mode === "append" && payload.content_delta) {
               await renderStreamSegments(payload.content_delta);
             } else if (payload?.mode === "replace" && typeof payload.content === "string") {
-              assistantMessage.content = payload.content;
+              const currentNormalized = normalizeForFinalComparison(assistantMessage.content);
+              const finalNormalized = normalizeForFinalComparison(payload.content);
+              const finalContainsCurrent = currentNormalized.length > 0 && finalNormalized.includes(currentNormalized);
+              if (!finalContainsCurrent) {
+                assistantMessage.content = payload.content;
+              }
               messages.value = [...messages.value];
             }
             assistantMessage.state = "complete";
@@ -312,7 +373,8 @@ export function useRetriFlowChat() {
             await loadSessions();
           }
         },
-        controller.signal
+        controller.signal,
+        Boolean(options.deepThinking)
       );
     } catch (error) {
       if (error instanceof Error && error.name === "AbortError") {
@@ -362,7 +424,7 @@ export function useRetriFlowChat() {
     if (!lastSubmittedQuestion.value.trim()) {
       return;
     }
-    await ask(lastSubmittedQuestion.value);
+    await ask(lastSubmittedQuestion.value, { deepThinking: lastSubmittedDeepThinking.value });
   };
 
   return {
@@ -376,15 +438,18 @@ export function useRetriFlowChat() {
     latestMcpCalls,
     latestSources,
     latestWorkflow,
+    loadStarterPrompts,
     loadMessages,
     loadSessions,
     loading,
     messages,
     requestPhase,
     removeSession,
+    renameSession,
     retryLastQuestion,
     selectSession,
     sessions,
+    starterPrompts,
     statusText,
     stopStreaming
   };

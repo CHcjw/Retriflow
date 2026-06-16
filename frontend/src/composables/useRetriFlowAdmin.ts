@@ -1,17 +1,42 @@
 import { computed, onMounted, ref, shallowRef, watch } from "vue";
 
 import {
+  createAdminIntentNode,
+  createAdminKeywordMapping,
   createKnowledgeBase,
+  createAdminUser,
+  createIngestionPipeline,
   createKnowledgeDocument,
+  deleteAdminIntentNode,
+  deleteAdminKeywordMapping,
   deleteKnowledgeBase,
+  deleteKnowledgeDocument,
+  fetchAdminDashboard,
+  fetchAdminIntentNodes,
+  fetchAdminKeywordMappings,
+  fetchAdminTraceDetail,
+  fetchAdminSettings,
+  fetchAdminTraces,
+  fetchAdminUsers,
   fetchIngestionTaskNodes,
+  fetchIngestionPipelines,
   fetchIngestionTasks,
   fetchKnowledgeBases,
   fetchKnowledgeChunks,
   fetchKnowledgeDocuments,
   fetchMeta,
   reindexKnowledgeDocument,
-  uploadKnowledgeDocument
+  updateAdminUserRole,
+  type AdminUserCreateRequest,
+  type IngestionPipelineCreateRequest,
+  uploadKnowledgeDocument,
+  fetchRouteProfile,
+  updateRouteProfile,
+  updateAdminIntentNode,
+  updateAdminKeywordMapping,
+  type AdminIntentNodeUpsertRequest,
+  type AdminKeywordMappingUpsertRequest,
+  type KnowledgeBaseRouteProfile
 } from "../services/api";
 import { useAuthStore } from "../stores/auth";
 
@@ -146,8 +171,17 @@ export function useRetriFlowAdmin() {
   const selectedDocumentId = shallowRef<number | null>(null);
   const documents = ref<Awaited<ReturnType<typeof fetchKnowledgeDocuments>>["items"]>([]);
   const chunks = ref<Awaited<ReturnType<typeof fetchKnowledgeChunks>>["items"]>([]);
+  const ingestionPipelines = ref<Awaited<ReturnType<typeof fetchIngestionPipelines>>["items"]>([]);
   const ingestionTasks = ref<Awaited<ReturnType<typeof fetchIngestionTasks>>["items"]>([]);
   const ingestionTaskNodes = ref<Awaited<ReturnType<typeof fetchIngestionTaskNodes>>["items"]>([]);
+  const adminUsers = ref<Awaited<ReturnType<typeof fetchAdminUsers>>["items"]>([]);
+  const adminDashboard = ref<Awaited<ReturnType<typeof fetchAdminDashboard>> | null>(null);
+  const dashboardRange = shallowRef("24h");
+  const adminIntentNodes = ref<Awaited<ReturnType<typeof fetchAdminIntentNodes>>["items"]>([]);
+  const adminKeywordMappings = ref<Awaited<ReturnType<typeof fetchAdminKeywordMappings>>["items"]>([]);
+  const adminTraces = ref<Awaited<ReturnType<typeof fetchAdminTraces>>["items"]>([]);
+  const selectedAdminTrace = ref<Awaited<ReturnType<typeof fetchAdminTraceDetail>> | null>(null);
+  const adminSettings = ref<Awaited<ReturnType<typeof fetchAdminSettings>>["items"]>([]);
 
   const documentTitle = shallowRef("");
   const documentContent = shallowRef("");
@@ -237,6 +271,22 @@ export function useRetriFlowAdmin() {
     }
   };
 
+  const createPipeline = async (payload: IngestionPipelineCreateRequest) => {
+    if (!canViewIngestion.value) {
+      denyManagementAction();
+      return;
+    }
+    error.value = "";
+    infoMessage.value = "";
+    try {
+      const created = await createIngestionPipeline(payload);
+      ingestionPipelines.value = [...ingestionPipelines.value, created];
+      infoMessage.value = "流水线已创建。";
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : "新增流水线失败";
+    }
+  };
+
   const loadChunks = async (knowledgeBaseId: string, documentId: number | null) => {
     if (!knowledgeBaseId || documentId === null) {
       chunks.value = [];
@@ -285,7 +335,44 @@ export function useRetriFlowAdmin() {
       const [metaData, knowledgeData] = await Promise.all([fetchMeta(), fetchKnowledgeBases()]);
       meta.value = metaData;
       knowledgeBases.value = knowledgeData.items;
-      ingestionTasks.value = canViewIngestion.value ? (await fetchIngestionTasks()).items : [];
+      if (isAdmin.value) {
+        const [
+          pipelineData,
+          taskData,
+          userData,
+          dashboardData,
+          intentNodeData,
+          keywordMappingData,
+          traceData,
+          settingData
+        ] = await Promise.all([
+          fetchIngestionPipelines(),
+          fetchIngestionTasks(),
+          fetchAdminUsers(),
+          fetchAdminDashboard(dashboardRange.value),
+          fetchAdminIntentNodes(),
+          fetchAdminKeywordMappings(),
+          fetchAdminTraces(),
+          fetchAdminSettings()
+        ]);
+        ingestionPipelines.value = pipelineData.items;
+        ingestionTasks.value = taskData.items;
+        adminUsers.value = userData.items;
+        adminDashboard.value = dashboardData;
+        adminIntentNodes.value = intentNodeData.items;
+        adminKeywordMappings.value = keywordMappingData.items;
+        adminTraces.value = traceData.items;
+        adminSettings.value = settingData.items;
+      } else {
+        ingestionPipelines.value = [];
+        ingestionTasks.value = [];
+        adminUsers.value = [];
+        adminDashboard.value = null;
+        adminIntentNodes.value = [];
+        adminKeywordMappings.value = [];
+        adminTraces.value = [];
+        adminSettings.value = [];
+      }
 
       if (!selectedKnowledgeBaseId.value && knowledgeData.items.length > 0) {
         selectedKnowledgeBaseId.value = knowledgeData.items[0].id;
@@ -306,13 +393,13 @@ export function useRetriFlowAdmin() {
     }
   };
 
-  const addKnowledgeBase = async () => {
+  const addKnowledgeBase = async (name?: string) => {
     if (!canManageKnowledge.value) {
       denyManagementAction();
       return;
     }
 
-    const created = await createKnowledgeBase(`RetriFlow 知识库 ${knowledgeBases.value.length + 1}`);
+    const created = await createKnowledgeBase(name?.trim() || `RetriFlow 知识库 ${knowledgeBases.value.length + 1}`);
     selectedKnowledgeBaseId.value = created.id;
     infoMessage.value = "知识库已创建。";
     await load();
@@ -347,6 +434,26 @@ export function useRetriFlowAdmin() {
 
   const selectDocument = (documentId: number) => {
     selectedDocumentId.value = documentId;
+  };
+
+  const removeDocument = async (documentId: number) => {
+    if (!canManageKnowledge.value) {
+      denyManagementAction();
+      return;
+    }
+
+    if (!selectedKnowledgeBaseId.value) {
+      return;
+    }
+
+    await deleteKnowledgeDocument(selectedKnowledgeBaseId.value, documentId);
+    infoMessage.value = "文档已删除。";
+    if (selectedDocumentId.value === documentId) {
+      selectedDocumentId.value = null;
+      chunks.value = [];
+      ingestionTaskNodes.value = [];
+    }
+    await refreshKnowledgeData();
   };
 
   const addDocument = async () => {
@@ -432,7 +539,7 @@ export function useRetriFlowAdmin() {
         chunkOverlap: chunkOverlap.value,
         recursiveSeparators: parseRecursiveSeparatorsText(recursiveSeparatorsText.value)
       });
-      infoMessage.value = `文档《${reindexed.title}》已完成重建索引。`;
+      infoMessage.value = "";
       await refreshKnowledgeData(reindexed.id);
     } catch (err) {
       error.value = err instanceof Error ? err.message : "重建索引失败";
@@ -485,10 +592,228 @@ export function useRetriFlowAdmin() {
     }
   });
 
+  const routeProfileLoading = shallowRef(false);
+  const routeProfile = ref<KnowledgeBaseRouteProfile | null>(null);
+
+  const loadRouteProfile = async (knowledgeBaseId: string) => {
+    if (!knowledgeBaseId) {
+      routeProfile.value = null;
+      return;
+    }
+    routeProfileLoading.value = true;
+    try {
+      const profile = await fetchRouteProfile(knowledgeBaseId);
+      routeProfile.value = profile;
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : "加载意图路由配置失败";
+    } finally {
+      routeProfileLoading.value = false;
+    }
+  };
+
+  const saveRouteProfile = async () => {
+    if (!selectedKnowledgeBaseId.value || !routeProfile.value) return;
+    routeProfileLoading.value = true;
+    error.value = "";
+    infoMessage.value = "";
+    try {
+      const updated = await updateRouteProfile(selectedKnowledgeBaseId.value, {
+        profile_text: routeProfile.value.profile_text,
+        sample_questions: routeProfile.value.sample_questions,
+        keywords: routeProfile.value.keywords
+      });
+      routeProfile.value = updated;
+      infoMessage.value = "意图路由配置已更新。";
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : "保存意图路由配置失败";
+    } finally {
+      routeProfileLoading.value = false;
+    }
+  };
+
+  const addKeyword = (keyword: string) => {
+    if (!routeProfile.value || !keyword.trim()) return;
+    const kw = keyword.trim();
+    if (!routeProfile.value.keywords.includes(kw)) {
+      routeProfile.value.keywords = [...routeProfile.value.keywords, kw];
+    }
+  };
+
+  const removeKeyword = (index: number) => {
+    if (!routeProfile.value) return;
+    const arr = [...routeProfile.value.keywords];
+    arr.splice(index, 1);
+    routeProfile.value.keywords = arr;
+  };
+
+  const addSampleQuestion = (question: string) => {
+    if (!routeProfile.value || !question.trim()) return;
+    const q = question.trim();
+    if (!routeProfile.value.sample_questions.includes(q)) {
+      routeProfile.value.sample_questions = [...routeProfile.value.sample_questions, q];
+    }
+  };
+
+  const removeSampleQuestion = (index: number) => {
+    if (!routeProfile.value) return;
+    const arr = [...routeProfile.value.sample_questions];
+    arr.splice(index, 1);
+    routeProfile.value.sample_questions = arr;
+  };
+
+  const changeUserRole = async (userId: string, role: string) => {
+    if (!isAdmin.value) {
+      denyManagementAction();
+      return;
+    }
+    const updated = await updateAdminUserRole(userId, role);
+    adminUsers.value = adminUsers.value.map((item) => (item.id === userId ? updated : item));
+    infoMessage.value = "用户角色已更新。";
+  };
+
+  const createUser = async (payload: AdminUserCreateRequest) => {
+    if (!isAdmin.value) {
+      denyManagementAction();
+      return;
+    }
+    error.value = "";
+    infoMessage.value = "";
+    try {
+      const created = await createAdminUser(payload);
+      adminUsers.value = [created, ...adminUsers.value.filter((item) => item.id !== created.id)];
+      infoMessage.value = "用户已创建。";
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : "新增用户失败";
+    }
+  };
+
+  const loadDashboard = async (range = dashboardRange.value) => {
+    if (!isAdmin.value) {
+      adminDashboard.value = null;
+      return;
+    }
+    dashboardRange.value = range;
+    try {
+      adminDashboard.value = await fetchAdminDashboard(range);
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : "加载 Dashboard 数据失败";
+    }
+  };
+
+  const createIntentNode = async (payload: AdminIntentNodeUpsertRequest) => {
+    if (!isAdmin.value) {
+      denyManagementAction();
+      return null;
+    }
+    error.value = "";
+    infoMessage.value = "";
+    try {
+      const created = await createAdminIntentNode(payload);
+      adminIntentNodes.value = [...adminIntentNodes.value, created];
+      infoMessage.value = "意图节点已创建。";
+      return created;
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : "新增意图节点失败";
+      return null;
+    }
+  };
+
+  const updateIntentNode = async (nodeId: string, payload: AdminIntentNodeUpsertRequest) => {
+    if (!isAdmin.value) {
+      denyManagementAction();
+      return null;
+    }
+    error.value = "";
+    infoMessage.value = "";
+    try {
+      const updated = await updateAdminIntentNode(nodeId, payload);
+      adminIntentNodes.value = adminIntentNodes.value.map((item) => (item.id === nodeId ? updated : item));
+      infoMessage.value = "意图节点已更新。";
+      return updated;
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : "更新意图节点失败";
+      return null;
+    }
+  };
+
+  const removeIntentNode = async (nodeId: string) => {
+    if (!isAdmin.value) {
+      denyManagementAction();
+      return;
+    }
+    await deleteAdminIntentNode(nodeId);
+    adminIntentNodes.value = adminIntentNodes.value.filter((item) => item.id !== nodeId);
+    infoMessage.value = "意图节点已删除。";
+  };
+
+  const createKeywordMapping = async (payload: AdminKeywordMappingUpsertRequest) => {
+    if (!isAdmin.value) {
+      denyManagementAction();
+      return null;
+    }
+    error.value = "";
+    infoMessage.value = "";
+    try {
+      const created = await createAdminKeywordMapping(payload);
+      adminKeywordMappings.value = [created, ...adminKeywordMappings.value];
+      infoMessage.value = "关键词映射已创建。";
+      return created;
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : "新增关键词映射失败";
+      return null;
+    }
+  };
+
+  const updateKeywordMapping = async (mappingId: string, payload: AdminKeywordMappingUpsertRequest) => {
+    if (!isAdmin.value) {
+      denyManagementAction();
+      return null;
+    }
+    error.value = "";
+    infoMessage.value = "";
+    try {
+      const updated = await updateAdminKeywordMapping(mappingId, payload);
+      adminKeywordMappings.value = adminKeywordMappings.value.map((item) => (item.id === mappingId ? updated : item));
+      infoMessage.value = "关键词映射已更新。";
+      return updated;
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : "更新关键词映射失败";
+      return null;
+    }
+  };
+
+  const removeKeywordMapping = async (mappingId: string) => {
+    if (!isAdmin.value) {
+      denyManagementAction();
+      return;
+    }
+    await deleteAdminKeywordMapping(mappingId);
+    adminKeywordMappings.value = adminKeywordMappings.value.filter((item) => item.id !== mappingId);
+    infoMessage.value = "关键词映射已删除。";
+  };
+
+  const loadTraceDetail = async (sessionId: string) => {
+    if (!isAdmin.value || !sessionId) {
+      selectedAdminTrace.value = null;
+      return;
+    }
+    error.value = "";
+    try {
+      selectedAdminTrace.value = await fetchAdminTraceDetail(sessionId);
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : "加载链路详情失败";
+    }
+  };
+
+  const clearTraceDetail = () => {
+    selectedAdminTrace.value = null;
+  };
+
   watch(
     selectedKnowledgeBaseId,
     (knowledgeBaseId) => {
       void loadDocuments(knowledgeBaseId);
+      void loadRouteProfile(knowledgeBaseId);
     },
     { immediate: true }
   );
@@ -524,7 +849,17 @@ export function useRetriFlowAdmin() {
     selectedDocument,
     selectedDocumentId,
     chunks,
+    ingestionPipelines,
+    ingestionTasks,
     ingestionTaskNodes,
+    adminUsers,
+    adminDashboard,
+    dashboardRange,
+    adminIntentNodes,
+    adminKeywordMappings,
+    adminTraces,
+    selectedAdminTrace,
+    adminSettings,
     relatedTask,
     isAdmin,
     canManageKnowledge,
@@ -563,8 +898,32 @@ export function useRetriFlowAdmin() {
     removeKnowledgeBase,
     selectKnowledgeBase,
     selectDocument,
+    removeDocument,
+    loadDocuments,
+    loadChunks,
+    createPipeline,
+    refreshKnowledgeData,
     addDocument,
     uploadDocument,
-    reindexDocument
+    reindexDocument,
+    loadTaskNodes,
+    routeProfileLoading,
+    routeProfile,
+    saveRouteProfile,
+    addKeyword,
+    removeKeyword,
+    addSampleQuestion,
+    removeSampleQuestion,
+    changeUserRole,
+    createUser,
+    loadDashboard,
+    createIntentNode,
+    updateIntentNode,
+    removeIntentNode,
+    createKeywordMapping,
+    updateKeywordMapping,
+    removeKeywordMapping,
+    loadTraceDetail,
+    clearTraceDetail
   };
 }

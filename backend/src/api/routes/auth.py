@@ -1,7 +1,7 @@
 from fastapi import APIRouter, status
 
 from api.deps.auth import CurrentUser
-from domain.auth import RetriFlowAuthService
+from modules.auth import RetriFlowAuthService
 from schemas.auth import (
     AuthLoginRequest,
     AuthLoginResponse,

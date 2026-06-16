@@ -32,7 +32,8 @@ const visibleSources = computed(() =>
   sourcesExpanded.value ? props.latestSources : props.latestSources.slice(0, defaultVisibleSourceCount)
 );
 const visibleMcpCalls = computed(() => (mcpExpanded.value ? props.latestMcpCalls : []));
-const urlPattern = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g;
+const imagePattern = /!\[([^\]]*)\]\(([^)\s]+)\)/g;
+const urlPattern = /\[([^\]]+)\]\(([^)\s]+)\)/g;
 
 function escapeHtml(value: string): string {
   return value
@@ -45,20 +46,46 @@ function escapeHtml(value: string): string {
 
 function normalizeMessage(value: string): string {
   return value
+    .replace(/\r\n/g, "\n")
     .replace(/[ \t]+\n/g, "\n")
+    .replace(/\u00a0/g, " ")
+    .replace(/([。！？；：:]\s*)([-*+]\s+\*\*?)/g, "$1\n\n$2")
+    .replace(/([。！？；：:]\s*)([-*+]\s+)/g, "$1\n\n$2")
+    .replace(/(\[[0-9]+\]\s*)([-*+]\s+)/g, "$1\n\n$2")
+    .replace(/([^\n])\s+(#{1,6}\s+)/g, "$1\n\n$2")
+    .replace(/([^\n])\s+(\d+\.\s+)/g, "$1\n\n$2")
+    .replace(/([^\n])\s+([-*+]\s+)/g, "$1\n\n$2")
     .replace(/\n{4,}/g, "\n\n\n")
     .replace(/(^|\n)---(?=#{1,6}\s)/g, "$1---\n")
     .trim();
 }
 
+function sanitizeUrl(value: string): string {
+  const url = value.trim();
+  if (/^(https?:\/\/|\/)/i.test(url)) {
+    return escapeHtml(url);
+  }
+  return "#";
+}
+
 function renderInlineMarkdown(value: string): string {
   const linkTokens: string[] = [];
-  let escaped = escapeHtml(value);
+  let escaped = escapeHtml(value)
+    .replace(/\*\*\s+([^*]+?)\s+\*\*/g, "**$1**")
+    .replace(/__\s+([^_]+?)\s+__/g, "__$1__");
+
+  escaped = escaped.replace(imagePattern, (_, alt: string, url: string) => {
+    const token = `__RETRIFLOW_LINK_${linkTokens.length}__`;
+    linkTokens.push(
+      `<img src="${sanitizeUrl(url)}" alt="${escapeHtml(alt)}" class="message-image" loading="lazy" />`
+    );
+    return token;
+  });
 
   escaped = escaped.replace(urlPattern, (_, label: string, url: string) => {
     const token = `__RETRIFLOW_LINK_${linkTokens.length}__`;
     linkTokens.push(
-      `<a href="${url}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`
+      `<a href="${sanitizeUrl(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`
     );
     return token;
   });
@@ -99,8 +126,20 @@ function renderCodeBlock(lines: string[]): string {
 }
 
 function renderParagraph(lines: string[]): string {
-  const content = lines.map((line) => renderInlineMarkdown(line)).join("<br>");
+  const content = renderInlineMarkdown(lines.join(" ").replace(/\s+/g, " ").trim());
   return `<p>${content}</p>`;
+}
+
+function splitInlineListMarkers(value: string): string[] {
+  if (!value.trim()) {
+    return [""];
+  }
+  return value
+    .replace(/\s+([-*+]\s+)/g, "\n$1")
+    .replace(/\s+(\d+\.\s+)/g, "\n$1")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
 }
 
 function renderTable(lines: string[]): string {
@@ -129,7 +168,9 @@ function renderTable(lines: string[]): string {
 
 function renderMessageHtml(value: string): string {
   const normalized = normalizeMessage(value || "正在等待模型返回...");
-  const lines = normalized.split("\n");
+  const lines = normalized
+    .split("\n")
+    .flatMap((line) => splitInlineListMarkers(line));
   const blocks: string[] = [];
 
   for (let index = 0; index < lines.length; ) {
@@ -269,162 +310,362 @@ function buildSourcePreview(content: string): string {
   }
   return `${normalized.slice(0, 120)}...`;
 }
-
-const emptyStateTitle = computed(() => {
-  if (!props.hasMessages) {
-    return "当前会话还没有真实消息";
-  }
-  return "";
-});
 </script>
 
 <template>
   <div class="chat-transcript">
-    <div v-if="!hasMessages" class="empty-state-card">
-      <strong>{{ emptyStateTitle }}</strong>
-      <p class="status-copy">这里不会再显示本地占位消息。等你发出第一条问题后，真实问答记录会从数据库加载并展示在这里。</p>
-    </div>
-
     <div
       v-for="message in messages"
       :key="message.id"
-      class="message-card"
-      :class="[message.role, `is-${message.state}`]"
+      class="message-row"
+      :class="message.role"
     >
-      <div class="pane-title-row">
-        <strong>{{ message.role === "assistant" ? "RetriFlow" : "用户" }}</strong>
-        <span v-if="message.state === 'streaming'" class="message-state-pill">正在回复</span>
-        <span v-else-if="message.state === 'stopped'" class="message-state-pill muted">已停止</span>
-        <span v-else-if="message.state === 'error'" class="message-state-pill error">失败</span>
+      <div v-if="message.role === 'assistant'" class="avatar assistant-avatar">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a2 2 0 012 2v2h4a2 2 0 012 2v10a2 2 0 01-2 2H6a2 2 0 01-2-2V8a2 2 0 012-2h4V4a2 2 0 012-2zm0 8a2 2 0 100 4 2 2 0 000-4z" /></svg>
       </div>
-      <div class="message-body prose-message" v-html="renderMessageHtml(message.content)"></div>
-      <div v-if="message.state === 'streaming'" class="streaming-inline-indicator" aria-hidden="true">
-        <span class="streaming-caret">|</span>
+
+      <div class="message-content" :class="{ 'bubble': message.role === 'user' }">
+        <div class="prose-message" v-html="renderMessageHtml(message.content)"></div>
+        <div v-if="message.state === 'streaming'" class="streaming-caret"></div>
+        <div v-if="message.state === 'error'" class="error-badge">回复失败</div>
       </div>
     </div>
 
-    <section v-if="latestMcpCalls.length > 0" class="sources-panel">
-      <div class="pane-title-row">
-        <h3>本次工具调用</h3>
-        <div class="inline-actions">
-          <span class="status-copy">{{ latestMcpCalls.length }} 次</span>
-          <button type="button" class="secondary-button compact-button" @click="mcpExpanded = !mcpExpanded">
-            {{ mcpToggleLabel }}
-          </button>
-        </div>
+    <!-- Reference & Source panels here as needed, simplified for aesthetic -->
+    <div v-if="latestSources.length > 0" class="message-row assistant">
+      <div class="avatar assistant-avatar" style="visibility: hidden;"></div>
+      <div class="message-content references-panel">
+         <div class="ref-header" @click="sourcesExpanded = !sourcesExpanded">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" /></svg>
+            <span>参考了 {{ latestSources.length }} 个来源</span>
+            <svg class="chevron" :class="{'open': sourcesExpanded}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 9l-7 7-7-7" /></svg>
+         </div>
+         <div v-if="sourcesExpanded" class="ref-list">
+            <div v-for="(source, index) in visibleSources" :key="source.chunk_id" class="ref-item">
+               <span class="ref-index">[{{index + 1}}]</span>
+               <span class="ref-title">{{ source.document_title }}</span>
+            </div>
+         </div>
       </div>
-      <article v-for="(call, index) in visibleMcpCalls" :key="`${call.tool_id}-${index}`" class="message-card mcp-card">
-        <div class="pane-title-row">
-          <strong>{{ call.tool_id }}</strong>
-          <span class="status-badge" :class="{ 'status-badge-error': call.is_error }">
-            {{ call.is_error ? "错误" : "成功" }}
-          </span>
-        </div>
-        <div class="mcp-detail-grid">
-          <div>
-            <p class="mcp-section-label">参数</p>
-            <pre class="mcp-json-block">{{ formatArguments(call.arguments) }}</pre>
-          </div>
-          <div>
-            <p class="mcp-section-label">结果摘要</p>
-            <p class="mcp-result-copy">{{ call.content }}</p>
-          </div>
-        </div>
-      </article>
-    </section>
+    </div>
 
-    <section v-if="latestSources.length > 0" class="sources-panel">
-      <div class="pane-title-row">
-        <h3>参考来源</h3>
-        <div class="inline-actions">
-          <span class="source-count-pill">{{ latestSources.length }} 条</span>
-          <button
-            type="button"
-            class="secondary-button compact-button"
-            :disabled="latestSources.length <= defaultVisibleSourceCount"
-            @click="sourcesExpanded = !sourcesExpanded"
-          >
-            {{ sourceToggleLabel }}
-          </button>
-        </div>
+    <div v-if="statusText || errorMessage" class="status-indicator">
+      <div class="typing-indicator">
+        <span></span><span></span><span></span>
       </div>
-      <div v-if="visibleSources.length > 0" class="source-card-grid">
-        <article v-for="(source, index) in visibleSources" :key="source.chunk_id" class="message-card source-card">
-          <div class="pane-title-row source-card-header">
-            <div class="source-heading">
-              <span class="source-index-pill">来源 {{ index + 1 }}</span>
-              <strong>{{ source.document_title }}</strong>
-            </div>
-            <span class="status-badge">score {{ source.score.toFixed(2) }}</span>
-          </div>
-          <p class="source-meta">{{ formatSourceLabel(source) }}</p>
-          <p class="source-preview">{{ buildSourcePreview(source.content) }}</p>
-          <div class="inline-actions source-detail-actions">
-            <button
-              type="button"
-              class="secondary-button compact-button"
-              @click="toggleSourceDetail(source)"
-            >
-              {{ isSourceExpanded(source) ? "收起详情" : "查看详情" }}
-            </button>
-            <button
-              v-if="source.source_link"
-              type="button"
-              class="secondary-button compact-button"
-              @click="openSourceLink(source)"
-            >
-              打开片段
-            </button>
-          </div>
-          <div v-if="isSourceExpanded(source)" class="source-detail-panel">
-            <div class="source-detail-grid">
-              <div>
-                <span class="workflow-label">文档标题</span>
-                <p>{{ source.document_title }}</p>
-              </div>
-              <div>
-                <span class="workflow-label">更新时间</span>
-                <p>{{ source.source_updated_at || "暂无" }}</p>
-              </div>
-              <div>
-                <span class="workflow-label">知识库 ID</span>
-                <p>{{ source.knowledge_base_id }}</p>
-              </div>
-              <div>
-                <span class="workflow-label">文档 ID</span>
-                <p>{{ source.document_id }}</p>
-              </div>
-              <div>
-                <span class="workflow-label">Chunk ID</span>
-                <p>{{ source.chunk_id }}</p>
-              </div>
-              <div>
-                <span class="workflow-label">匹配分数</span>
-                <p>{{ source.score.toFixed(4) }}</p>
-              </div>
-            </div>
-            <div class="source-detail-snippet">
-              <span class="workflow-label">引用片段</span>
-              <p>{{ source.content }}</p>
-            </div>
-          </div>
-        </article>
-      </div>
-      <p
-        v-if="!sourcesExpanded && latestSources.length > defaultVisibleSourceCount"
-        class="source-collapsed-hint"
-      >
-        当前先展示最相关的 {{ defaultVisibleSourceCount }} 条来源，可展开查看更多候选片段。
-      </p>
-    </section>
-
-    <div v-if="statusText || errorMessage" class="chat-status-bar" :class="{ error: Boolean(errorMessage) }">
-      <span class="chat-status-label">{{ errorMessage || statusText }}</span>
-      <span v-if="loading" class="typing-dots" aria-hidden="true">
-        <i></i>
-        <i></i>
-        <i></i>
-      </span>
+      <span class="status-text">{{ errorMessage || statusText }}</span>
     </div>
   </div>
 </template>
+
+<style>
+/* Global unscoped styles for v-html rendered prose content */
+.prose-message {
+  font-size: 15px;
+  line-height: 1.7;
+  color: var(--text-main);
+  word-wrap: break-word;
+}
+
+.prose-message p {
+  margin-bottom: 16px;
+}
+.prose-message p:last-child {
+  margin-bottom: 0;
+}
+
+.prose-message h1, .prose-message h2, .prose-message h3, .prose-message h4, .prose-message h5, .prose-message h6 {
+  font-weight: 700;
+  color: var(--text-main);
+  margin-top: 24px;
+  margin-bottom: 12px;
+}
+.prose-message h1 { font-size: 20px; }
+.prose-message h2 { font-size: 18px; }
+.prose-message h3 { font-size: 16px; }
+.prose-message h4, .prose-message h5, .prose-message h6 { font-size: 15px; }
+
+.prose-message ul, .prose-message ol {
+  padding-left: 20px;
+  margin-bottom: 16px;
+}
+
+.prose-message li {
+  margin-bottom: 8px;
+}
+
+.prose-message li::marker {
+  color: var(--text-light);
+}
+
+.prose-message a {
+  color: var(--primary);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.prose-message a:hover {
+  text-decoration: underline;
+}
+
+.prose-message blockquote {
+  margin: 14px 0;
+  padding: 12px 16px;
+  border-left: 3px solid var(--primary);
+  border-radius: 10px;
+  background: var(--sidebar-bg);
+  color: var(--text-muted);
+}
+
+.prose-message blockquote p {
+  margin-bottom: 8px;
+}
+
+.prose-message hr {
+  border: 0;
+  border-top: 1px solid var(--border-light);
+  margin: 20px 0;
+}
+
+.prose-message table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 16px 0;
+  overflow: hidden;
+  border: 1px solid var(--border-light);
+  border-radius: 12px;
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.prose-message th,
+.prose-message td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-light);
+  border-right: 1px solid var(--border-light);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.prose-message th {
+  background: var(--sidebar-bg);
+  font-weight: 700;
+}
+
+.prose-message .citation {
+  display: inline-flex;
+  align-items: center;
+  margin: 0 2px;
+  color: var(--primary);
+  font-weight: 700;
+}
+
+.prose-message strong {
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.prose-message em {
+  font-style: italic;
+}
+
+.prose-message code {
+  background: var(--sidebar-bg);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 13px;
+  color: var(--primary);
+}
+
+.prose-message pre {
+  background: var(--sidebar-dark-bg);
+  padding: 16px;
+  border-radius: 12px;
+  overflow-x: auto;
+  margin-bottom: 16px;
+}
+
+.prose-message pre code {
+  background: none;
+  padding: 0;
+  color: #E2E8F0;
+  font-size: 14px;
+}
+
+.prose-message .message-image {
+  max-width: 100%;
+  border-radius: 12px;
+  margin: 16px 0;
+  box-shadow: var(--shadow-sm);
+  border: 1px solid var(--border-light);
+}
+</style>
+
+<style scoped>
+.chat-transcript {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+  padding-top: 24px;
+}
+
+.message-row {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  width: 100%;
+}
+
+.message-row.user {
+  flex-direction: row-reverse;
+}
+
+.avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.assistant-avatar {
+  background: var(--primary);
+  color: white;
+}
+.assistant-avatar svg {
+  width: 20px;
+  height: 20px;
+}
+
+.message-content {
+  max-width: 85%;
+}
+
+.message-content.bubble {
+  background: var(--sidebar-bg);
+  padding: 12px 20px;
+  border-radius: 20px;
+  border-top-right-radius: 4px;
+  color: var(--text-main);
+}
+
+.streaming-caret {
+  display: inline-block;
+  width: 8px;
+  height: 16px;
+  background: var(--primary);
+  animation: blink 1s step-end infinite;
+  vertical-align: middle;
+  margin-left: 4px;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.error-badge {
+  display: inline-block;
+  margin-top: 8px;
+  padding: 4px 8px;
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--danger);
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.references-panel {
+  width: 100%;
+  max-width: 600px;
+}
+
+.ref-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  background: white;
+  border: 1px solid var(--border-light);
+  border-radius: 12px;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 14px;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+
+.ref-header:hover {
+  background: var(--sidebar-bg);
+}
+
+.ref-header svg {
+  width: 16px;
+  height: 16px;
+}
+
+.chevron {
+  margin-left: auto;
+  transition: transform 0.2s;
+}
+
+.chevron.open {
+  transform: rotate(180deg);
+}
+
+.ref-list {
+  margin-top: 8px;
+  padding: 16px;
+  background: var(--sidebar-bg);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ref-item {
+  display: flex;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-main);
+}
+
+.ref-index {
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  align-self: flex-start;
+  color: var(--text-light);
+  font-size: 13px;
+}
+
+.typing-indicator {
+  display: flex;
+  gap: 4px;
+}
+
+.typing-indicator span {
+  width: 6px;
+  height: 6px;
+  background: var(--text-light);
+  border-radius: 50%;
+  animation: bounce 1.4s infinite ease-in-out both;
+}
+
+.typing-indicator span:nth-child(1) { animation-delay: -0.32s; }
+.typing-indicator span:nth-child(2) { animation-delay: -0.16s; }
+
+@keyframes bounce {
+  0%, 80%, 100% { transform: scale(0); }
+  40% { transform: scale(1); }
+}
+</style>

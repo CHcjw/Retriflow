@@ -35,6 +35,9 @@ WHERE table_schema = current_schema()
       'knowledge_chunks',
       'knowledge_document_blocks',
       'knowledge_document_table_cells',
+      'admin_intent_nodes',
+      'admin_keyword_mappings',
+      'ingestion_pipelines',
       'ingestion_tasks',
       'ingestion_task_nodes',
       'conversation_memory_summaries',
@@ -65,6 +68,12 @@ UNION ALL
 SELECT 'knowledge_document_blocks', COUNT(*) FROM knowledge_document_blocks
 UNION ALL
 SELECT 'knowledge_document_table_cells', COUNT(*) FROM knowledge_document_table_cells
+UNION ALL
+SELECT 'admin_intent_nodes', COUNT(*) FROM admin_intent_nodes
+UNION ALL
+SELECT 'admin_keyword_mappings', COUNT(*) FROM admin_keyword_mappings
+UNION ALL
+SELECT 'ingestion_pipelines', COUNT(*) FROM ingestion_pipelines
 UNION ALL
 SELECT 'ingestion_tasks', COUNT(*) FROM ingestion_tasks
 UNION ALL
@@ -145,6 +154,44 @@ SELECT
     created_at
 FROM ingestion_tasks
 ORDER BY id DESC
+LIMIT 20;
+
+SELECT
+    id,
+    name,
+    code,
+    level,
+    node_type,
+    parent_id,
+    knowledge_base_id,
+    enabled,
+    updated_at
+FROM admin_intent_nodes
+ORDER BY parent_id, sort_order, updated_at DESC
+LIMIT 50;
+
+SELECT
+    id,
+    raw_keyword,
+    target_keyword,
+    match_type,
+    priority,
+    enabled,
+    knowledge_base_id,
+    updated_at
+FROM admin_keyword_mappings
+ORDER BY priority DESC, raw_keyword ASC
+LIMIT 50;
+
+SELECT
+    id,
+    name,
+    description,
+    jsonb_array_length(nodes_json) AS node_count,
+    owner,
+    updated_at
+FROM ingestion_pipelines
+ORDER BY updated_at DESC, id DESC
 LIMIT 20;
 
 -- ============================================

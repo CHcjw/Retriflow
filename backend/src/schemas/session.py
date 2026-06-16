@@ -13,6 +13,10 @@ class SessionCreateRequest(BaseModel):
     owner_id: str = ""
 
 
+class SessionUpdateRequest(BaseModel):
+    title: str
+
+
 class SessionListResponse(BaseModel):
     items: list[SessionItem]
 
@@ -23,6 +27,7 @@ class ConversationMessageItem(BaseModel):
     role: str
     content: str
     created_at: str
+    duration_ms: int = 0
 
 
 class ConversationMessageListResponse(BaseModel):

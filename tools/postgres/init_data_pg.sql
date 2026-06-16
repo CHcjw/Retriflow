@@ -11,10 +11,14 @@ INSERT INTO users (id, username, password_hash, role)
 VALUES (
     'user-admin',
     'admin',
-    'retriflow-seed-salt$8078289143f985c2ba21842d4eea08f4abf0f6ad8a191f3d67fae9bb7789b1ac',
+    'retriflow-seed-salt$3dcb8cd47f903b433a8eb58c95de902033e5a86d8956a4ddc51020965710a67d',
     'admin'
 )
-ON CONFLICT (id) DO NOTHING;
+ON CONFLICT (id) DO UPDATE
+SET
+    username = EXCLUDED.username,
+    password_hash = EXCLUDED.password_hash,
+    role = EXCLUDED.role;
 
 -- ============================================
 -- Seed Sessions
@@ -140,6 +144,87 @@ VALUES
     (2, 1, 'segment', 2, 1, 'Derived 1 semantic segments from source text.', 1),
     (3, 1, 'chunk', 3, 1, 'Generated 1 chunks with overlap-aware chunking.', 1),
     (4, 1, 'index', 4, 1, 'Indexed chunks into the local retrieval store.', 1)
+ON CONFLICT (id) DO NOTHING;
+
+-- ============================================
+-- Seed Ingestion Pipeline
+-- ============================================
+
+INSERT INTO ingestion_pipelines (
+    id,
+    name,
+    description,
+    nodes_json,
+    owner
+)
+VALUES (
+    1,
+    'retriflow-ingestion-pipeline',
+    'Document ingestion pipeline: Apache Tika parse, structured extraction, chunking, embedding and indexing.',
+    '[
+      {"node_id":"parse","node_type":"parser","next_node_id":"extract","condition":"","config":{"engine":"apache-tika","preserve_structure":true}},
+      {"node_id":"extract","node_type":"extractor","next_node_id":"chunk","condition":"","config":{"extract":["paragraph","heading","table","image_caption","page_number"]}},
+      {"node_id":"chunk","node_type":"chunker","next_node_id":"embed","condition":"","config":{"strategy":"auto","chunk_size":600,"chunk_overlap":120}},
+      {"node_id":"embed","node_type":"embedder","next_node_id":"index","condition":"","config":{"provider":"siliconflow","model":"qwen-emb-8b"}},
+      {"node_id":"index","node_type":"indexer","next_node_id":"","condition":"","config":{"store":"pgvector"}}
+    ]'::jsonb,
+    'admin'
+)
+ON CONFLICT (id) DO NOTHING;
+
+-- ============================================
+-- Seed Admin Intent & Keyword Config
+-- ============================================
+
+INSERT INTO admin_intent_nodes (
+    id,
+    name,
+    code,
+    level,
+    node_type,
+    parent_id,
+    knowledge_base_id,
+    collection_name,
+    description,
+    sample_questions_json,
+    rule_snippet,
+    prompt_template,
+    top_k,
+    sort_order,
+    enabled
+)
+VALUES (
+    'intent-demo-retriflow',
+    'RetriFlow 知识检索',
+    'retriflow_knowledge',
+    'DOMAIN',
+    'KB',
+    'ROOT',
+    'kb-demo-1',
+    'retriflow_chunk_vectors',
+    '用于识别 RetriFlow 项目规划、RAG 流程、迁移目标相关问题。',
+    '["RetriFlow 一期应该先做什么？", "RetriFlow 的迁移目标是什么？"]'::jsonb,
+    '命中 retriflow、rag、langgraph、langchain、迁移 等关键词时优先进入该节点。',
+    '根据 RetriFlow 知识库内容进行回答，必须引用来源。',
+    5,
+    10,
+    1
+)
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO admin_keyword_mappings (
+    id,
+    raw_keyword,
+    target_keyword,
+    match_type,
+    priority,
+    enabled,
+    remark,
+    knowledge_base_id
+)
+VALUES
+    ('keyword-demo-rag', 'rag', 'RAG 检索增强生成', 'contains', 20, 1, 'RAG 相关问题归一化', 'kb-demo-1'),
+    ('keyword-demo-retriflow', 'retriflow', 'RetriFlow', 'contains', 30, 1, '项目名称命中', 'kb-demo-1')
 ON CONFLICT (id) DO NOTHING;
 
 -- ============================================

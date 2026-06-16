@@ -12,7 +12,7 @@ sys.path.insert(0, str(SRC_PATH))
 
 class RetriFlowIngestionPipelineTests(unittest.TestCase):
     def test_pipeline_exposes_langchain_segment_documents(self) -> None:
-        from domain.ingestion import RetriFlowIngestionPipeline
+        from modules.ingestion import RetriFlowIngestionPipeline
 
         pipeline = RetriFlowIngestionPipeline()
         result = pipeline.run(
@@ -28,7 +28,7 @@ class RetriFlowIngestionPipelineTests(unittest.TestCase):
         self.assertEqual(result.source_documents[2].metadata["segment_count"], 3)
 
     def test_pipeline_exposes_langchain_chunk_documents_with_metadata(self) -> None:
-        from domain.ingestion import RetriFlowIngestionPipeline
+        from modules.ingestion import RetriFlowIngestionPipeline
 
         pipeline = RetriFlowIngestionPipeline()
         result = pipeline.run(
@@ -51,7 +51,7 @@ class RetriFlowIngestionPipelineTests(unittest.TestCase):
         )
 
     def test_fixed_strategy_produces_predictable_small_chunks(self) -> None:
-        from domain.ingestion import RetriFlowIngestionPipeline
+        from modules.ingestion import RetriFlowIngestionPipeline
 
         pipeline = RetriFlowIngestionPipeline(chunk_size=40, chunk_overlap=0, strategy="fixed")
         result = pipeline.run(
@@ -62,7 +62,7 @@ class RetriFlowIngestionPipelineTests(unittest.TestCase):
         self.assertTrue(all(document.metadata["strategy"] == "fixed" for document in result.chunk_documents))
 
     def test_recursive_strategy_respects_custom_separator_order(self) -> None:
-        from domain.ingestion import RetriFlowIngestionPipeline
+        from modules.ingestion import RetriFlowIngestionPipeline
 
         pipeline = RetriFlowIngestionPipeline(
             chunk_size=32,
@@ -76,7 +76,7 @@ class RetriFlowIngestionPipelineTests(unittest.TestCase):
         self.assertTrue(all(document.metadata["strategy"] == "recursive" for document in result.chunk_documents))
 
     def test_auto_strategy_selects_recursive_for_manual_style_knowledge_docs(self) -> None:
-        from domain.ingestion import RetriFlowIngestionPipeline
+        from modules.ingestion import RetriFlowIngestionPipeline
 
         pipeline = RetriFlowIngestionPipeline(strategy="auto")
         result = pipeline.run(
@@ -88,7 +88,7 @@ class RetriFlowIngestionPipelineTests(unittest.TestCase):
         self.assertEqual(result.chunk_documents[0].metadata["document_type"], "knowledge_base")
 
     def test_semantic_strategy_marks_chunks_with_semantic_metadata(self) -> None:
-        from domain.ingestion import RetriFlowIngestionPipeline
+        from modules.ingestion import RetriFlowIngestionPipeline
 
         pipeline = RetriFlowIngestionPipeline(strategy="semantic_embedding")
         result = pipeline.run(
@@ -101,7 +101,7 @@ class RetriFlowIngestionPipelineTests(unittest.TestCase):
         self.assertTrue(all("semantic_group" in document.metadata for document in result.chunk_documents))
 
     def test_semantic_strategy_uses_embedding_service(self) -> None:
-        from domain.ingestion import RetriFlowIngestionPipeline
+        from modules.ingestion import RetriFlowIngestionPipeline
 
         class StubEmbeddingService:
             def __init__(self) -> None:
@@ -123,7 +123,7 @@ class RetriFlowIngestionPipelineTests(unittest.TestCase):
         self.assertGreaterEqual(sum(len(batch) for batch in embedding_service.calls), 3)
 
     def test_hybrid_recursive_semantic_strategy_preserves_parent_segment_metadata(self) -> None:
-        from domain.ingestion import RetriFlowIngestionPipeline
+        from modules.ingestion import RetriFlowIngestionPipeline
 
         pipeline = RetriFlowIngestionPipeline(strategy="hybrid_recursive_semantic")
         result = pipeline.run(
@@ -136,7 +136,7 @@ class RetriFlowIngestionPipelineTests(unittest.TestCase):
         self.assertTrue(all("parent_segment_index" in document.metadata for document in result.chunk_documents))
 
     def test_postprocessing_merges_tiny_chunks_and_preserves_flags(self) -> None:
-        from domain.ingestion import RetriFlowIngestionPipeline
+        from modules.ingestion import RetriFlowIngestionPipeline
 
         pipeline = RetriFlowIngestionPipeline(chunk_size=24, chunk_overlap=0, strategy="fixed")
         result = pipeline.run(

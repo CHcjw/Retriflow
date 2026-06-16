@@ -10,7 +10,7 @@ sys.path.insert(0, str(SRC_PATH))
 
 class RetriFlowDocumentStructureTests(unittest.TestCase):
     def test_extracts_headings_paragraphs_tables_and_captions_from_xhtml(self) -> None:
-        from domain.document_structure import RetriFlowStructuredExtractionService
+        from infra.document_parser.structure import RetriFlowStructuredExtractionService
 
         xhtml = """
         <html xmlns="http://www.w3.org/1999/xhtml">
@@ -65,7 +65,7 @@ class RetriFlowDocumentStructureTests(unittest.TestCase):
         self.assertEqual(caption_block.page_number, 1)
 
     def test_extracts_multiple_pages_from_page_wrappers(self) -> None:
-        from domain.document_structure import RetriFlowStructuredExtractionService
+        from infra.document_parser.structure import RetriFlowStructuredExtractionService
 
         xhtml = """
         <html xmlns="http://www.w3.org/1999/xhtml">
@@ -88,7 +88,7 @@ class RetriFlowDocumentStructureTests(unittest.TestCase):
         self.assertEqual([block.page_number for block in paragraphs], [1, 2])
 
     def test_infers_table_headers_from_first_row_when_thead_is_missing(self) -> None:
-        from domain.document_structure import RetriFlowStructuredExtractionService
+        from infra.document_parser.structure import RetriFlowStructuredExtractionService
 
         xhtml = """
         <html xmlns="http://www.w3.org/1999/xhtml">
@@ -120,7 +120,7 @@ class RetriFlowDocumentStructureTests(unittest.TestCase):
         self.assertEqual(table_block.rows[0].cells[1].text, "20%")
 
     def test_repairs_mojibake_image_caption_prefix(self) -> None:
-        from domain.document_structure import RetriFlowStructuredExtractionService
+        from infra.document_parser.structure import RetriFlowStructuredExtractionService
 
         xhtml = """
         <html xmlns="http://www.w3.org/1999/xhtml">
@@ -144,7 +144,7 @@ class RetriFlowDocumentStructureTests(unittest.TestCase):
         self.assertEqual(caption_block.text, "图1 RetriFlow document parsing overview")
 
     def test_promotes_ocr_caption_when_existing_caption_is_missing(self) -> None:
-        from domain.document_structure import RetriFlowStructuredExtractionService
+        from infra.document_parser.structure import RetriFlowStructuredExtractionService
 
         xhtml = """
         <html xmlns="http://www.w3.org/1999/xhtml">
@@ -170,7 +170,7 @@ class RetriFlowDocumentStructureTests(unittest.TestCase):
         self.assertEqual(caption_block.page_number, 1)
 
     def test_ignores_tika_unpack_artifact_headings_for_embedded_images(self) -> None:
-        from domain.document_structure import RetriFlowStructuredExtractionService
+        from infra.document_parser.structure import RetriFlowStructuredExtractionService
 
         xhtml = """
         <html xmlns="http://www.w3.org/1999/xhtml">
@@ -194,7 +194,7 @@ class RetriFlowDocumentStructureTests(unittest.TestCase):
         self.assertEqual([block.block_type for block in document.blocks], ["image_caption"])
 
     def test_repairs_greek_pi_style_mojibake_caption_prefix(self) -> None:
-        from domain.document_structure import RetriFlowStructuredExtractionService
+        from infra.document_parser.structure import RetriFlowStructuredExtractionService
 
         repaired = RetriFlowStructuredExtractionService._repair_mojibake_caption_prefix(
             "ͼ1 RetriFlow document parsing overview"

@@ -22,6 +22,7 @@ class RetriFlowConversationMemoryServiceTests(unittest.TestCase):
         os.environ["RETRIFLOW_PGVECTOR_DSN"] = ""
         os.environ["RETRIFLOW_VECTOR_STORE_TYPE"] = "memory"
         os.environ["RETRIFLOW_LLM_PROVIDER"] = "disabled"
+        os.environ["RETRIFLOW_SEED_DEMO_CONTENT"] = "true"
         os.environ["RETRIFLOW_MEMORY_HISTORY_KEEP_TURNS"] = "2"
         os.environ["RETRIFLOW_MEMORY_SUMMARY_ENABLED"] = "true"
         os.environ["RETRIFLOW_MEMORY_SUMMARY_START_TURNS"] = "3"
@@ -50,6 +51,7 @@ class RetriFlowConversationMemoryServiceTests(unittest.TestCase):
             "RETRIFLOW_PGVECTOR_DSN",
             "RETRIFLOW_VECTOR_STORE_TYPE",
             "RETRIFLOW_LLM_PROVIDER",
+            "RETRIFLOW_SEED_DEMO_CONTENT",
             "RETRIFLOW_MEMORY_HISTORY_KEEP_TURNS",
             "RETRIFLOW_MEMORY_SUMMARY_ENABLED",
             "RETRIFLOW_MEMORY_SUMMARY_START_TURNS",
@@ -97,7 +99,7 @@ class RetriFlowConversationMemoryServiceTests(unittest.TestCase):
 
     def test_load_short_term_memory_returns_summary_and_recent_turns(self) -> None:
         from core.state import get_connection
-        from domain.memory import RetriFlowConversationMemoryService
+        from modules.memory import RetriFlowConversationMemoryService
 
         session_id = "session-demo-1"
         with get_connection() as connection:
@@ -131,7 +133,7 @@ class RetriFlowConversationMemoryServiceTests(unittest.TestCase):
         self.assertEqual(memory.recent_messages[-1].content, "第三轮助手回答")
 
     def test_load_short_term_memory_filters_expired_messages(self) -> None:
-        from domain.memory import RetriFlowConversationMemoryService
+        from modules.memory import RetriFlowConversationMemoryService
 
         session_id = "session-demo-1"
         self._insert_message(
@@ -157,7 +159,7 @@ class RetriFlowConversationMemoryServiceTests(unittest.TestCase):
 
     def test_update_short_term_memory_creates_summary_after_threshold(self) -> None:
         from core.state import get_connection
-        from domain.memory import RetriFlowConversationMemoryService
+        from modules.memory import RetriFlowConversationMemoryService
 
         session_id = "session-demo-1"
         for index in range(1, 5):
@@ -165,7 +167,7 @@ class RetriFlowConversationMemoryServiceTests(unittest.TestCase):
             self._insert_message(session_id, "assistant", f"助手回答{index}")
 
         with patch(
-            "domain.memory.RetriFlowConversationMemorySummaryGenerator.generate",
+            "modules.memory.service.RetriFlowConversationMemorySummaryGenerator.generate",
             return_value="用户咨询了前期迁移问题、部署限制和当前待确认事项。",
         ) as generate:
             RetriFlowConversationMemoryService().update_short_term_memory(session_id)
@@ -188,14 +190,14 @@ class RetriFlowConversationMemoryServiceTests(unittest.TestCase):
 
     def test_update_mid_term_memory_persists_structured_items(self) -> None:
         from core.state import get_connection
-        from domain.memory import MidTermMemoryItem, RetriFlowConversationMemoryService
+        from modules.memory import MidTermMemoryItem, RetriFlowConversationMemoryService
 
         session_id = "session-demo-1"
         self._insert_message(session_id, "user", "我需要继续完善 RetriFlow 的中期记忆。")
         self._insert_message(session_id, "assistant", "我会先把目标、约束和待确认事项提炼出来。")
 
         with patch(
-            "domain.memory.RetriFlowConversationMidMemoryExtractor.extract",
+            "modules.memory.service.RetriFlowConversationMidMemoryExtractor.extract",
             return_value=[
                 MidTermMemoryItem(memory_type="goal", content="继续完善 RetriFlow 的中期记忆"),
                 MidTermMemoryItem(memory_type="constraint", content="保持现有模型选择不变"),
@@ -224,14 +226,14 @@ class RetriFlowConversationMemoryServiceTests(unittest.TestCase):
 
     def test_update_mid_term_memory_sets_expires_at(self) -> None:
         from core.state import get_connection
-        from domain.memory import MidTermMemoryItem, RetriFlowConversationMemoryService
+        from modules.memory import MidTermMemoryItem, RetriFlowConversationMemoryService
 
         session_id = "session-demo-1"
         self._insert_message(session_id, "user", "请继续完善会话任务记忆")
         self._insert_message(session_id, "assistant", "我会补充 TTL 和状态治理")
 
         with patch(
-            "domain.memory.RetriFlowConversationMidMemoryExtractor.extract",
+            "modules.memory.service.RetriFlowConversationMidMemoryExtractor.extract",
             return_value=[MidTermMemoryItem(memory_type="goal", content="完善中期记忆 TTL")],
         ):
             RetriFlowConversationMemoryService().update_mid_term_memory(
@@ -256,7 +258,7 @@ class RetriFlowConversationMemoryServiceTests(unittest.TestCase):
 
     def test_load_prompt_messages_includes_mid_term_memory_block(self) -> None:
         from core.state import get_connection
-        from domain.memory import RetriFlowConversationMemoryService
+        from modules.memory import RetriFlowConversationMemoryService
 
         session_id = "session-demo-1"
         with get_connection() as connection:
@@ -310,7 +312,7 @@ class RetriFlowConversationMemoryServiceTests(unittest.TestCase):
 
     def test_load_mid_term_memory_ignores_expired_items(self) -> None:
         from core.state import get_connection
-        from domain.memory import RetriFlowConversationMemoryService
+        from modules.memory import RetriFlowConversationMemoryService
 
         session_id = "session-demo-1"
         with get_connection() as connection:
@@ -367,14 +369,14 @@ class RetriFlowConversationMemoryServiceTests(unittest.TestCase):
 
     def test_update_long_term_memory_persists_structured_items(self) -> None:
         from core.state import get_connection
-        from domain.memory import LongTermMemoryItem, RetriFlowConversationMemoryService
+        from modules.memory import LongTermMemoryItem, RetriFlowConversationMemoryService
 
         session_id = "session-demo-1"
         self._insert_message(session_id, "user", "我的偏好是回答尽量简洁，并保持当前模型配置不变。")
         self._insert_message(session_id, "assistant", "我会记住这个长期偏好和约束。")
 
         with patch(
-            "domain.memory.RetriFlowConversationLongMemoryExtractor.extract",
+            "modules.memory.service.RetriFlowConversationLongMemoryExtractor.extract",
             return_value=[
                 LongTermMemoryItem(memory_type="preference", content="回答尽量简洁"),
                 LongTermMemoryItem(memory_type="constraint", content="保持当前模型配置不变"),
@@ -404,14 +406,14 @@ class RetriFlowConversationMemoryServiceTests(unittest.TestCase):
 
     def test_update_long_term_memory_sets_expires_at(self) -> None:
         from core.state import get_connection
-        from domain.memory import LongTermMemoryItem, RetriFlowConversationMemoryService
+        from modules.memory import LongTermMemoryItem, RetriFlowConversationMemoryService
 
         session_id = "session-demo-1"
         self._insert_message(session_id, "user", "我的长期偏好是尽量表格化输出")
         self._insert_message(session_id, "assistant", "我会记录这个长期偏好")
 
         with patch(
-            "domain.memory.RetriFlowConversationLongMemoryExtractor.extract",
+            "modules.memory.service.RetriFlowConversationLongMemoryExtractor.extract",
             return_value=[LongTermMemoryItem(memory_type="preference", content="偏好表格化输出")],
         ):
             RetriFlowConversationMemoryService().update_long_term_memory(
@@ -436,7 +438,7 @@ class RetriFlowConversationMemoryServiceTests(unittest.TestCase):
 
     def test_load_prompt_messages_includes_long_term_memory_block(self) -> None:
         from core.state import get_connection
-        from domain.memory import RetriFlowConversationMemoryService
+        from modules.memory import RetriFlowConversationMemoryService
 
         session_id = "session-demo-1"
         with get_connection() as connection:
@@ -472,7 +474,7 @@ class RetriFlowConversationMemoryServiceTests(unittest.TestCase):
 
     def test_load_prompt_messages_prioritizes_relevant_long_term_memories_for_query(self) -> None:
         from core.state import get_connection
-        from domain.memory import RetriFlowConversationMemoryService
+        from modules.memory import RetriFlowConversationMemoryService
 
         session_id = "session-demo-1"
         with get_connection() as connection:
@@ -538,7 +540,7 @@ class RetriFlowConversationMemoryServiceTests(unittest.TestCase):
 
     def test_update_long_term_memory_prefers_session_owner_id(self) -> None:
         from core.state import get_connection
-        from domain.memory import LongTermMemoryItem, RetriFlowConversationMemoryService
+        from modules.memory import LongTermMemoryItem, RetriFlowConversationMemoryService
 
         session_id = "session-demo-1"
         with get_connection() as connection:
@@ -556,7 +558,7 @@ class RetriFlowConversationMemoryServiceTests(unittest.TestCase):
         self._insert_message(session_id, "assistant", "我会记住你的偏好")
 
         with patch(
-            "domain.memory.RetriFlowConversationLongMemoryExtractor.extract",
+            "modules.memory.service.RetriFlowConversationLongMemoryExtractor.extract",
             return_value=[LongTermMemoryItem(memory_type="preference", content="回答尽量简洁")],
         ):
             RetriFlowConversationMemoryService().update_long_term_memory(session_id)
@@ -578,7 +580,7 @@ class RetriFlowConversationMemoryServiceTests(unittest.TestCase):
 
     def test_update_long_term_memory_deactivates_conflicting_same_type_memory(self) -> None:
         from core.state import get_connection
-        from domain.memory import LongTermMemoryItem, RetriFlowConversationMemoryService
+        from modules.memory import LongTermMemoryItem, RetriFlowConversationMemoryService
 
         session_id = "session-demo-1"
         with get_connection() as connection:
@@ -611,7 +613,7 @@ class RetriFlowConversationMemoryServiceTests(unittest.TestCase):
         self._insert_message(session_id, "assistant", "我会更新这个长期偏好")
 
         with patch(
-            "domain.memory.RetriFlowConversationLongMemoryExtractor.extract",
+            "modules.memory.service.RetriFlowConversationLongMemoryExtractor.extract",
             return_value=[LongTermMemoryItem(memory_type="preference", content="优先表格化输出")],
         ):
             RetriFlowConversationMemoryService().update_long_term_memory(session_id)

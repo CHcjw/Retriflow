@@ -23,8 +23,8 @@ class RetriFlowMcpParameterExtractorTests(unittest.TestCase):
         get_settings.cache_clear()
 
     def test_weather_tool_uses_heuristic_parameter_extraction_when_llm_is_disabled(self) -> None:
-        from domain.mcp.executors import WeatherMcpToolExecutor
-        from domain.mcp.parameter_extractor import RetriFlowMcpParameterExtractor
+        from modules.mcp.executors import WeatherMcpToolExecutor
+        from modules.mcp.parameter_extractor import RetriFlowMcpParameterExtractor
 
         extractor = RetriFlowMcpParameterExtractor()
         params = extractor.extract(
@@ -36,8 +36,8 @@ class RetriFlowMcpParameterExtractorTests(unittest.TestCase):
         self.assertEqual(params["query_type"], "current")
 
     def test_sales_tool_extracts_region_and_period(self) -> None:
-        from domain.mcp.executors import SalesMcpToolExecutor
-        from domain.mcp.parameter_extractor import RetriFlowMcpParameterExtractor
+        from modules.mcp.executors import SalesMcpToolExecutor
+        from modules.mcp.parameter_extractor import RetriFlowMcpParameterExtractor
 
         extractor = RetriFlowMcpParameterExtractor()
         params = extractor.extract(

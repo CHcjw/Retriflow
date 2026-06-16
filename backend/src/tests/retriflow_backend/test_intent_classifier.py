@@ -25,7 +25,7 @@ class RetriFlowIntentClassifierTests(unittest.TestCase):
         get_settings.cache_clear()
 
     def test_classifier_uses_rule_for_tool_call(self) -> None:
-        from domain.intent_classifier import RetriFlowIntentClassifier
+        from modules.rag.intent import RetriFlowIntentClassifier
 
         decision = RetriFlowIntentClassifier().classify(
             question="北京今天天气怎么样？",
@@ -37,7 +37,7 @@ class RetriFlowIntentClassifierTests(unittest.TestCase):
         self.assertGreater(decision.confidence, 0.7)
 
     def test_classifier_uses_rule_for_chitchat(self) -> None:
-        from domain.intent_classifier import RetriFlowIntentClassifier
+        from modules.rag.intent import RetriFlowIntentClassifier
 
         decision = RetriFlowIntentClassifier().classify(
             question="你好呀，先打个招呼",
@@ -48,7 +48,7 @@ class RetriFlowIntentClassifierTests(unittest.TestCase):
         self.assertEqual(decision.source, "rule")
 
     def test_classifier_uses_rule_for_clarification_when_context_is_missing(self) -> None:
-        from domain.intent_classifier import RetriFlowIntentClassifier
+        from modules.rag.intent import RetriFlowIntentClassifier
 
         decision = RetriFlowIntentClassifier().classify(
             question="这个怎么处理？",
@@ -63,7 +63,7 @@ class RetriFlowIntentClassifierTests(unittest.TestCase):
         os.environ["RETRIFLOW_LLM_PROVIDER"] = "disabled"
 
         from core.config import get_settings
-        from domain.intent_classifier import RetriFlowIntentClassifier
+        from modules.rag.intent import RetriFlowIntentClassifier
 
         get_settings.cache_clear()
 
@@ -79,12 +79,12 @@ class RetriFlowIntentClassifierTests(unittest.TestCase):
         os.environ["RETRIFLOW_INTENT_PROVIDER"] = "ollama"
 
         from core.config import get_settings
-        from domain.intent_classifier import RetriFlowIntentClassifier
+        from modules.rag.intent import RetriFlowIntentClassifier
 
         get_settings.cache_clear()
 
         with patch(
-            "domain.intent_classifier.RetriFlowLLMService.extract_json_object",
+            "modules.rag.intent.RetriFlowLLMService.extract_json_object",
             return_value={
                 "intent": "tool_call",
                 "confidence": 0.91,

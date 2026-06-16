@@ -25,7 +25,7 @@ class RetriFlowKnowledgeRouteTests(unittest.TestCase):
 
         from core.config import get_settings
         from core.state import initialize_database
-        from domain.knowledge import RetriFlowKnowledgeService
+        from modules.knowledge import RetriFlowKnowledgeService
         from schemas.knowledge import KnowledgeBaseCreateRequest, KnowledgeDocumentCreateRequest
 
         get_settings.cache_clear()
@@ -34,7 +34,7 @@ class RetriFlowKnowledgeRouteTests(unittest.TestCase):
         knowledge_service = RetriFlowKnowledgeService()
         knowledge_service.create_knowledge_base(KnowledgeBaseCreateRequest(name="Insurance KB"))
         knowledge_service.create_document(
-            "kb-2",
+            "kb-1",
             KnowledgeDocumentCreateRequest(
                 title="Insurance handbook",
                 source_type="manual",
@@ -73,33 +73,33 @@ class RetriFlowKnowledgeRouteTests(unittest.TestCase):
                 """
             ).fetchall()
 
-        self.assertGreaterEqual(len(rows), 2)
-        insurance_row = next(row for row in rows if row["knowledge_base_id"] == "kb-2")
+        self.assertGreaterEqual(len(rows), 1)
+        insurance_row = next(row for row in rows if row["knowledge_base_id"] == "kb-1")
         self.assertIn("Insurance KB", insurance_row["profile_text"])
         self.assertIn("Insurance handbook", insurance_row["profile_text"])
         self.assertIn("insurance", insurance_row["keywords_json"].lower())
 
     def test_route_question_uses_profile_match_when_llm_is_disabled(self) -> None:
-        from domain.knowledge_route import RetriFlowKnowledgeRouteService
+        from modules.knowledge.routing import RetriFlowKnowledgeRouteService
 
         decision = RetriFlowKnowledgeRouteService().route_question("保险理赔流程是什么？")
 
         self.assertEqual(decision.mode, "knowledge_base")
-        self.assertEqual(decision.knowledge_base_ids, ["kb-2"])
+        self.assertEqual(decision.knowledge_base_ids, ["kb-1"])
         self.assertGreater(decision.confidence, 0.45)
 
     def test_route_question_uses_llm_result_when_available(self) -> None:
         os.environ["RETRIFLOW_ROUTE_USE_LLM"] = "true"
         from core.config import get_settings
-        from domain.knowledge_route import RetriFlowKnowledgeRouteService
+        from modules.knowledge.routing import RetriFlowKnowledgeRouteService
 
         get_settings.cache_clear()
 
         with patch(
-            "domain.knowledge_route.RetriFlowLLMService.route_knowledge_bases",
+            "modules.knowledge.routing.RetriFlowLLMService.route_knowledge_bases",
             return_value={
                 "mode": "knowledge_base",
-                "knowledge_base_ids": ["kb-2"],
+                "knowledge_base_ids": ["kb-1"],
                 "confidence": 0.93,
                 "reason": "matched insurance domain",
             },
@@ -108,24 +108,24 @@ class RetriFlowKnowledgeRouteTests(unittest.TestCase):
 
         route_mock.assert_called_once()
         self.assertEqual(decision.mode, "knowledge_base")
-        self.assertEqual(decision.knowledge_base_ids, ["kb-2"])
+        self.assertEqual(decision.knowledge_base_ids, ["kb-1"])
         self.assertEqual(decision.confidence, 0.93)
 
     def test_route_question_falls_back_when_llm_route_fails(self) -> None:
         os.environ["RETRIFLOW_ROUTE_USE_LLM"] = "true"
         from core.config import get_settings
-        from domain.knowledge_route import RetriFlowKnowledgeRouteService
+        from modules.knowledge.routing import RetriFlowKnowledgeRouteService
 
         get_settings.cache_clear()
 
         with patch(
-            "domain.knowledge_route.RetriFlowLLMService.route_knowledge_bases",
+            "modules.knowledge.routing.RetriFlowLLMService.route_knowledge_bases",
             side_effect=RuntimeError("route provider unavailable"),
         ):
             decision = RetriFlowKnowledgeRouteService().route_question("保险理赔材料清单是什么？")
 
         self.assertEqual(decision.mode, "knowledge_base")
-        self.assertEqual(decision.knowledge_base_ids, ["kb-2"])
+        self.assertEqual(decision.knowledge_base_ids, ["kb-1"])
         self.assertGreater(decision.confidence, 0.45)
 
 

@@ -10,7 +10,7 @@ sys.path.insert(0, str(SRC_PATH))
 
 class RetriFlowDocumentNormalizerTests(unittest.TestCase):
     def test_normalizes_whitespace_units_and_empty_values(self) -> None:
-        from domain.document_normalizer import RetriFlowDocumentNormalizationService
+        from infra.document_parser.normalizer import RetriFlowDocumentNormalizationService
         from schemas.document_structure import ParagraphBlock, StructuredDocument, TableBlock, TableCell, TableRow
 
         document = StructuredDocument(
@@ -52,7 +52,7 @@ class RetriFlowDocumentNormalizerTests(unittest.TestCase):
         self.assertEqual(normalized.text_content, "Revenue growth 20%")
 
     def test_validate_document_rejects_invalid_heading_level(self) -> None:
-        from domain.document_normalizer import RetriFlowDocumentNormalizationService
+        from infra.document_parser.normalizer import RetriFlowDocumentNormalizationService
         from schemas.document_structure import HeadingBlock, StructuredDocument
 
         document = StructuredDocument.model_construct(
@@ -77,7 +77,7 @@ class RetriFlowDocumentNormalizerTests(unittest.TestCase):
             RetriFlowDocumentNormalizationService().validate_document(document)
 
     def test_normalize_repairs_mojibake_caption_prefixes(self) -> None:
-        from domain.document_normalizer import RetriFlowDocumentNormalizationService
+        from infra.document_parser.normalizer import RetriFlowDocumentNormalizationService
         from schemas.document_structure import ImageCaptionBlock, StructuredDocument
 
         document = StructuredDocument(

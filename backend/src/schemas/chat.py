@@ -9,6 +9,7 @@ class ChatBootstrapResponse(BaseModel):
 class ChatMessageRequest(BaseModel):
     session_id: str
     message: str
+    deep_thinking: bool = False
 
 
 class ChatMessageResponse(BaseModel):
@@ -48,6 +49,7 @@ class ChatWorkflowMetadata(BaseModel):
     rewrite_query_count: int = 0
     route_mode: str = "global"
     mcp_tool_count: int = 0
+    deep_thinking: bool = False
 
 
 class ChatMessageWithSourcesResponse(BaseModel):

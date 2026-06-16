@@ -51,9 +51,9 @@ class RetriFlowRerankServiceTests(unittest.TestCase):
 
     def test_rerank_requests_openai_compatible_rerank_endpoint_with_qwen_model(self) -> None:
         from core.config import get_settings
-        from domain.llm import LLMProviderConfig
-        from domain.reranker import RetriFlowRerankService
-        from domain.retrieval_channels import RetrievedChunkRecord
+        from infra.llm import LLMProviderConfig
+        from modules.rag.rerank import RetriFlowRerankService
+        from modules.rag.retrieval.channels import RetrievedChunkRecord
 
         os.environ["RETRIFLOW_DEFAULT_RERANK_MODEL"] = "Qwen/Qwen3-Reranker-8B"
         get_settings.cache_clear()
@@ -79,7 +79,7 @@ class RetriFlowRerankServiceTests(unittest.TestCase):
 
         with (
             patch.object(service.llm_service, "_resolve_provider", return_value=provider),
-            patch("domain.reranker.httpx.Client", return_value=fake_client),
+            patch("modules.rag.rerank.httpx.Client", return_value=fake_client),
         ):
             reranked = service.rerank("What is RetriFlow?", records, limit=2)
 
@@ -97,9 +97,9 @@ class RetriFlowRerankServiceTests(unittest.TestCase):
 
     def test_rerank_accepts_data_field_response_shape(self) -> None:
         from core.config import get_settings
-        from domain.llm import LLMProviderConfig
-        from domain.reranker import RetriFlowRerankService
-        from domain.retrieval_channels import RetrievedChunkRecord
+        from infra.llm import LLMProviderConfig
+        from modules.rag.rerank import RetriFlowRerankService
+        from modules.rag.retrieval.channels import RetrievedChunkRecord
 
         os.environ["RETRIFLOW_DEFAULT_RERANK_MODEL"] = "Qwen/Qwen3-Reranker-8B"
         get_settings.cache_clear()
@@ -123,7 +123,7 @@ class RetriFlowRerankServiceTests(unittest.TestCase):
 
         with (
             patch.object(service.llm_service, "_resolve_provider", return_value=provider),
-            patch("domain.reranker.httpx.Client", return_value=fake_client),
+            patch("modules.rag.rerank.httpx.Client", return_value=fake_client),
         ):
             reranked = service.rerank("What is RetriFlow?", records, limit=1)
 

@@ -2,8 +2,8 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
 from api.deps.auth import CurrentUser
-from domain.chat import RetriFlowChatService
-from domain.streaming import RetriFlowStreamingService
+from modules.chat import RetriFlowChatService
+from modules.chat import RetriFlowStreamingService
 from schemas.chat import (
     ChatBootstrapResponse,
     ChatMessageRequest,
@@ -39,3 +39,4 @@ def stream_chat_message(request: ChatMessageRequest, user: CurrentUser) -> Strea
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )
+

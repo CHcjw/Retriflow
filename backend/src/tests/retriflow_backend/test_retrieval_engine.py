@@ -24,10 +24,11 @@ class RetriFlowRetrievalEngineTests(unittest.TestCase):
         os.environ["RETRIFLOW_PGVECTOR_DSN"] = ""
         os.environ["RETRIFLOW_VECTOR_STORE_TYPE"] = "memory"
         os.environ["RETRIFLOW_LLM_PROVIDER"] = "disabled"
+        os.environ["RETRIFLOW_SEED_DEMO_CONTENT"] = "true"
 
         from core.config import get_settings
         from core.state import initialize_database
-        from domain.knowledge import RetriFlowKnowledgeService
+        from modules.knowledge import RetriFlowKnowledgeService
         from schemas.knowledge import KnowledgeDocumentCreateRequest
 
         get_settings.cache_clear()
@@ -52,6 +53,7 @@ class RetriFlowRetrievalEngineTests(unittest.TestCase):
         os.environ.pop("RETRIFLOW_PGVECTOR_DSN", None)
         os.environ.pop("RETRIFLOW_VECTOR_STORE_TYPE", None)
         os.environ.pop("RETRIFLOW_LLM_PROVIDER", None)
+        os.environ.pop("RETRIFLOW_SEED_DEMO_CONTENT", None)
         os.environ.pop("RETRIFLOW_RETRIEVAL_BM25_TOP_K", None)
         os.environ.pop("RETRIFLOW_RETRIEVAL_VECTOR_TOP_K", None)
         os.environ.pop("RETRIFLOW_RETRIEVAL_RRF_TOP_K", None)
@@ -66,7 +68,7 @@ class RetriFlowRetrievalEngineTests(unittest.TestCase):
             pass
 
     def test_langchain_hybrid_retriever_returns_documents(self) -> None:
-        from domain.retrieval import RetriFlowHybridRetriever
+        from modules.rag.retrieval.engine import RetriFlowHybridRetriever
 
         documents = RetriFlowHybridRetriever().invoke("How does RetriFlow use LangChain retrievers?")
 
@@ -78,8 +80,8 @@ class RetriFlowRetrievalEngineTests(unittest.TestCase):
         self.assertIn("channel", documents[0].metadata)
 
     def test_retrieval_engine_uses_vector_store_for_semantic_channel(self) -> None:
-        from domain.retrieval import RetriFlowRetrievalEngine
-        from domain.retrieval_channels import RetrievedChunkRecord
+        from modules.rag.retrieval.engine import RetriFlowRetrievalEngine
+        from modules.rag.retrieval.channels import RetrievedChunkRecord
 
         class FakeVectorStore:
             def similarity_search(self, query: str, k: int = 4) -> list[RetrievedChunkRecord]:
@@ -98,7 +100,7 @@ class RetriFlowRetrievalEngineTests(unittest.TestCase):
             def upsert_chunk_records(self, records) -> None:
                 _ = records
 
-        with patch("domain.retrieval.resolve_vector_store", return_value=FakeVectorStore()) as resolve_store:
+        with patch("modules.rag.retrieval.engine.resolve_vector_store", return_value=FakeVectorStore()) as resolve_store:
             result = RetriFlowRetrievalEngine().retrieve("hybrid LangChain retriever")
 
         resolve_store.assert_called()
@@ -106,8 +108,8 @@ class RetriFlowRetrievalEngineTests(unittest.TestCase):
         self.assertEqual(result.sources[0].document_title, "LangChain retrieval notes")
 
     def test_rrf_fusion_prefers_chunks_hit_by_multiple_retrievers(self) -> None:
-        from domain.retrieval_channels import RetrievedChunkRecord
-        from domain.retrieval_postprocessors import reciprocal_rank_fusion
+        from modules.rag.retrieval.channels import RetrievedChunkRecord
+        from modules.rag.retrieval.postprocessors import reciprocal_rank_fusion
 
         bm25_records = [
             RetrievedChunkRecord(1, "kb-demo-1", 1, "Doc A", "shared hit", 12.0, "bm25"),
@@ -128,8 +130,8 @@ class RetriFlowRetrievalEngineTests(unittest.TestCase):
         self.assertEqual(fused[0].channel, "hybrid_rrf")
 
     def test_retrieval_engine_uses_bm25_rrf_and_rerank_pipeline(self) -> None:
-        from domain.retrieval import RetriFlowRetrievalEngine
-        from domain.retrieval_channels import RetrievedChunkRecord
+        from modules.rag.retrieval.engine import RetriFlowRetrievalEngine
+        from modules.rag.retrieval.channels import RetrievedChunkRecord
 
         bm25_records = [
             RetrievedChunkRecord(1, "kb-demo-1", 1, "Doc A", "shared hit", 12.0, "bm25"),
@@ -158,9 +160,9 @@ class RetriFlowRetrievalEngineTests(unittest.TestCase):
                 return ranked[:limit]
 
         with (
-            patch("domain.retrieval.resolve_vector_store", return_value=FakeVectorStore()) as resolve_store,
-            patch("domain.retrieval.BM25SearchChannel.retrieve", return_value=bm25_records) as bm25_retrieve,
-            patch("domain.retrieval.RetriFlowRerankService", return_value=FakeReranker()),
+            patch("modules.rag.retrieval.engine.resolve_vector_store", return_value=FakeVectorStore()) as resolve_store,
+            patch("modules.rag.retrieval.engine.BM25SearchChannel.retrieve", return_value=bm25_records) as bm25_retrieve,
+            patch("modules.rag.retrieval.engine.RetriFlowRerankService", return_value=FakeReranker()),
         ):
             result = RetriFlowRetrievalEngine().retrieve("hybrid LangChain retriever")
 
@@ -177,8 +179,8 @@ class RetriFlowRetrievalEngineTests(unittest.TestCase):
         self.assertEqual(result.stage_counts["final"], 3)
 
     def test_retrieval_engine_supports_multi_queries_before_rerank(self) -> None:
-        from domain.retrieval import RetriFlowRetrievalEngine
-        from domain.retrieval_channels import RetrievedChunkRecord
+        from modules.rag.retrieval.engine import RetriFlowRetrievalEngine
+        from modules.rag.retrieval.channels import RetrievedChunkRecord
 
         bm25_by_query = {
             "insurance claim process": [
@@ -211,9 +213,9 @@ class RetriFlowRetrievalEngineTests(unittest.TestCase):
                 return records[:limit]
 
         with (
-            patch("domain.retrieval.resolve_vector_store", return_value=FakeVectorStore()),
-            patch("domain.retrieval.BM25SearchChannel.retrieve", side_effect=lambda query, knowledge_base_ids=None, top_k=80: bm25_by_query[query]) as bm25_retrieve,
-            patch("domain.retrieval.RetriFlowRerankService", return_value=FakeReranker()),
+            patch("modules.rag.retrieval.engine.resolve_vector_store", return_value=FakeVectorStore()),
+            patch("modules.rag.retrieval.engine.BM25SearchChannel.retrieve", side_effect=lambda query, knowledge_base_ids=None, top_k=80: bm25_by_query[query]) as bm25_retrieve,
+            patch("modules.rag.retrieval.engine.RetriFlowRerankService", return_value=FakeReranker()),
         ):
             result = RetriFlowRetrievalEngine().retrieve(
                 "原始问题",
@@ -235,8 +237,8 @@ class RetriFlowRetrievalEngineTests(unittest.TestCase):
         os.environ["RETRIFLOW_RETRIEVAL_FINAL_TOP_K"] = "2"
 
         from core.config import get_settings
-        from domain.retrieval import RetriFlowRetrievalEngine
-        from domain.retrieval_channels import RetrievedChunkRecord
+        from modules.rag.retrieval.engine import RetriFlowRetrievalEngine
+        from modules.rag.retrieval.channels import RetrievedChunkRecord
 
         get_settings.cache_clear()
 
@@ -270,9 +272,9 @@ class RetriFlowRetrievalEngineTests(unittest.TestCase):
         fake_reranker = FakeReranker()
 
         with (
-            patch("domain.retrieval.resolve_vector_store", return_value=fake_vector_store),
-            patch("domain.retrieval.BM25SearchChannel.retrieve", return_value=bm25_records) as bm25_retrieve,
-            patch("domain.retrieval.RetriFlowRerankService", return_value=fake_reranker),
+            patch("modules.rag.retrieval.engine.resolve_vector_store", return_value=fake_vector_store),
+            patch("modules.rag.retrieval.engine.BM25SearchChannel.retrieve", return_value=bm25_records) as bm25_retrieve,
+            patch("modules.rag.retrieval.engine.RetriFlowRerankService", return_value=fake_reranker),
         ):
             result = RetriFlowRetrievalEngine().retrieve("configured top k query")
 

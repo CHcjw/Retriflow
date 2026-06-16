@@ -96,6 +96,29 @@ class RetriFlowSessionApiTests(unittest.TestCase):
         ).json()
         self.assertEqual(listed["items"], [])
 
+    def test_delete_session_removes_legacy_unowned_session(self) -> None:
+        from core.state import get_connection
+
+        with get_connection() as connection:
+            connection.execute(
+                "insert into sessions (id, title, message_count, owner_id) values (?, ?, ?, ?)",
+                ("session-legacy", "Legacy session", 0, ""),
+            )
+            connection.commit()
+
+        response = self.client.delete(
+            "/api/v1/sessions/session-legacy",
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+
+        self.assertEqual(response.status_code, 204)
+        with get_connection() as connection:
+            session_row = connection.execute(
+                "select count(*) as c from sessions where id = ?",
+                ("session-legacy",),
+            ).fetchone()
+        self.assertEqual(session_row["c"], 0)
+
     def test_delete_session_removes_messages_for_owned_session(self) -> None:
         created = self.client.post(
             "/api/v1/sessions",
@@ -136,6 +159,28 @@ class RetriFlowSessionApiTests(unittest.TestCase):
 
         self.assertEqual(session_row["c"], 0)
         self.assertEqual(message_row["c"], 0)
+
+    def test_update_session_title_renames_owned_session(self) -> None:
+        created = self.client.post(
+            "/api/v1/sessions",
+            json={"title": "Original Title"},
+            headers={"Authorization": f"Bearer {self.token}"},
+        ).json()
+
+        response = self.client.patch(
+            f"/api/v1/sessions/{created['id']}",
+            json={"title": "Updated Title"},
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["title"], "Updated Title")
+
+        # Verify list returns the new title
+        listed = self.client.get(
+            "/api/v1/sessions",
+            headers={"Authorization": f"Bearer {self.token}"},
+        ).json()
+        self.assertEqual(listed["items"][0]["title"], "Updated Title")
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from api.routes import auth, chat, ingestion, knowledge
+from api.routes import admin, auth, chat, ingestion, knowledge
 from api.routes import session
 from core.config import get_settings
 from core.state import get_connection
@@ -37,6 +37,7 @@ def api_meta() -> dict[str, object]:
 
 
 router.include_router(chat.router)
+router.include_router(admin.router)
 router.include_router(auth.router)
 router.include_router(session.router)
 router.include_router(knowledge.router)

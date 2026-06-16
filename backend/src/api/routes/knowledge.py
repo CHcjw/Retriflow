@@ -3,7 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, File, Form, UploadFile, status
 
 from api.deps.auth import AdminUser, CurrentUser
-from domain.knowledge import RetriFlowKnowledgeService
+from modules.knowledge import RetriFlowKnowledgeService
 from schemas.knowledge import (
     KnowledgeBaseCreateRequest,
     KnowledgeBaseItem,
@@ -15,6 +15,12 @@ from schemas.knowledge import (
     KnowledgeDocumentReindexRequest,
     KnowledgeDocumentStructuredBlockListResponse,
     KnowledgeSampleImportResponse,
+    KnowledgeBaseRouteProfileItem,
+    KnowledgeBaseRouteProfileUpdateRequest,
+    KnowledgeChunkBatchUpdateRequest,
+    KnowledgeChunkBatchUpdateResponse,
+    KnowledgeChunkItem,
+    KnowledgeChunkUpdateRequest,
 )
 
 
@@ -79,6 +85,18 @@ def reindex_document(
     return _service().reindex_document(knowledge_base_id, document_id, request)
 
 
+@router.delete(
+    "/{knowledge_base_id}/documents/{document_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_document(
+    knowledge_base_id: str,
+    document_id: int,
+    user: AdminUser,
+) -> None:
+    _service().delete_document(knowledge_base_id, document_id)
+
+
 @router.post(
     "/{knowledge_base_id}/documents/upload",
     response_model=KnowledgeDocumentItem,
@@ -130,6 +148,57 @@ def list_document_chunks(
     return _service().list_document_chunks(knowledge_base_id, document_id)
 
 
+@router.patch(
+    "/{knowledge_base_id}/documents/{document_id}/chunks/{chunk_id}",
+    response_model=KnowledgeChunkItem,
+)
+def update_document_chunk(
+    knowledge_base_id: str,
+    document_id: int,
+    chunk_id: int,
+    request: KnowledgeChunkUpdateRequest,
+    user: AdminUser,
+) -> KnowledgeChunkItem:
+    return _service().update_document_chunk_enabled(
+        knowledge_base_id,
+        document_id,
+        chunk_id,
+        request.enabled,
+    )
+
+
+@router.patch(
+    "/{knowledge_base_id}/documents/{document_id}/chunks",
+    response_model=KnowledgeChunkBatchUpdateResponse,
+)
+def update_document_chunks(
+    knowledge_base_id: str,
+    document_id: int,
+    request: KnowledgeChunkBatchUpdateRequest,
+    user: AdminUser,
+) -> KnowledgeChunkBatchUpdateResponse:
+    updated_count = _service().update_document_chunks_enabled(
+        knowledge_base_id,
+        document_id,
+        request.chunk_ids,
+        request.enabled,
+    )
+    return KnowledgeChunkBatchUpdateResponse(updated_count=updated_count)
+
+
+@router.delete(
+    "/{knowledge_base_id}/documents/{document_id}/chunks/{chunk_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_document_chunk(
+    knowledge_base_id: str,
+    document_id: int,
+    chunk_id: int,
+    user: AdminUser,
+) -> None:
+    _service().delete_document_chunk(knowledge_base_id, document_id, chunk_id)
+
+
 @router.get(
     "/{knowledge_base_id}/documents/{document_id}/structured-blocks",
     response_model=KnowledgeDocumentStructuredBlockListResponse,
@@ -140,3 +209,26 @@ def list_document_structured_blocks(
     user: CurrentUser,
 ) -> KnowledgeDocumentStructuredBlockListResponse:
     return _service().list_document_structured_blocks(knowledge_base_id, document_id)
+
+
+@router.get(
+    "/{knowledge_base_id}/route-profile",
+    response_model=KnowledgeBaseRouteProfileItem,
+)
+def get_route_profile(
+    knowledge_base_id: str,
+    user: CurrentUser,
+) -> KnowledgeBaseRouteProfileItem:
+    return _service().get_route_profile(knowledge_base_id)
+
+
+@router.put(
+    "/{knowledge_base_id}/route-profile",
+    response_model=KnowledgeBaseRouteProfileItem,
+)
+def update_route_profile(
+    knowledge_base_id: str,
+    request: KnowledgeBaseRouteProfileUpdateRequest,
+    user: AdminUser,
+) -> KnowledgeBaseRouteProfileItem:
+    return _service().update_route_profile(knowledge_base_id, request)

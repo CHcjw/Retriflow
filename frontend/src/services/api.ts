@@ -55,7 +55,7 @@ function toRequestError(error: unknown): Error {
 
 async function request<T>(config: {
   url: string;
-  method?: "DELETE" | "GET" | "POST";
+  method?: "DELETE" | "GET" | "PATCH" | "POST" | "PUT";
   data?: FormData | Record<string, unknown>;
   headers?: Record<string, string>;
 }): Promise<T> {
@@ -121,6 +121,11 @@ export interface KnowledgeBaseItem {
   name: string;
   product: string;
   document_count: number;
+  embedding_model: string;
+  collection_name: string;
+  owner: string;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface KnowledgeBaseListResponse {
@@ -132,9 +137,13 @@ export interface KnowledgeDocumentItem {
   knowledge_base_id: string;
   title: string;
   source_type: string;
+  processing_mode: string;
   status: string;
+  enabled: boolean;
   vector_index_status: string;
   vector_chunk_count: number;
+  document_type: string;
+  size_label: string;
   vector_indexed_at: string;
   created_at: string;
 }
@@ -150,6 +159,7 @@ export interface KnowledgeChunkItem {
   chunk_index: number;
   content: string;
   char_count: number;
+  enabled: boolean;
   strategy: string;
   document_type: string;
   metadata: Record<string, unknown>;
@@ -190,6 +200,219 @@ export interface IngestionTaskNodeListResponse {
   items: IngestionTaskNodeItem[];
 }
 
+export interface IngestionPipelineNodeConfig {
+  node_id: string;
+  node_type: string;
+  next_node_id: string;
+  condition: string;
+  config: Record<string, unknown>;
+}
+
+export interface IngestionPipelineItem {
+  id: number;
+  name: string;
+  description: string;
+  nodes: IngestionPipelineNodeConfig[];
+  node_count: number;
+  owner: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface IngestionPipelineCreateRequest {
+  name: string;
+  description: string;
+  nodes: IngestionPipelineNodeConfig[];
+  owner?: string;
+}
+
+export interface IngestionPipelineListResponse {
+  items: IngestionPipelineItem[];
+}
+
+export interface AdminUserItem {
+  id: string;
+  username: string;
+  role: string;
+  created_at: string;
+}
+
+export interface AdminUserCreateRequest {
+  username: string;
+  password: string;
+  role: string;
+}
+
+export interface AdminUserListResponse {
+  items: AdminUserItem[];
+}
+
+export interface AdminTraceMessageItem {
+  id: number;
+  role: string;
+  content_preview: string;
+  created_at: string;
+  duration_ms: number;
+}
+
+export interface AdminTraceSessionItem {
+  id: string;
+  title: string;
+  owner_id: string;
+  owner_username: string;
+  message_count: number;
+  latest_message_at: string;
+  duration_ms: number;
+  latest_messages: AdminTraceMessageItem[];
+}
+
+export interface AdminTraceListResponse {
+  items: AdminTraceSessionItem[];
+}
+
+export interface AdminTraceDetailResponse extends AdminTraceSessionItem {
+  messages: AdminTraceMessageItem[];
+}
+
+export interface AdminSettingItem {
+  key: string;
+  value: string;
+  category: string;
+  sensitive: boolean;
+}
+
+export interface AdminSettingListResponse {
+  items: AdminSettingItem[];
+}
+
+export interface AdminDashboardMetricCard {
+  key: string;
+  label: string;
+  value: string;
+  helper: string;
+  delta: string;
+}
+
+export interface AdminDashboardSeries {
+  key: string;
+  label: string;
+  color: string;
+  values: number[];
+}
+
+export interface AdminDashboardAiPerformance {
+  success_rate: number;
+  completion_rate: number;
+  avg_response_ms: number;
+  p95_response_ms: number;
+  no_answer_rate: number;
+}
+
+export interface AdminDashboardTrafficOverview {
+  labels: string[];
+  series: AdminDashboardSeries[];
+  total_sessions: number;
+  total_messages: number;
+  total_active_users: number;
+}
+
+export interface AdminDashboardTrendPanel {
+  key: string;
+  label: string;
+  unit: string;
+  summary: string;
+  series: AdminDashboardSeries[];
+}
+
+export interface AdminDashboardOpsInsight {
+  level: string;
+  category: string;
+  title: string;
+  message: string;
+  time_label: string;
+}
+
+export interface AdminDashboardResponse {
+  range: string;
+  range_label: string;
+  generated_at: string;
+  core: AdminDashboardMetricCard[];
+  ai_performance: AdminDashboardAiPerformance;
+  traffic_overview: AdminDashboardTrafficOverview;
+  trend_panels: AdminDashboardTrendPanel[];
+  quality_snapshot: AdminDashboardMetricCard[];
+  ops_efficiency: AdminDashboardMetricCard[];
+  ops_insights: AdminDashboardOpsInsight[];
+}
+
+export interface AdminIntentNodeItem {
+  id: string;
+  name: string;
+  code: string;
+  level: string;
+  node_type: string;
+  parent_id: string;
+  knowledge_base_id: string;
+  collection_name: string;
+  description: string;
+  sample_questions: string[];
+  rule_snippet: string;
+  prompt_template: string;
+  top_k: number | null;
+  sort_order: number;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AdminIntentNodeUpsertRequest {
+  name?: string;
+  code?: string;
+  level?: string;
+  node_type?: string;
+  parent_id?: string;
+  knowledge_base_id?: string;
+  collection_name?: string;
+  description?: string;
+  sample_questions?: string[];
+  rule_snippet?: string;
+  prompt_template?: string;
+  top_k?: number | null;
+  sort_order?: number;
+  enabled?: boolean;
+}
+
+export interface AdminIntentNodeListResponse {
+  items: AdminIntentNodeItem[];
+}
+
+export interface AdminKeywordMappingItem {
+  id: string;
+  raw_keyword: string;
+  target_keyword: string;
+  match_type: string;
+  priority: number;
+  enabled: boolean;
+  remark: string;
+  knowledge_base_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AdminKeywordMappingUpsertRequest {
+  raw_keyword?: string;
+  target_keyword?: string;
+  match_type?: string;
+  priority?: number;
+  enabled?: boolean;
+  remark?: string;
+  knowledge_base_id?: string;
+}
+
+export interface AdminKeywordMappingListResponse {
+  items: AdminKeywordMappingItem[];
+}
+
 export interface ChatBootstrapResponse {
   product: string;
   capabilities: string[];
@@ -216,6 +439,7 @@ export interface ChatWorkflow {
   rewrite_query_count: number;
   route_mode: string;
   mcp_tool_count: number;
+  deep_thinking?: boolean;
 }
 
 export interface ChatMcpCallItem {
@@ -322,6 +546,14 @@ export function deleteSession(sessionId: string): Promise<void> {
   });
 }
 
+export function updateSession(sessionId: string, title: string): Promise<SessionItem> {
+  return request<SessionItem>({
+    url: `/api/v1/sessions/${sessionId}`,
+    method: "PATCH",
+    data: { title }
+  });
+}
+
 export function fetchKnowledgeBases(): Promise<KnowledgeBaseListResponse> {
   return request<KnowledgeBaseListResponse>({ url: "/api/v1/knowledge-bases" });
 }
@@ -408,6 +640,13 @@ export function reindexKnowledgeDocument(
   });
 }
 
+export function deleteKnowledgeDocument(knowledgeBaseId: string, documentId: number): Promise<void> {
+  return request<void>({
+    url: `/api/v1/knowledge-bases/${knowledgeBaseId}/documents/${documentId}`,
+    method: "DELETE"
+  });
+}
+
 export function fetchKnowledgeChunks(
   knowledgeBaseId: string,
   documentId: number
@@ -417,23 +656,168 @@ export function fetchKnowledgeChunks(
   });
 }
 
+export function updateKnowledgeChunk(
+  knowledgeBaseId: string,
+  documentId: number,
+  chunkId: number,
+  enabled: boolean
+): Promise<KnowledgeChunkItem> {
+  return request<KnowledgeChunkItem>({
+    url: `/api/v1/knowledge-bases/${knowledgeBaseId}/documents/${documentId}/chunks/${chunkId}`,
+    method: "PATCH",
+    data: { enabled }
+  });
+}
+
+export function updateKnowledgeChunks(
+  knowledgeBaseId: string,
+  documentId: number,
+  chunkIds: number[],
+  enabled: boolean
+): Promise<{ updated_count: number }> {
+  return request<{ updated_count: number }>({
+    url: `/api/v1/knowledge-bases/${knowledgeBaseId}/documents/${documentId}/chunks`,
+    method: "PATCH",
+    data: { chunk_ids: chunkIds, enabled }
+  });
+}
+
+export function deleteKnowledgeChunk(knowledgeBaseId: string, documentId: number, chunkId: number): Promise<void> {
+  return request<void>({
+    url: `/api/v1/knowledge-bases/${knowledgeBaseId}/documents/${documentId}/chunks/${chunkId}`,
+    method: "DELETE"
+  });
+}
+
 export function fetchIngestionTasks(): Promise<IngestionTaskListResponse> {
   return request<IngestionTaskListResponse>({ url: "/api/v1/ingestion/tasks" });
+}
+
+export function fetchIngestionPipelines(): Promise<IngestionPipelineListResponse> {
+  return request<IngestionPipelineListResponse>({ url: "/api/v1/ingestion/pipelines" });
+}
+
+export function createIngestionPipeline(
+  payload: IngestionPipelineCreateRequest
+): Promise<IngestionPipelineItem> {
+  return request<IngestionPipelineItem>({
+    url: "/api/v1/ingestion/pipelines",
+    method: "POST",
+    data: payload as unknown as Record<string, unknown>
+  });
 }
 
 export function fetchIngestionTaskNodes(taskId: number): Promise<IngestionTaskNodeListResponse> {
   return request<IngestionTaskNodeListResponse>({ url: `/api/v1/ingestion/tasks/${taskId}/nodes` });
 }
 
+export function fetchAdminUsers(): Promise<AdminUserListResponse> {
+  return request<AdminUserListResponse>({ url: "/api/v1/admin/users" });
+}
+
+export function fetchAdminDashboard(range = "24h"): Promise<AdminDashboardResponse> {
+  return request<AdminDashboardResponse>({ url: `/api/v1/admin/dashboard?range=${encodeURIComponent(range)}` });
+}
+
+export function createAdminUser(payload: AdminUserCreateRequest): Promise<AdminUserItem> {
+  return request<AdminUserItem>({
+    url: "/api/v1/admin/users",
+    method: "POST",
+    data: payload
+  });
+}
+
+export function updateAdminUserRole(userId: string, role: string): Promise<AdminUserItem> {
+  return request<AdminUserItem>({
+    url: `/api/v1/admin/users/${userId}/role`,
+    method: "PATCH",
+    data: { role }
+  });
+}
+
+export function fetchAdminTraces(): Promise<AdminTraceListResponse> {
+  return request<AdminTraceListResponse>({ url: "/api/v1/admin/traces" });
+}
+
+export function fetchAdminTraceDetail(sessionId: string): Promise<AdminTraceDetailResponse> {
+  return request<AdminTraceDetailResponse>({ url: `/api/v1/admin/traces/${sessionId}` });
+}
+
+export function fetchAdminSettings(): Promise<AdminSettingListResponse> {
+  return request<AdminSettingListResponse>({ url: "/api/v1/admin/settings" });
+}
+
+export function fetchAdminIntentNodes(): Promise<AdminIntentNodeListResponse> {
+  return request<AdminIntentNodeListResponse>({ url: "/api/v1/admin/intent-nodes" });
+}
+
+export function createAdminIntentNode(payload: AdminIntentNodeUpsertRequest): Promise<AdminIntentNodeItem> {
+  return request<AdminIntentNodeItem>({
+    url: "/api/v1/admin/intent-nodes",
+    method: "POST",
+    data: payload as Record<string, unknown>
+  });
+}
+
+export function updateAdminIntentNode(
+  nodeId: string,
+  payload: AdminIntentNodeUpsertRequest
+): Promise<AdminIntentNodeItem> {
+  return request<AdminIntentNodeItem>({
+    url: `/api/v1/admin/intent-nodes/${nodeId}`,
+    method: "PATCH",
+    data: payload as Record<string, unknown>
+  });
+}
+
+export function deleteAdminIntentNode(nodeId: string): Promise<void> {
+  return request<void>({
+    url: `/api/v1/admin/intent-nodes/${nodeId}`,
+    method: "DELETE"
+  });
+}
+
+export function fetchAdminKeywordMappings(): Promise<AdminKeywordMappingListResponse> {
+  return request<AdminKeywordMappingListResponse>({ url: "/api/v1/admin/keyword-mappings" });
+}
+
+export function createAdminKeywordMapping(
+  payload: AdminKeywordMappingUpsertRequest
+): Promise<AdminKeywordMappingItem> {
+  return request<AdminKeywordMappingItem>({
+    url: "/api/v1/admin/keyword-mappings",
+    method: "POST",
+    data: payload as Record<string, unknown>
+  });
+}
+
+export function updateAdminKeywordMapping(
+  mappingId: string,
+  payload: AdminKeywordMappingUpsertRequest
+): Promise<AdminKeywordMappingItem> {
+  return request<AdminKeywordMappingItem>({
+    url: `/api/v1/admin/keyword-mappings/${mappingId}`,
+    method: "PATCH",
+    data: payload as Record<string, unknown>
+  });
+}
+
+export function deleteAdminKeywordMapping(mappingId: string): Promise<void> {
+  return request<void>({
+    url: `/api/v1/admin/keyword-mappings/${mappingId}`,
+    method: "DELETE"
+  });
+}
+
 export function fetchChatBootstrap(): Promise<ChatBootstrapResponse> {
   return request<ChatBootstrapResponse>({ url: "/api/v1/chat/bootstrap" });
 }
 
-export function sendChatMessage(sessionId: string, message: string): Promise<ChatMessageResponse> {
+export function sendChatMessage(sessionId: string, message: string, deepThinking = false): Promise<ChatMessageResponse> {
   return request<ChatMessageResponse>({
     url: "/api/v1/chat/messages",
     method: "POST",
-    data: { session_id: sessionId, message }
+    data: { session_id: sessionId, message, deep_thinking: deepThinking }
   });
 }
 
@@ -441,7 +825,8 @@ export async function streamChatMessage(
   sessionId: string,
   message: string,
   handlers: ChatStreamHandlers,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  deepThinking = false
 ): Promise<void> {
   const response = await fetch(`${API_BASE_URL}/api/v1/chat/stream`, {
     method: "POST",
@@ -449,7 +834,7 @@ export async function streamChatMessage(
       "Content-Type": "application/json",
       ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {})
     },
-    body: JSON.stringify({ session_id: sessionId, message }),
+    body: JSON.stringify({ session_id: sessionId, message, deep_thinking: deepThinking }),
     signal
   });
 
@@ -508,6 +893,35 @@ export async function streamChatMessage(
       }
     }
   }
+}
+
+export interface KnowledgeBaseRouteProfile {
+  knowledge_base_id: string;
+  profile_text: string;
+  sample_questions: string[];
+  keywords: string[];
+  updated_at: string;
+}
+
+export interface KnowledgeBaseRouteProfileUpdateRequest {
+  profile_text: string;
+  sample_questions: string[];
+  keywords: string[];
+}
+
+export function fetchRouteProfile(knowledgeBaseId: string): Promise<KnowledgeBaseRouteProfile> {
+  return request<KnowledgeBaseRouteProfile>({ url: `/api/v1/knowledge-bases/${knowledgeBaseId}/route-profile` });
+}
+
+export function updateRouteProfile(
+  knowledgeBaseId: string,
+  data: KnowledgeBaseRouteProfileUpdateRequest
+): Promise<KnowledgeBaseRouteProfile> {
+  return request<KnowledgeBaseRouteProfile>({
+    url: `/api/v1/knowledge-bases/${knowledgeBaseId}/route-profile`,
+    method: "PUT",
+    data: data as unknown as Record<string, unknown>
+  });
 }
 
 export function fetchSessionMessages(sessionId: string): Promise<ConversationMessageListResponse> {

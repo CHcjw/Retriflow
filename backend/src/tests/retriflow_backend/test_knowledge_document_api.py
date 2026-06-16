@@ -24,6 +24,7 @@ class RetriFlowKnowledgeDocumentApiTests(unittest.TestCase):
         os.environ["RETRIFLOW_DATABASE_DSN"] = ""
         os.environ["RETRIFLOW_PGVECTOR_DSN"] = ""
         os.environ["RETRIFLOW_VECTOR_STORE_TYPE"] = "memory"
+        os.environ["RETRIFLOW_SEED_DEMO_CONTENT"] = "true"
 
         from core.config import get_settings
 
@@ -41,6 +42,7 @@ class RetriFlowKnowledgeDocumentApiTests(unittest.TestCase):
         os.environ.pop("RETRIFLOW_DATABASE_DSN", None)
         os.environ.pop("RETRIFLOW_PGVECTOR_DSN", None)
         os.environ.pop("RETRIFLOW_VECTOR_STORE_TYPE", None)
+        os.environ.pop("RETRIFLOW_SEED_DEMO_CONTENT", None)
         from core.config import get_settings
 
         get_settings.cache_clear()
@@ -236,7 +238,7 @@ class RetriFlowKnowledgeDocumentApiTests(unittest.TestCase):
         self.assertEqual(chunk["metadata"]["chunk_count"], len(chunks_response.json()["items"]))
 
     def test_create_document_accepts_recursive_separators(self) -> None:
-        from domain.ingestion import RetriFlowIngestionPipeline
+        from modules.ingestion import RetriFlowIngestionPipeline
 
         captured: dict[str, object] = {}
 
@@ -257,7 +259,7 @@ class RetriFlowKnowledgeDocumentApiTests(unittest.TestCase):
                 recursive_separators=recursive_separators,
             )
 
-        with patch("domain.knowledge.RetriFlowKnowledgeService._build_ingestion_pipeline", side_effect=fake_build_pipeline):
+        with patch("modules.knowledge.service.RetriFlowKnowledgeService._build_ingestion_pipeline", side_effect=fake_build_pipeline):
             create_response = self.client.post(
                 "/api/v1/knowledge-bases/kb-demo-1/documents",
                 headers=self._auth_headers(self.admin_token),
@@ -314,7 +316,7 @@ class RetriFlowKnowledgeDocumentApiTests(unittest.TestCase):
         self.assertEqual(upload_response.status_code, 201)
         created = upload_response.json()
         self.assertEqual(created["knowledge_base_id"], "kb-demo-1")
-        self.assertEqual(created["source_type"], "upload")
+        self.assertEqual(created["source_type"], "local")
 
         chunks_response = self.client.get(
             f"/api/v1/knowledge-bases/kb-demo-1/documents/{created['id']}/chunks",
@@ -324,8 +326,8 @@ class RetriFlowKnowledgeDocumentApiTests(unittest.TestCase):
         self.assertGreaterEqual(len(chunks_response.json()["items"]), 1)
 
     def test_upload_docx_uses_structured_parsing_pipeline(self) -> None:
-        from domain.document_parser import ParsedUploadDocumentResult
-        from domain.ingestion import IngestionPipelineNodeResult
+        from infra.document_parser import ParsedUploadDocumentResult
+        from modules.ingestion import IngestionPipelineNodeResult
         from schemas.document_structure import ParagraphBlock, StructuredDocument, TableBlock, TableCell, TableRow
 
         parsed_result = ParsedUploadDocumentResult(
@@ -369,7 +371,7 @@ class RetriFlowKnowledgeDocumentApiTests(unittest.TestCase):
             ],
         )
 
-        with patch("domain.knowledge.RetriFlowDocumentParserService.parse_upload", return_value=parsed_result):
+        with patch("modules.knowledge.service.RetriFlowDocumentParserService.parse_upload", return_value=parsed_result):
             upload_response = self.client.post(
                 "/api/v1/knowledge-bases/kb-demo-1/documents/upload",
                 headers=self._auth_headers(self.admin_token),
@@ -385,7 +387,7 @@ class RetriFlowKnowledgeDocumentApiTests(unittest.TestCase):
         self.assertEqual(upload_response.status_code, 201)
         created = upload_response.json()
         self.assertEqual(created["title"], "RetriFlow Parsed Spec")
-        self.assertEqual(created["source_type"], "upload")
+        self.assertEqual(created["source_type"], "local")
 
         chunks_response = self.client.get(
             f"/api/v1/knowledge-bases/kb-demo-1/documents/{created['id']}/chunks",
@@ -412,8 +414,8 @@ class RetriFlowKnowledgeDocumentApiTests(unittest.TestCase):
         self.assertIn("page_number", chunk_item["metadata"])
 
     def test_upload_document_accepts_chunk_controls(self) -> None:
-        from domain.document_parser import ParsedUploadDocumentResult
-        from domain.ingestion import IngestionPipelineNodeResult
+        from infra.document_parser import ParsedUploadDocumentResult
+        from modules.ingestion import IngestionPipelineNodeResult
         from schemas.document_structure import ParagraphBlock, StructuredDocument
 
         parsed_result = ParsedUploadDocumentResult(
@@ -441,7 +443,7 @@ class RetriFlowKnowledgeDocumentApiTests(unittest.TestCase):
             ],
         )
 
-        with patch("domain.knowledge.RetriFlowDocumentParserService.parse_upload", return_value=parsed_result):
+        with patch("modules.knowledge.service.RetriFlowDocumentParserService.parse_upload", return_value=parsed_result):
             upload_response = self.client.post(
                 "/api/v1/knowledge-bases/kb-demo-1/documents/upload",
                 headers=self._auth_headers(self.admin_token),
@@ -466,9 +468,9 @@ class RetriFlowKnowledgeDocumentApiTests(unittest.TestCase):
         self.assertEqual(chunk["document_type"], "faq")
 
     def test_upload_document_accepts_recursive_separators(self) -> None:
-        from domain.document_parser import ParsedUploadDocumentResult
-        from domain.ingestion import IngestionPipelineNodeResult
-        from domain.ingestion import RetriFlowIngestionPipeline
+        from infra.document_parser import ParsedUploadDocumentResult
+        from modules.ingestion import IngestionPipelineNodeResult
+        from modules.ingestion import RetriFlowIngestionPipeline
         from schemas.document_structure import ParagraphBlock, StructuredDocument
 
         parsed_result = ParsedUploadDocumentResult(
@@ -515,8 +517,8 @@ class RetriFlowKnowledgeDocumentApiTests(unittest.TestCase):
                 recursive_separators=recursive_separators,
             )
 
-        with patch("domain.knowledge.RetriFlowDocumentParserService.parse_upload", return_value=parsed_result):
-            with patch("domain.knowledge.RetriFlowKnowledgeService._build_ingestion_pipeline", side_effect=fake_build_pipeline):
+        with patch("modules.knowledge.service.RetriFlowDocumentParserService.parse_upload", return_value=parsed_result):
+            with patch("modules.knowledge.service.RetriFlowKnowledgeService._build_ingestion_pipeline", side_effect=fake_build_pipeline):
                 upload_response = self.client.post(
                     "/api/v1/knowledge-bases/kb-demo-1/documents/upload",
                     headers=self._auth_headers(self.admin_token),
@@ -535,8 +537,8 @@ class RetriFlowKnowledgeDocumentApiTests(unittest.TestCase):
         self.assertEqual(captured["recursive_separators"], ["###", " "])
 
     def test_upload_uses_tika_detected_mime_when_form_header_is_generic(self) -> None:
-        from domain.document_parser import ParsedUploadDocumentResult
-        from domain.ingestion import IngestionPipelineNodeResult
+        from infra.document_parser import ParsedUploadDocumentResult
+        from modules.ingestion import IngestionPipelineNodeResult
         from schemas.document_structure import ParagraphBlock, StructuredDocument
 
         parsed_result = ParsedUploadDocumentResult(
@@ -564,7 +566,7 @@ class RetriFlowKnowledgeDocumentApiTests(unittest.TestCase):
             ],
         )
 
-        with patch("domain.knowledge.RetriFlowDocumentParserService.parse_upload", return_value=parsed_result) as parse_mock:
+        with patch("modules.knowledge.service.RetriFlowDocumentParserService.parse_upload", return_value=parsed_result) as parse_mock:
             upload_response = self.client.post(
                 "/api/v1/knowledge-bases/kb-demo-1/documents/upload",
                 headers=self._auth_headers(self.admin_token),
@@ -659,7 +661,7 @@ class RetriFlowKnowledgeDocumentApiTests(unittest.TestCase):
         before_count = len(before_response.json()["items"])
 
         from core.config import get_settings
-        from domain.knowledge import RetriFlowKnowledgeService
+        from modules.knowledge import RetriFlowKnowledgeService
 
         get_settings.cache_clear()
         service = RetriFlowKnowledgeService()

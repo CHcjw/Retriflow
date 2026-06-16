@@ -60,7 +60,7 @@ class RetriFlowModelRoutingTests(unittest.TestCase):
         os.environ["BAILIAN_API_KEY"] = "bailian-key"
 
         from core.config import get_settings
-        from domain.llm import RetriFlowLLMService
+        from infra.llm import RetriFlowLLMService
 
         get_settings.cache_clear()
         service = RetriFlowLLMService()
@@ -75,7 +75,7 @@ class RetriFlowModelRoutingTests(unittest.TestCase):
         os.environ["SILICONFLOW_API_KEY"] = "siliconflow-key"
 
         from core.config import get_settings
-        from domain.embeddings import RetriFlowEmbeddingService
+        from infra.embeddings import RetriFlowEmbeddingService
 
         get_settings.cache_clear()
         service = RetriFlowEmbeddingService()
@@ -89,7 +89,7 @@ class RetriFlowModelRoutingTests(unittest.TestCase):
         os.environ["RETRIFLOW_CHAT_PROVIDER"] = "ollama"
 
         from core.config import get_settings
-        from domain.llm import RetriFlowLLMService
+        from infra.llm import RetriFlowLLMService
 
         get_settings.cache_clear()
         service = RetriFlowLLMService()

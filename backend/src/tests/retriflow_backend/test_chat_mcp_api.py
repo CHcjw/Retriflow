@@ -26,6 +26,7 @@ class RetriFlowChatMcpApiTests(unittest.TestCase):
         os.environ["RETRIFLOW_PGVECTOR_DSN"] = ""
         os.environ["RETRIFLOW_VECTOR_STORE_TYPE"] = "memory"
         os.environ["RETRIFLOW_LLM_PROVIDER"] = "disabled"
+        os.environ["RETRIFLOW_SEED_DEMO_CONTENT"] = "true"
         os.environ["RETRIFLOW_WORKFLOW_ADAPTER"] = "langgraph"
 
         from core.config import get_settings
@@ -47,6 +48,7 @@ class RetriFlowChatMcpApiTests(unittest.TestCase):
         os.environ.pop("RETRIFLOW_PGVECTOR_DSN", None)
         os.environ.pop("RETRIFLOW_VECTOR_STORE_TYPE", None)
         os.environ.pop("RETRIFLOW_LLM_PROVIDER", None)
+        os.environ.pop("RETRIFLOW_SEED_DEMO_CONTENT", None)
         os.environ.pop("RETRIFLOW_WORKFLOW_ADAPTER", None)
         from core.config import get_settings
 
@@ -75,7 +77,7 @@ class RetriFlowChatMcpApiTests(unittest.TestCase):
         self.assertIn("sales_query", tool_ids)
 
     def test_chat_message_returns_mcp_error_items_without_raising_500(self) -> None:
-        from domain.mcp.models import McpExecutionResult, McpRouteDecision, McpToolCallResult
+        from modules.mcp.models import McpExecutionResult, McpRouteDecision, McpToolCallResult
 
         fake_result = McpExecutionResult(
             route=McpRouteDecision(
@@ -95,7 +97,7 @@ class RetriFlowChatMcpApiTests(unittest.TestCase):
         )
 
         with patch(
-            "domain.workflow_adapter.RetriFlowMcpService.execute_question",
+            "modules.rag.workflow_adapter.RetriFlowMcpService.execute_question",
             return_value=fake_result,
         ):
             response = self.client.post(

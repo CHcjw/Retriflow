@@ -8,6 +8,11 @@ class KnowledgeBaseItem(BaseModel):
     name: str
     product: str
     document_count: int
+    embedding_model: str = "qwen-emb-8b"
+    collection_name: str = ""
+    owner: str = "admin"
+    created_at: str = ""
+    updated_at: str = ""
 
 
 class KnowledgeBaseCreateRequest(BaseModel):
@@ -23,9 +28,13 @@ class KnowledgeDocumentItem(BaseModel):
     knowledge_base_id: str
     title: str
     source_type: str
+    processing_mode: str = "auto"
     status: str
+    enabled: bool = True
     vector_index_status: str = "pending"
     vector_chunk_count: int = 0
+    document_type: str = "knowledge_base"
+    size_label: str = "-"
     vector_indexed_at: str = ""
     created_at: str
 
@@ -84,6 +93,7 @@ class KnowledgeChunkItem(BaseModel):
     chunk_index: int
     content: str
     char_count: int
+    enabled: bool = True
     strategy: str = "recursive"
     document_type: str = "manual"
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -92,6 +102,19 @@ class KnowledgeChunkItem(BaseModel):
 
 class KnowledgeChunkListResponse(BaseModel):
     items: list[KnowledgeChunkItem]
+
+
+class KnowledgeChunkUpdateRequest(BaseModel):
+    enabled: bool
+
+
+class KnowledgeChunkBatchUpdateRequest(BaseModel):
+    chunk_ids: list[int] = Field(default_factory=list)
+    enabled: bool
+
+
+class KnowledgeChunkBatchUpdateResponse(BaseModel):
+    updated_count: int
 
 
 class StructuredTableCellItem(BaseModel):
@@ -156,3 +179,56 @@ class IngestionTaskNodeItem(BaseModel):
 
 class IngestionTaskNodeListResponse(BaseModel):
     items: list[IngestionTaskNodeItem]
+
+
+class IngestionPipelineNodeConfig(BaseModel):
+    node_id: str
+    node_type: str = "fetcher"
+    next_node_id: str = ""
+    condition: str = ""
+    config: dict[str, Any] = Field(default_factory=dict)
+
+
+class IngestionPipelineItem(BaseModel):
+    id: int
+    name: str
+    description: str
+    nodes: list[IngestionPipelineNodeConfig]
+    node_count: int
+    owner: str
+    created_at: str
+    updated_at: str
+
+
+class IngestionPipelineCreateRequest(BaseModel):
+    name: str
+    description: str = ""
+    nodes: list[IngestionPipelineNodeConfig] = Field(default_factory=list)
+    owner: str = "admin"
+
+    @model_validator(mode="after")
+    def validate_pipeline(self) -> "IngestionPipelineCreateRequest":
+        if not self.name.strip():
+            raise ValueError("pipeline name is required")
+        node_ids = [node.node_id.strip() for node in self.nodes]
+        if len(node_ids) != len(set(node_ids)):
+            raise ValueError("node_id must be unique")
+        return self
+
+
+class IngestionPipelineListResponse(BaseModel):
+    items: list[IngestionPipelineItem]
+
+
+class KnowledgeBaseRouteProfileItem(BaseModel):
+    knowledge_base_id: str
+    profile_text: str
+    sample_questions: list[str]
+    keywords: list[str]
+    updated_at: str
+
+
+class KnowledgeBaseRouteProfileUpdateRequest(BaseModel):
+    profile_text: str
+    sample_questions: list[str]
+    keywords: list[str]

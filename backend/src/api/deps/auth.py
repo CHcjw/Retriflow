@@ -2,7 +2,7 @@ from typing import Annotated
 
 from fastapi import Depends, Header, HTTPException, status
 
-from domain.auth import AuthenticatedUser, RetriFlowAuthService
+from modules.auth import AuthenticatedUser, RetriFlowAuthService
 
 
 def _auth_service() -> RetriFlowAuthService:

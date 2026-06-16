@@ -26,6 +26,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
         os.environ["RETRIFLOW_PGVECTOR_DSN"] = ""
         os.environ["RETRIFLOW_VECTOR_STORE_TYPE"] = "memory"
         os.environ["RETRIFLOW_LLM_PROVIDER"] = "disabled"
+        os.environ["RETRIFLOW_SEED_DEMO_CONTENT"] = "true"
 
         from core.config import get_settings
 
@@ -47,6 +48,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
         os.environ.pop("RETRIFLOW_PGVECTOR_DSN", None)
         os.environ.pop("RETRIFLOW_VECTOR_STORE_TYPE", None)
         os.environ.pop("RETRIFLOW_LLM_PROVIDER", None)
+        os.environ.pop("RETRIFLOW_SEED_DEMO_CONTENT", None)
         os.environ.pop("RETRIFLOW_WORKFLOW_ADAPTER", None)
         os.environ.pop("RETRIFLOW_MEMORY_MID_ENABLED", None)
         os.environ.pop("RETRIFLOW_MEMORY_MID_MAX_ITEMS", None)
@@ -150,7 +152,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
         )
 
         with patch(
-            "domain.workflow_adapter.RetriFlowLLMService.generate_answer",
+            "modules.rag.workflow_adapter.RetriFlowLLMService.generate_answer",
             return_value="这是来自模型服务的回答。[1]",
         ) as generate_answer:
             response = self.client.post(
@@ -193,7 +195,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
                 ]
             }
 
-        with patch("domain.llm.RetriFlowLLMService._post_json", new=fake_post_json):
+        with patch("infra.llm.service.RetriFlowLLMService._post_json", new=fake_post_json):
             response = self.client.post(
                 "/api/v1/chat/messages",
                 json={"session_id": "session-demo-1", "message": "iPhone 16 Pro Max 拆封后还能退吗？"},
@@ -225,7 +227,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
         self.assertEqual(document_response.status_code, 201)
 
         with patch(
-            "domain.workflow_adapter.RetriFlowLLMService.generate_answer",
+            "modules.rag.workflow_adapter.RetriFlowLLMService.generate_answer",
             return_value="质量问题退货时，运费由商家承担。[1]",
         ):
             response = self.client.post(
@@ -251,7 +253,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
         )
 
         with patch(
-            "domain.workflow_adapter.RetriFlowLLMService.generate_answer",
+            "modules.rag.workflow_adapter.RetriFlowLLMService.generate_answer",
             return_value="质量问题退货时，运费由商家承担。[1]",
         ):
             response = self.client.post(
@@ -313,7 +315,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
         )
 
         with patch(
-            "domain.workflow_adapter.RetriFlowLLMService.stream_answer",
+            "modules.rag.workflow_adapter.RetriFlowLLMService.stream_answer",
             return_value=iter(["第一段。", "第二段。", "第三段。"]),
         ) as stream_answer:
             with self.client.stream(
@@ -337,12 +339,14 @@ class RetriFlowChatApiTests(unittest.TestCase):
         self.assertIn("第一段。第二段。第三段。", items[-1]["content"])
 
     def test_home_chat_routes_retrieval_to_intent_matched_knowledge_base(self) -> None:
-        self.client.post(
+        kb_response = self.client.post(
             "/api/v1/knowledge-bases",
             json={"name": "Insurance KB"},
         )
+        self.assertEqual(kb_response.status_code, 201)
+        knowledge_base_id = kb_response.json()["id"]
         self.client.post(
-            "/api/v1/knowledge-bases/kb-2/documents",
+            f"/api/v1/knowledge-bases/{knowledge_base_id}/documents",
             json={
                 "title": "Insurance handbook",
                 "source_type": "manual",
@@ -352,12 +356,12 @@ class RetriFlowChatApiTests(unittest.TestCase):
 
         fake_route = {
             "mode": "knowledge_base",
-            "knowledge_base_ids": ["kb-2"],
+            "knowledge_base_ids": [knowledge_base_id],
             "confidence": 0.92,
             "reason": "matched insurance domain",
         }
 
-        with patch("domain.workflow_adapter.RetriFlowKnowledgeRouteService.route_question", return_value=fake_route):
+        with patch("modules.rag.workflow_adapter.RetriFlowKnowledgeRouteService.route_question", return_value=fake_route):
             response = self.client.post(
                 "/api/v1/chat/messages",
                 json={"session_id": "session-demo-1", "message": "保险理赔流程是什么？"},
@@ -366,7 +370,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertTrue(payload["sources"])
-        self.assertTrue(all(item["knowledge_base_id"] == "kb-2" for item in payload["sources"]))
+        self.assertTrue(all(item["knowledge_base_id"] == knowledge_base_id for item in payload["sources"]))
 
     def test_chat_message_supports_mcp_only_tool_answer(self) -> None:
         self._rebuild_app_with_langgraph()
@@ -398,7 +402,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
 
         with (
             patch(
-                "domain.workflow_adapter.RetriFlowKnowledgeRouteService.route_question",
+                "modules.rag.workflow_adapter.RetriFlowKnowledgeRouteService.route_question",
                 return_value={
                     "mode": "knowledge_base",
                     "knowledge_base_ids": ["kb-demo-1"],
@@ -407,7 +411,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
                 },
             ),
             patch(
-                "domain.workflow_adapter.RetriFlowIntentClassifier.classify",
+                "modules.rag.workflow_adapter.RetriFlowIntentClassifier.classify",
                 return_value={
                     "intent": "tool_call",
                     "confidence": 0.95,
@@ -480,7 +484,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
             )
             connection.commit()
 
-        with patch("domain.llm.RetriFlowLLMService._post_json", new=fake_post_json):
+        with patch("infra.llm.service.RetriFlowLLMService._post_json", new=fake_post_json):
             response = self.client.post(
                 "/api/v1/chat/messages",
                 json={"session_id": "session-demo-1", "message": "继续刚才的话题"},
@@ -561,8 +565,8 @@ class RetriFlowChatApiTests(unittest.TestCase):
             )
             connection.commit()
 
-        with patch("domain.memory.RetriFlowConversationMidMemoryExtractor.extract", return_value=[]):
-            with patch("domain.llm.RetriFlowLLMService._post_json", new=fake_post_json):
+        with patch("modules.memory.service.RetriFlowConversationMidMemoryExtractor.extract", return_value=[]):
+            with patch("infra.llm.service.RetriFlowLLMService._post_json", new=fake_post_json):
                 response = self.client.post(
                     "/api/v1/chat/messages",
                     json={"session_id": "session-demo-1", "message": "continue memory design"},
@@ -619,7 +623,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
 
         with (
             patch(
-                "domain.workflow_adapter.RetriFlowIntentClassifier.classify",
+                "modules.rag.workflow_adapter.RetriFlowIntentClassifier.classify",
                 return_value={
                     "intent": "knowledge_retrieval",
                     "confidence": 0.95,
@@ -629,7 +633,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
                 },
             ),
             patch(
-                "domain.workflow_adapter.RetriFlowQueryRewriteService.rewrite",
+                "modules.rag.workflow_adapter.RetriFlowQueryRewriteService.rewrite",
                 return_value=["insurance claim process", "underwriting policy rules"],
             ),
         ):
@@ -661,7 +665,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
 
         with (
             patch(
-                "domain.workflow_adapter.RetriFlowIntentClassifier.classify",
+                "modules.rag.workflow_adapter.RetriFlowIntentClassifier.classify",
                 return_value={
                     "intent": "knowledge_retrieval",
                     "confidence": 0.95,
@@ -671,7 +675,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
                 },
             ),
             patch(
-                "domain.workflow_adapter.RetriFlowQueryRewriteService.rewrite",
+                "modules.rag.workflow_adapter.RetriFlowQueryRewriteService.rewrite",
                 side_effect=RuntimeError("rewrite provider unavailable"),
             ),
         ):
@@ -689,11 +693,11 @@ class RetriFlowChatApiTests(unittest.TestCase):
     def test_chat_message_without_any_evidence_returns_standard_no_answer_reply(self) -> None:
         self._rebuild_app_with_langgraph()
 
-        from domain.answer_postprocessor import RetriFlowAnswerPostprocessor
-        from domain.workflow_adapter import PreparedWorkflowContext
+        from modules.rag.postprocess import RetriFlowAnswerPostprocessor
+        from modules.rag.workflow_adapter import PreparedWorkflowContext
 
         with patch(
-            "domain.workflow_adapter.LangGraphWorkflowAdapter._prepare_context",
+            "modules.rag.workflow_adapter.LangGraphWorkflowAdapter._prepare_context",
             return_value=PreparedWorkflowContext(
                 rewritten_queries=["RetriFlow business model"],
                 route_mode="global",
@@ -719,7 +723,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
 
         with (
             patch(
-                "domain.workflow_adapter.RetriFlowIntentClassifier.classify",
+                "modules.rag.workflow_adapter.RetriFlowIntentClassifier.classify",
                 return_value={
                     "intent": "tool_call",
                     "confidence": 0.95,
@@ -729,7 +733,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
                 },
             ),
             patch(
-                "domain.workflow_adapter.RetriFlowQueryRewriteService.rewrite",
+                "modules.rag.workflow_adapter.RetriFlowQueryRewriteService.rewrite",
                 side_effect=AssertionError("rewrite should not be called"),
             ),
         ):
@@ -749,7 +753,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
 
         with (
             patch(
-                "domain.workflow_adapter.RetriFlowIntentClassifier.classify",
+                "modules.rag.workflow_adapter.RetriFlowIntentClassifier.classify",
                 return_value={
                     "intent": "chitchat",
                     "confidence": 0.88,
@@ -759,11 +763,11 @@ class RetriFlowChatApiTests(unittest.TestCase):
                 },
             ),
             patch(
-                "domain.workflow_adapter.RetriFlowLLMService.generate_answer",
+                "modules.rag.workflow_adapter.RetriFlowLLMService.generate_answer",
                 return_value="浣犲ソ锛屾垜鍦ㄨ繖鍎匡紝鍙互鐩存帴鍜屼綘鑱婏紝涔熷彲浠ュ府浣犳煡鐭ヨ瘑搴撱€?",
             ),
             patch(
-                "domain.workflow_adapter.RetriFlowQueryRewriteService.rewrite",
+                "modules.rag.workflow_adapter.RetriFlowQueryRewriteService.rewrite",
                 side_effect=AssertionError("rewrite should not be called"),
             ),
         ):
@@ -784,7 +788,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
 
         with (
             patch(
-                "domain.workflow_adapter.RetriFlowIntentClassifier.classify",
+                "modules.rag.workflow_adapter.RetriFlowIntentClassifier.classify",
                 return_value={
                     "intent": "clarification",
                     "confidence": 0.9,
@@ -794,7 +798,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
                 },
             ),
             patch(
-                "domain.workflow_adapter.RetriFlowQueryRewriteService.rewrite",
+                "modules.rag.workflow_adapter.RetriFlowQueryRewriteService.rewrite",
                 side_effect=AssertionError("rewrite should not be called"),
             ),
         ):
@@ -823,7 +827,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
         )
 
         with patch(
-            "domain.workflow_adapter.RetriFlowIntentClassifier.classify",
+            "modules.rag.workflow_adapter.RetriFlowIntentClassifier.classify",
             side_effect=RuntimeError("intent classifier unavailable"),
         ):
             response = self.client.post(

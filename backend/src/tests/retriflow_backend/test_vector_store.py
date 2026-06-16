@@ -18,6 +18,7 @@ class RetriFlowVectorStoreTests(unittest.TestCase):
         self.db_path = Path(self.temp_dir.name) / f"retriflow-{uuid.uuid4().hex}.db"
         os.environ["RETRIFLOW_DATABASE_BACKEND"] = "sqlite"
         os.environ["RETRIFLOW_DB_PATH"] = str(self.db_path)
+        os.environ["RETRIFLOW_SEED_DEMO_CONTENT"] = "true"
 
         from core.config import get_settings
         from core.state import initialize_database
@@ -29,6 +30,8 @@ class RetriFlowVectorStoreTests(unittest.TestCase):
         os.environ.pop("RETRIFLOW_DATABASE_BACKEND", None)
         os.environ.pop("RETRIFLOW_DB_PATH", None)
         os.environ.pop("RETRIFLOW_PGVECTOR_DSN", None)
+        os.environ.pop("RETRIFLOW_VECTOR_STORE_TYPE", None)
+        os.environ.pop("RETRIFLOW_SEED_DEMO_CONTENT", None)
         from core.config import get_settings
 
         get_settings.cache_clear()
@@ -39,9 +42,10 @@ class RetriFlowVectorStoreTests(unittest.TestCase):
 
     def test_resolve_vector_store_returns_postgres_store_when_dsn_is_configured(self) -> None:
         os.environ["RETRIFLOW_PGVECTOR_DSN"] = "postgresql://retriflow:retriflow@127.0.0.1:5433/retriflow"
+        os.environ["RETRIFLOW_VECTOR_STORE_TYPE"] = "pg"
 
         from core.config import get_settings
-        from domain.vector_store import PostgresRetriFlowVectorStore, resolve_vector_store
+        from infra.vector_store import PostgresRetriFlowVectorStore, resolve_vector_store
 
         get_settings.cache_clear()
         store = resolve_vector_store()
@@ -49,7 +53,7 @@ class RetriFlowVectorStoreTests(unittest.TestCase):
         self.assertIsInstance(store, PostgresRetriFlowVectorStore)
 
     def test_knowledge_service_upserts_chunks_into_vector_store(self) -> None:
-        from domain.knowledge import RetriFlowKnowledgeService
+        from modules.knowledge import RetriFlowKnowledgeService
         from schemas.knowledge import KnowledgeDocumentCreateRequest
 
         captured_records: list[object] = []
@@ -61,7 +65,7 @@ class RetriFlowVectorStoreTests(unittest.TestCase):
             def similarity_search(self, query: str, k: int = 4):
                 return []
 
-        with patch("domain.knowledge.resolve_vector_store", return_value=FakeVectorStore()):
+        with patch("modules.knowledge.service.resolve_vector_store", return_value=FakeVectorStore()):
             RetriFlowKnowledgeService().create_document(
                 "kb-demo-1",
                 KnowledgeDocumentCreateRequest(
@@ -78,7 +82,7 @@ class RetriFlowVectorStoreTests(unittest.TestCase):
         self.assertIn("RetriFlow should persist chunk vectors", first_record.content)
 
     def test_knowledge_service_reindex_replaces_document_vectors(self) -> None:
-        from domain.knowledge import RetriFlowKnowledgeService
+        from modules.knowledge import RetriFlowKnowledgeService
         from schemas.knowledge import KnowledgeDocumentCreateRequest, KnowledgeDocumentReindexRequest
 
         operation_log: list[tuple[str, object]] = []
@@ -93,7 +97,7 @@ class RetriFlowVectorStoreTests(unittest.TestCase):
             def similarity_search(self, query: str, k: int = 4):
                 return []
 
-        with patch("domain.knowledge.resolve_vector_store", return_value=FakeVectorStore()):
+        with patch("modules.knowledge.service.resolve_vector_store", return_value=FakeVectorStore()):
             service = RetriFlowKnowledgeService()
             created = service.create_document(
                 "kb-demo-1",

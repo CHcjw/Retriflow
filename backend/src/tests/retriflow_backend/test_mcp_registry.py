@@ -26,7 +26,7 @@ class RetriFlowMcpRegistryTests(unittest.TestCase):
         get_settings.cache_clear()
 
     def test_registry_auto_registers_builtin_tools(self) -> None:
-        from domain.mcp.registry import RetriFlowMcpRegistry
+        from modules.mcp.registry import RetriFlowMcpRegistry
 
         registry = RetriFlowMcpRegistry()
 
@@ -40,8 +40,8 @@ class RetriFlowMcpRegistryTests(unittest.TestCase):
             '[{"name":"finance-remote","url":"http://mcp.example"}]'
         )
         from core.config import get_settings
-        from domain.mcp.models import McpToolDefinition
-        from domain.mcp.registry import RetriFlowMcpRegistry
+        from modules.mcp.models import McpToolDefinition
+        from modules.mcp.registry import RetriFlowMcpRegistry
 
         get_settings.cache_clear()
 
@@ -53,7 +53,7 @@ class RetriFlowMcpRegistryTests(unittest.TestCase):
         )
 
         with patch(
-            "domain.mcp.registry.RetriFlowRemoteMcpClient.list_tools",
+            "modules.mcp.registry.RetriFlowRemoteMcpClient.list_tools",
             return_value=[remote_tool],
         ):
             registry = RetriFlowMcpRegistry()

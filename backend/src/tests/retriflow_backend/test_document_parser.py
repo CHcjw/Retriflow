@@ -23,7 +23,7 @@ class RetriFlowDocumentParserTests(unittest.TestCase):
         os.environ["RETRIFLOW_TIKA_OCR_ENABLED"] = "true"
 
         from core.config import get_settings
-        from domain.document_parser import RetriFlowDocumentParserService
+        from infra.document_parser import RetriFlowDocumentParserService
         from schemas.document_structure import ParagraphBlock, RawParsedDocument, StructuredDocument
 
         get_settings.cache_clear()
@@ -44,10 +44,10 @@ class RetriFlowDocumentParserTests(unittest.TestCase):
         )
 
         with (
-            patch("domain.document_parser.RetriFlowTikaClient.detect_content_type", return_value="application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
-            patch("domain.document_parser.RetriFlowTikaClient.parse_bytes") as parse_bytes_mock,
-            patch("domain.document_parser.RetriFlowImageCaptionEnrichmentService.extract_page_captions") as caption_mock,
-            patch("domain.document_parser.RetriFlowStructuredExtractionService.extract_from_xhtml") as extract_mock,
+            patch("infra.document_parser.service.RetriFlowTikaClient.detect_content_type", return_value="application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+            patch("infra.document_parser.service.RetriFlowTikaClient.parse_bytes") as parse_bytes_mock,
+            patch("infra.document_parser.service.RetriFlowImageCaptionEnrichmentService.extract_page_captions") as caption_mock,
+            patch("infra.document_parser.service.RetriFlowStructuredExtractionService.extract_from_xhtml") as extract_mock,
         ):
             parse_bytes_mock.return_value = RawParsedDocument(
                 file_name="sample.docx",
@@ -74,7 +74,7 @@ class RetriFlowDocumentParserTests(unittest.TestCase):
         os.environ["RETRIFLOW_TIKA_ENABLED"] = "true"
 
         from core.config import get_settings
-        from domain.document_parser import RetriFlowDocumentParserService
+        from infra.document_parser import RetriFlowDocumentParserService
         from schemas.document_structure import ParagraphBlock, RawParsedDocument, StructuredDocument
 
         get_settings.cache_clear()
@@ -95,10 +95,10 @@ class RetriFlowDocumentParserTests(unittest.TestCase):
         )
 
         with (
-            patch("domain.document_parser.RetriFlowTikaClient.detect_content_type", return_value="application/pdf") as detect_mock,
-            patch("domain.document_parser.RetriFlowTikaClient.parse_bytes") as parse_bytes_mock,
-            patch("domain.document_parser.RetriFlowImageCaptionEnrichmentService.extract_page_captions", return_value={}) as caption_mock,
-            patch("domain.document_parser.RetriFlowStructuredExtractionService.extract_from_xhtml", return_value=extractor_result),
+            patch("infra.document_parser.service.RetriFlowTikaClient.detect_content_type", return_value="application/pdf") as detect_mock,
+            patch("infra.document_parser.service.RetriFlowTikaClient.parse_bytes") as parse_bytes_mock,
+            patch("infra.document_parser.service.RetriFlowImageCaptionEnrichmentService.extract_page_captions", return_value={}) as caption_mock,
+            patch("infra.document_parser.service.RetriFlowStructuredExtractionService.extract_from_xhtml", return_value=extractor_result),
         ):
             parse_bytes_mock.return_value = RawParsedDocument(
                 file_name="sample.pdf",

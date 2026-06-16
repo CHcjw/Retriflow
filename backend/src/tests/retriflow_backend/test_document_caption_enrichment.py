@@ -13,7 +13,7 @@ sys.path.insert(0, str(SRC_PATH))
 
 class RetriFlowDocumentCaptionEnrichmentTests(unittest.TestCase):
     def test_returns_empty_result_when_ocr_is_disabled(self) -> None:
-        from domain.document_caption_enrichment import RetriFlowImageCaptionEnrichmentService
+        from infra.document_parser.caption_enrichment import RetriFlowImageCaptionEnrichmentService
 
         service = RetriFlowImageCaptionEnrichmentService(ocr_enabled=False)
 
@@ -26,7 +26,7 @@ class RetriFlowDocumentCaptionEnrichmentTests(unittest.TestCase):
         self.assertEqual(result, {})
 
     def test_prefers_only_caption_like_ocr_lines(self) -> None:
-        from domain.document_caption_enrichment import RetriFlowImageCaptionEnrichmentService
+        from infra.document_parser.caption_enrichment import RetriFlowImageCaptionEnrichmentService
 
         service = RetriFlowImageCaptionEnrichmentService(ocr_enabled=True)
 
@@ -37,7 +37,7 @@ class RetriFlowDocumentCaptionEnrichmentTests(unittest.TestCase):
         self.assertEqual(result, ["图1 系统架构总览", "Figure 2 Retrieval flow"])
 
     def test_returns_remote_ocr_page_captions_when_service_enabled(self) -> None:
-        from domain.document_caption_enrichment import RetriFlowImageCaptionEnrichmentService
+        from infra.document_parser.caption_enrichment import RetriFlowImageCaptionEnrichmentService
 
         service = RetriFlowImageCaptionEnrichmentService(
             ocr_enabled=True,
@@ -60,7 +60,7 @@ class RetriFlowDocumentCaptionEnrichmentTests(unittest.TestCase):
             def raise_for_status() -> None:
                 return None
 
-        with patch("domain.document_caption_enrichment.httpx.post", return_value=FakeResponse()) as post_mock:
+        with patch("infra.document_parser.caption_enrichment.httpx.post", return_value=FakeResponse()) as post_mock:
             result = service.extract_page_captions(
                 filename="sample.docx",
                 content_bytes=b"fake",
@@ -71,7 +71,7 @@ class RetriFlowDocumentCaptionEnrichmentTests(unittest.TestCase):
         post_mock.assert_called_once()
 
     def test_extracts_docx_embedded_images_and_calls_ocr_service(self) -> None:
-        from domain.document_caption_enrichment import RetriFlowImageCaptionEnrichmentService
+        from infra.document_parser.caption_enrichment import RetriFlowImageCaptionEnrichmentService
 
         service = RetriFlowImageCaptionEnrichmentService(
             ocr_enabled=True,
@@ -91,7 +91,7 @@ class RetriFlowDocumentCaptionEnrichmentTests(unittest.TestCase):
             def raise_for_status() -> None:
                 return None
 
-        with patch("domain.document_caption_enrichment.httpx.post", return_value=FakeResponse()) as post_mock:
+        with patch("infra.document_parser.caption_enrichment.httpx.post", return_value=FakeResponse()) as post_mock:
             result = service.extract_page_captions(
                 filename="sample.docx",
                 content_bytes=docx_bytes,
@@ -105,7 +105,7 @@ class RetriFlowDocumentCaptionEnrichmentTests(unittest.TestCase):
         self.assertEqual(sent_file[2], "image/png")
 
     def test_prefers_tika_unpack_images_before_local_docx_unzip(self) -> None:
-        from domain.document_caption_enrichment import RetriFlowImageCaptionEnrichmentService
+        from infra.document_parser.caption_enrichment import RetriFlowImageCaptionEnrichmentService
 
         service = RetriFlowImageCaptionEnrichmentService(
             ocr_enabled=True,
@@ -136,8 +136,8 @@ class RetriFlowDocumentCaptionEnrichmentTests(unittest.TestCase):
                 return None
 
         with (
-            patch("domain.document_caption_enrichment.httpx.put", return_value=FakeUnpackResponse()) as unpack_mock,
-            patch("domain.document_caption_enrichment.httpx.post", return_value=FakeOcrResponse()) as post_mock,
+            patch("infra.document_parser.caption_enrichment.httpx.put", return_value=FakeUnpackResponse()) as unpack_mock,
+            patch("infra.document_parser.caption_enrichment.httpx.post", return_value=FakeOcrResponse()) as post_mock,
         ):
             result = service.extract_page_captions(
                 filename="sample.docx",
@@ -152,7 +152,7 @@ class RetriFlowDocumentCaptionEnrichmentTests(unittest.TestCase):
         self.assertEqual(sent_file[2], "image/png")
 
     def test_extracts_pdf_images_via_tika_unpack_and_calls_ocr_service(self) -> None:
-        from domain.document_caption_enrichment import RetriFlowImageCaptionEnrichmentService
+        from infra.document_parser.caption_enrichment import RetriFlowImageCaptionEnrichmentService
 
         service = RetriFlowImageCaptionEnrichmentService(
             ocr_enabled=True,
@@ -182,8 +182,8 @@ class RetriFlowDocumentCaptionEnrichmentTests(unittest.TestCase):
                 return None
 
         with (
-            patch("domain.document_caption_enrichment.httpx.put", return_value=FakeUnpackResponse()) as unpack_mock,
-            patch("domain.document_caption_enrichment.httpx.post", return_value=FakeOcrResponse()) as post_mock,
+            patch("infra.document_parser.caption_enrichment.httpx.put", return_value=FakeUnpackResponse()) as unpack_mock,
+            patch("infra.document_parser.caption_enrichment.httpx.post", return_value=FakeOcrResponse()) as post_mock,
         ):
             result = service.extract_page_captions(
                 filename="sample.pdf",

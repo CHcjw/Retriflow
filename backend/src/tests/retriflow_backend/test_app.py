@@ -1,4 +1,5 @@
 import unittest
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -25,8 +26,13 @@ class RetriFlowAppImportTests(unittest.TestCase):
         from core.config import get_settings
 
         get_settings.cache_clear()
+        old_vector_store_type = os.environ.pop("RETRIFLOW_VECTOR_STORE_TYPE", None)
         with patch("core.config._read_env_file", return_value={}):
-            settings = get_settings()
+            try:
+                settings = get_settings()
+            finally:
+                if old_vector_store_type is not None:
+                    os.environ["RETRIFLOW_VECTOR_STORE_TYPE"] = old_vector_store_type
 
         self.assertEqual(settings.default_chat_model, "qwen3-max")
         self.assertEqual(settings.default_embedding_model, "qwen-emb-8b")

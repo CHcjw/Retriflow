@@ -11,7 +11,7 @@ sys.path.insert(0, str(SRC_PATH))
 
 class RetriFlowRemoteMcpClientTests(unittest.TestCase):
     def test_list_tools_parses_json_rpc_response(self) -> None:
-        from domain.mcp.client import RemoteMcpServerConfig, RetriFlowRemoteMcpClient
+        from modules.mcp.client import RemoteMcpServerConfig, RetriFlowRemoteMcpClient
 
         client = RetriFlowRemoteMcpClient(
             RemoteMcpServerConfig(name="finance-remote", url="http://mcp.example")
@@ -43,7 +43,7 @@ class RetriFlowRemoteMcpClientTests(unittest.TestCase):
         self.assertIn("股票", tools[0].keywords)
 
     def test_call_tool_parses_text_content(self) -> None:
-        from domain.mcp.client import RemoteMcpServerConfig, RetriFlowRemoteMcpClient
+        from modules.mcp.client import RemoteMcpServerConfig, RetriFlowRemoteMcpClient
 
         client = RetriFlowRemoteMcpClient(
             RemoteMcpServerConfig(name="finance-remote", url="http://mcp.example")
@@ -67,7 +67,7 @@ class RetriFlowRemoteMcpClientTests(unittest.TestCase):
         self.assertFalse(result.is_error)
 
     def test_call_tool_uses_fallback_text_when_remote_returns_empty_content(self) -> None:
-        from domain.mcp.client import RemoteMcpServerConfig, RetriFlowRemoteMcpClient
+        from modules.mcp.client import RemoteMcpServerConfig, RetriFlowRemoteMcpClient
 
         client = RetriFlowRemoteMcpClient(
             RemoteMcpServerConfig(name="finance-remote", url="http://mcp.example")

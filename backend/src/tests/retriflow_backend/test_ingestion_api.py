@@ -20,6 +20,9 @@ class RetriFlowIngestionApiTests(unittest.TestCase):
         self.db_path = Path(self.temp_dir.name) / f"retriflow-{uuid.uuid4().hex}.db"
         os.environ["RETRIFLOW_DATABASE_BACKEND"] = "sqlite"
         os.environ["RETRIFLOW_DB_PATH"] = str(self.db_path)
+        os.environ["RETRIFLOW_DATABASE_DSN"] = ""
+        os.environ["RETRIFLOW_PGVECTOR_DSN"] = ""
+        os.environ["RETRIFLOW_VECTOR_STORE_TYPE"] = "memory"
 
         from core.config import get_settings
 
@@ -27,11 +30,20 @@ class RetriFlowIngestionApiTests(unittest.TestCase):
         from main import create_app
 
         self.client = TestClient(create_app())
+        login_response = self.client.post(
+            "/api/v1/auth/login",
+            json={"username": "admin", "password": "admin"},
+        )
+        self.assertEqual(login_response.status_code, 200)
+        self.client.headers.update({"Authorization": f"Bearer {login_response.json()['access_token']}"})
 
     def tearDown(self) -> None:
         self.client.close()
         os.environ.pop("RETRIFLOW_DATABASE_BACKEND", None)
         os.environ.pop("RETRIFLOW_DB_PATH", None)
+        os.environ.pop("RETRIFLOW_DATABASE_DSN", None)
+        os.environ.pop("RETRIFLOW_PGVECTOR_DSN", None)
+        os.environ.pop("RETRIFLOW_VECTOR_STORE_TYPE", None)
         from core.config import get_settings
 
         get_settings.cache_clear()
@@ -40,9 +52,15 @@ class RetriFlowIngestionApiTests(unittest.TestCase):
         except PermissionError:
             pass
 
+    def _create_knowledge_base(self) -> str:
+        response = self.client.post("/api/v1/knowledge-bases", json={"name": "Ingestion API KB"})
+        self.assertEqual(response.status_code, 201)
+        return response.json()["id"]
+
     def test_ingestion_task_exposes_default_pipeline_node_logs(self) -> None:
+        knowledge_base_id = self._create_knowledge_base()
         create_response = self.client.post(
-            "/api/v1/knowledge-bases/kb-demo-1/documents",
+            f"/api/v1/knowledge-bases/{knowledge_base_id}/documents",
             json={
                 "title": "RetriFlow workflow",
                 "source_type": "manual",
@@ -63,9 +81,70 @@ class RetriFlowIngestionApiTests(unittest.TestCase):
         self.assertTrue(all(item["success"] for item in payload["items"]))
         self.assertIn("segments", payload["items"][1]["message"])
 
+    def test_admin_can_list_default_ingestion_pipeline(self) -> None:
+        response = self.client.get("/api/v1/ingestion/pipelines")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        names = [item["name"] for item in payload["items"]]
+        self.assertIn("retriflow-ingestion-pipeline", names)
+        default_pipeline = next(item for item in payload["items"] if item["name"] == "retriflow-ingestion-pipeline")
+        self.assertGreaterEqual(default_pipeline["node_count"], 5)
+        self.assertTrue(default_pipeline["nodes"])
+
+    def test_admin_can_create_ingestion_pipeline(self) -> None:
+        response = self.client.post(
+            "/api/v1/ingestion/pipelines",
+            json={
+                "name": "retriflow-custom-pipeline",
+                "description": "Custom RetriFlow ingestion pipeline",
+                "owner": "admin",
+                "nodes": [
+                    {
+                        "node_id": "parse",
+                        "node_type": "parser",
+                        "next_node_id": "index",
+                        "condition": "",
+                        "config": {"parser": "apache-tika"},
+                    },
+                    {
+                        "node_id": "index",
+                        "node_type": "indexer",
+                        "next_node_id": "",
+                        "condition": "",
+                        "config": {"vector_store": "pgvector"},
+                    },
+                ],
+            },
+        )
+
+        self.assertEqual(response.status_code, 201)
+        payload = response.json()
+        self.assertEqual(payload["name"], "retriflow-custom-pipeline")
+        self.assertEqual(payload["node_count"], 2)
+
+        list_response = self.client.get("/api/v1/ingestion/pipelines")
+        self.assertEqual(list_response.status_code, 200)
+        self.assertIn("retriflow-custom-pipeline", [item["name"] for item in list_response.json()["items"]])
+
+    def test_pipeline_node_ids_must_be_unique(self) -> None:
+        response = self.client.post(
+            "/api/v1/ingestion/pipelines",
+            json={
+                "name": "retriflow-invalid-pipeline",
+                "description": "",
+                "nodes": [
+                    {"node_id": "parse", "node_type": "parser", "next_node_id": "", "condition": "", "config": {}},
+                    {"node_id": "parse", "node_type": "indexer", "next_node_id": "", "condition": "", "config": {}},
+                ],
+            },
+        )
+
+        self.assertEqual(response.status_code, 422)
+
     def test_upload_ingestion_task_includes_parse_and_extract_nodes(self) -> None:
-        from domain.document_parser import ParsedUploadDocumentResult
-        from domain.ingestion import IngestionPipelineNodeResult
+        from infra.document_parser import ParsedUploadDocumentResult
+        from modules.ingestion import IngestionPipelineNodeResult
         from schemas.document_structure import ParagraphBlock, StructuredDocument
 
         parsed_result = ParsedUploadDocumentResult(
@@ -93,9 +172,10 @@ class RetriFlowIngestionApiTests(unittest.TestCase):
             ],
         )
 
-        with patch("domain.knowledge.RetriFlowDocumentParserService.parse_upload", return_value=parsed_result):
+        with patch("modules.knowledge.service.RetriFlowDocumentParserService.parse_upload", return_value=parsed_result):
+            knowledge_base_id = self._create_knowledge_base()
             upload_response = self.client.post(
-                "/api/v1/knowledge-bases/kb-demo-1/documents/upload",
+                f"/api/v1/knowledge-bases/{knowledge_base_id}/documents/upload",
                 files={
                     "file": (
                         "upload.docx",

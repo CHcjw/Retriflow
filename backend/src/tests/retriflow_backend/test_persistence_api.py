@@ -48,21 +48,28 @@ class RetriFlowPersistenceApiTests(unittest.TestCase):
         except PermissionError:
             pass
 
-    def test_database_file_is_created_with_seed_data(self) -> None:
+    def test_database_file_is_created_with_core_schema_and_default_admin(self) -> None:
         self.assertTrue(self.db_path.exists())
 
         connection = sqlite3.connect(self.db_path)
         try:
             cursor = connection.cursor()
-            cursor.execute("select count(*) from sessions")
-            session_count = cursor.fetchone()[0]
-            cursor.execute("select count(*) from knowledge_bases")
-            knowledge_count = cursor.fetchone()[0]
+            cursor.execute(
+                """
+                select name
+                from sqlite_master
+                where type = 'table'
+                  and name in ('users', 'sessions', 'knowledge_bases')
+                """
+            )
+            table_names = {row[0] for row in cursor.fetchall()}
+            cursor.execute("select count(*) from users where username = 'admin'")
+            admin_count = cursor.fetchone()[0]
         finally:
             connection.close()
 
-        self.assertGreaterEqual(session_count, 1)
-        self.assertGreaterEqual(knowledge_count, 1)
+        self.assertEqual(table_names, {"users", "sessions", "knowledge_bases"})
+        self.assertEqual(admin_count, 1)
 
     def test_created_session_persists_in_database(self) -> None:
         create_response = self.client.post("/api/v1/sessions", json={"title": "数据库持久化会话"})

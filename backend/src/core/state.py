@@ -239,6 +239,7 @@ def _initialize_sqlite_database() -> None:
                 chunk_index integer not null,
                 content text not null,
                 char_count integer not null,
+                enabled integer not null default 1,
                 strategy text not null default 'recursive',
                 document_type text not null default 'manual',
                 metadata_json text not null default '{}',
@@ -251,6 +252,7 @@ def _initialize_sqlite_database() -> None:
         _ensure_sqlite_column(connection, "knowledge_chunks", "strategy", "text not null default 'recursive'")
         _ensure_sqlite_column(connection, "knowledge_chunks", "document_type", "text not null default 'manual'")
         _ensure_sqlite_column(connection, "knowledge_chunks", "metadata_json", "text not null default '{}'")
+        _ensure_sqlite_column(connection, "knowledge_chunks", "enabled", "integer not null default 1")
         connection.execute(
             """
             create table if not exists knowledge_document_blocks (
@@ -305,6 +307,19 @@ def _initialize_sqlite_database() -> None:
         )
         connection.execute(
             """
+            create table if not exists ingestion_pipelines (
+                id integer primary key autoincrement,
+                name text not null,
+                description text not null default '',
+                nodes_json text not null default '[]',
+                owner text not null default 'admin',
+                created_at text not null default current_timestamp,
+                updated_at text not null default current_timestamp
+            )
+            """
+        )
+        connection.execute(
+            """
             create table if not exists ingestion_task_nodes (
                 id integer primary key autoincrement,
                 task_id integer not null,
@@ -320,15 +335,56 @@ def _initialize_sqlite_database() -> None:
         )
         connection.execute(
             """
+            create table if not exists admin_intent_nodes (
+                id text primary key,
+                name text not null,
+                code text not null unique,
+                level text not null default 'INTENT',
+                node_type text not null default 'KB',
+                parent_id text not null default 'ROOT',
+                knowledge_base_id text not null default '',
+                collection_name text not null default '',
+                description text not null default '',
+                sample_questions_json text not null default '[]',
+                rule_snippet text not null default '',
+                prompt_template text not null default '',
+                top_k integer,
+                sort_order integer not null default 0,
+                enabled integer not null default 1,
+                created_at text not null default current_timestamp,
+                updated_at text not null default current_timestamp
+            )
+            """
+        )
+        connection.execute(
+            """
+            create table if not exists admin_keyword_mappings (
+                id text primary key,
+                raw_keyword text not null,
+                target_keyword text not null,
+                match_type text not null default 'exact',
+                priority integer not null default 0,
+                enabled integer not null default 1,
+                remark text not null default '',
+                knowledge_base_id text not null default '',
+                created_at text not null default current_timestamp,
+                updated_at text not null default current_timestamp
+            )
+            """
+        )
+        connection.execute(
+            """
             create table if not exists conversation_messages (
                 id integer primary key autoincrement,
                 session_id text not null,
                 role text not null,
                 content text not null,
+                duration_ms integer not null default 0,
                 created_at text not null default current_timestamp
             )
             """
         )
+        _ensure_sqlite_column(connection, "conversation_messages", "duration_ms", "integer not null default 0")
         connection.execute(
             """
             create table if not exists conversation_memory_summaries (
@@ -368,6 +424,8 @@ def _initialize_sqlite_database() -> None:
             )
             """
         )
+        connection.execute("create index if not exists idx_admin_intent_nodes_parent on admin_intent_nodes (parent_id, sort_order)")
+        connection.execute("create index if not exists idx_admin_keyword_mappings_keyword on admin_keyword_mappings (raw_keyword, enabled)")
         _seed_demo_data(connection)
         connection.commit()
 
@@ -476,6 +534,7 @@ def _initialize_postgres_database() -> None:
                     chunk_index integer not null,
                     content text not null,
                     char_count integer not null,
+                    enabled integer not null default 1,
                     strategy text not null default 'recursive',
                     document_type text not null default 'manual',
                     metadata_json jsonb not null default '{}'::jsonb,
@@ -500,6 +559,12 @@ def _initialize_postgres_database() -> None:
                 "knowledge_chunks",
                 "metadata_json",
                 "jsonb not null default '{}'::jsonb",
+            )
+            _ensure_postgres_column(
+                cursor,
+                "knowledge_chunks",
+                "enabled",
+                "integer not null default 1",
             )
             cursor.execute(
                 """
@@ -550,6 +615,19 @@ def _initialize_postgres_database() -> None:
             )
             cursor.execute(
                 """
+                create table if not exists ingestion_pipelines (
+                    id bigint generated by default as identity primary key,
+                    name text not null,
+                    description text not null default '',
+                    nodes_json jsonb not null default '[]'::jsonb,
+                    owner text not null default 'admin',
+                    created_at timestamptz not null default now(),
+                    updated_at timestamptz not null default now()
+                )
+                """
+            )
+            cursor.execute(
+                """
                 create table if not exists ingestion_task_nodes (
                     id bigint generated by default as identity primary key,
                     task_id bigint not null references ingestion_tasks(id) on delete cascade,
@@ -564,15 +642,56 @@ def _initialize_postgres_database() -> None:
             )
             cursor.execute(
                 """
+                create table if not exists admin_intent_nodes (
+                    id text primary key,
+                    name text not null,
+                    code text not null unique,
+                    level text not null default 'INTENT',
+                    node_type text not null default 'KB',
+                    parent_id text not null default 'ROOT',
+                    knowledge_base_id text not null default '',
+                    collection_name text not null default '',
+                    description text not null default '',
+                    sample_questions_json jsonb not null default '[]'::jsonb,
+                    rule_snippet text not null default '',
+                    prompt_template text not null default '',
+                    top_k integer,
+                    sort_order integer not null default 0,
+                    enabled integer not null default 1,
+                    created_at timestamptz not null default now(),
+                    updated_at timestamptz not null default now()
+                )
+                """
+            )
+            cursor.execute(
+                """
+                create table if not exists admin_keyword_mappings (
+                    id text primary key,
+                    raw_keyword text not null,
+                    target_keyword text not null,
+                    match_type text not null default 'exact',
+                    priority integer not null default 0,
+                    enabled integer not null default 1,
+                    remark text not null default '',
+                    knowledge_base_id text not null default '',
+                    created_at timestamptz not null default now(),
+                    updated_at timestamptz not null default now()
+                )
+                """
+            )
+            cursor.execute(
+                """
                 create table if not exists conversation_messages (
                     id bigint generated by default as identity primary key,
                     session_id text not null references sessions(id) on delete cascade,
                     role text not null,
                     content text not null,
+                    duration_ms integer not null default 0,
                     created_at timestamptz not null default now()
                 )
                 """
             )
+            _ensure_postgres_column(cursor, "conversation_messages", "duration_ms", "integer not null default 0")
             cursor.execute(
                 """
                 create table if not exists conversation_memory_summaries (
@@ -618,6 +737,8 @@ def _initialize_postgres_database() -> None:
             cursor.execute("create index if not exists idx_table_cells_block on knowledge_document_table_cells (block_id, row_index, column_index)")
             cursor.execute("create index if not exists idx_ingestion_tasks_doc on ingestion_tasks (document_id, created_at desc)")
             cursor.execute("create index if not exists idx_ingestion_task_nodes_task on ingestion_task_nodes (task_id, node_order)")
+            cursor.execute("create index if not exists idx_admin_intent_nodes_parent on admin_intent_nodes (parent_id, sort_order)")
+            cursor.execute("create index if not exists idx_admin_keyword_mappings_keyword on admin_keyword_mappings (raw_keyword, enabled)")
             cursor.execute("create index if not exists idx_conversation_messages_session on conversation_messages (session_id, id)")
             cursor.execute("create index if not exists idx_conversation_memory_summaries_session on conversation_memory_summaries (session_id, id desc)")
             cursor.execute("create index if not exists idx_conversation_mid_memories_session on conversation_mid_memories (session_id, id desc)")
@@ -638,6 +759,8 @@ def _seed_demo_data(connection: DatabaseConnection) -> None:
             """,
             ("user-admin", "admin", _seed_password_hash("admin"), "admin"),
         )
+
+    _seed_default_ingestion_pipeline(connection)
 
     if not settings.seed_demo_content:
         return
@@ -762,6 +885,60 @@ def _seed_demo_data(connection: DatabaseConnection) -> None:
             ],
         )
 
+    pipeline_count = connection.execute("select count(*) from ingestion_pipelines").fetchone()[0]
+    if pipeline_count == 0:
+        import json
+
+        default_nodes = [
+            {
+                "node_id": "parse",
+                "node_type": "parser",
+                "next_node_id": "extract",
+                "condition": "",
+                "config": {"engine": "apache-tika", "preserve_structure": True},
+            },
+            {
+                "node_id": "extract",
+                "node_type": "extractor",
+                "next_node_id": "chunk",
+                "condition": "",
+                "config": {"extract": ["paragraph", "heading", "table", "image_caption", "page_number"]},
+            },
+            {
+                "node_id": "chunk",
+                "node_type": "chunker",
+                "next_node_id": "embed",
+                "condition": "",
+                "config": {"strategy": "auto", "chunk_size": 600, "chunk_overlap": 120},
+            },
+            {
+                "node_id": "embed",
+                "node_type": "embedder",
+                "next_node_id": "index",
+                "condition": "",
+                "config": {"provider": "siliconflow", "model": "qwen-emb-8b"},
+            },
+            {
+                "node_id": "index",
+                "node_type": "indexer",
+                "next_node_id": "",
+                "condition": "",
+                "config": {"store": "pgvector"},
+            },
+        ]
+        connection.execute(
+            """
+            insert into ingestion_pipelines (name, description, nodes_json, owner)
+            values (?, ?, ?, ?)
+            """,
+            (
+                "retriflow-ingestion-pipeline",
+                "文档摄取流水线 - Tika 解析、结构化清洗、分块、向量化",
+                json.dumps(default_nodes, ensure_ascii=False),
+                "admin",
+            ),
+        )
+
     connection.execute(
         """
         update knowledge_bases
@@ -771,6 +948,64 @@ def _seed_demo_data(connection: DatabaseConnection) -> None:
             where knowledge_documents.knowledge_base_id = knowledge_bases.id
         )
         """
+    )
+
+
+def _seed_default_ingestion_pipeline(connection: DatabaseConnection) -> None:
+    pipeline_count = connection.execute("select count(*) from ingestion_pipelines").fetchone()[0]
+    if pipeline_count > 0:
+        return
+
+    import json
+
+    default_nodes = [
+        {
+            "node_id": "parse",
+            "node_type": "parser",
+            "next_node_id": "extract",
+            "condition": "",
+            "config": {"engine": "apache-tika", "preserve_structure": True},
+        },
+        {
+            "node_id": "extract",
+            "node_type": "extractor",
+            "next_node_id": "chunk",
+            "condition": "",
+            "config": {"extract": ["paragraph", "heading", "table", "image_caption", "page_number"]},
+        },
+        {
+            "node_id": "chunk",
+            "node_type": "chunker",
+            "next_node_id": "embed",
+            "condition": "",
+            "config": {"strategy": "auto", "chunk_size": 600, "chunk_overlap": 120},
+        },
+        {
+            "node_id": "embed",
+            "node_type": "embedder",
+            "next_node_id": "index",
+            "condition": "",
+            "config": {"provider": "siliconflow", "model": "qwen-emb-8b"},
+        },
+        {
+            "node_id": "index",
+            "node_type": "indexer",
+            "next_node_id": "",
+            "condition": "",
+            "config": {"store": "pgvector"},
+        },
+    ]
+    connection.execute(
+        """
+        insert into ingestion_pipelines (name, description, nodes_json, owner)
+        values (?, ?, ?, ?)
+        """,
+        (
+            "retriflow-ingestion-pipeline",
+            "文档摄取流水线 - Tika 解析、结构化清洗、分块、向量化",
+            json.dumps(default_nodes, ensure_ascii=False),
+            "admin",
+        ),
     )
 
 
