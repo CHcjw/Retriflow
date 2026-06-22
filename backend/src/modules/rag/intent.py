@@ -5,6 +5,7 @@ from typing import Any
 
 from core.config import get_settings
 from infra.llm import RetriFlowLLMService
+from modules.rag.prompt import get_prompt_template_loader
 
 
 @dataclass
@@ -73,23 +74,11 @@ class RetriFlowIntentClassifier:
         "chitchat",
         "clarification",
     }
-    SYSTEM_PROMPT = (
-        "你是 RetriFlow 的意图识别器。"
-        "请根据对话历史和用户最新问题，将意图分类为以下四种之一："
-        "knowledge_retrieval、tool_call、chitchat、clarification。"
-        "knowledge_retrieval 表示应该查询知识库；"
-        "tool_call 表示应该调用工具或外部 API；"
-        "chitchat 表示闲聊或无需检索的直接对话；"
-        "clarification 表示问题信息不足，需要先反问用户。"
-        "必须返回 JSON，格式为 "
-        "{\"intent\":\"knowledge_retrieval\",\"confidence\":0.9,"
-        "\"reason\":\"...\",\"clarification_question\":\"...\"}。"
-        "如果不是 clarification，clarification_question 返回空字符串。"
-    )
 
     def __init__(self) -> None:
         self.settings = get_settings()
         self.llm_service = RetriFlowLLMService()
+        self.prompt_loader = get_prompt_template_loader()
 
     def classify(
         self,
@@ -164,7 +153,7 @@ class RetriFlowIntentClassifier:
 
         try:
             payload = self.llm_service.extract_json_object(
-                system_prompt=self.SYSTEM_PROMPT,
+                system_prompt=self.prompt_loader.render_section("intent.md", "system"),
                 user_prompt=self._build_user_prompt(
                     question=question,
                     memory_messages=memory_messages,
@@ -237,8 +226,8 @@ class RetriFlowIntentClassifier:
         latest_context = " ".join(recent_user_messages[-2:]).strip()
         return not latest_context or latest_context == stripped
 
-    @staticmethod
     def _build_user_prompt(
+        self,
         *,
         question: str,
         memory_messages: list[dict[str, str]],
@@ -252,7 +241,11 @@ class RetriFlowIntentClassifier:
             history_lines.append(f"{role}: {content}")
 
         history_text = "\n".join(history_lines) or "无"
-        return f"对话历史：\n{history_text}\n\n用户最新问题：{question}"
+        return self.prompt_loader.render_section(
+            "intent.md",
+            "user",
+            {"history": history_text, "question": question},
+        )
 
     @staticmethod
     def _fallback_decision(reason: str) -> IntentDecision:

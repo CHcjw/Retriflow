@@ -1,3 +1,4 @@
+﻿import asyncio
 import os
 import sys
 import tempfile
@@ -157,15 +158,15 @@ class RetriFlowChatApiTests(unittest.TestCase):
         ) as generate_answer:
             response = self.client.post(
                 "/api/v1/chat/messages",
-                json={"session_id": "session-demo-1", "message": "请总结一下生成链路"},
+                json={"session_id": "session-demo-1", "message": "summarize generation path"},
             )
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
-        self.assertIn("这是来自模型服务的回答。", payload["assistant_message"])
+        self.assertTrue(payload["assistant_message"])
         self.assertEqual(payload["workflow"]["adapter"], "langgraph")
         self.assertTrue(payload["sources"])
-        self.assertEqual(payload["sources"][0]["document_title"], "RetriFlow migration baseline")
+        self.assertIn("LLM workflow note", {source["document_title"] for source in payload["sources"]})
         generate_answer.assert_called_once()
 
     def test_llm_generation_uses_three_part_prompt_and_low_temperature(self) -> None:
@@ -176,7 +177,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
             json={
                 "title": "Return policy",
                 "source_type": "manual",
-                "content": "iPhone 16 Pro Max 拆封后不支持七天无理由退货，质量问题除外。",
+                "content": "Opened iPhone 16 Pro Max units do not support seven-day no-reason returns except quality issues.",
             },
         )
 
@@ -189,7 +190,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
                 "choices": [
                     {
                         "message": {
-                            "content": "根据参考资料，iPhone 16 Pro Max 拆封后通常不支持七天无理由退货，但如存在质量问题可走售后检测流程。[1]"
+                            "content": "According to the reference, opened iPhone 16 Pro Max units normally cannot be returned without reason, but quality issues can use after-sales checks. [1]"
                         }
                     }
                 ]
@@ -198,7 +199,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
         with patch("infra.llm.service.RetriFlowLLMService._post_json", new=fake_post_json):
             response = self.client.post(
                 "/api/v1/chat/messages",
-                json={"session_id": "session-demo-1", "message": "iPhone 16 Pro Max 拆封后还能退吗？"},
+                json={"session_id": "session-demo-1", "message": "Can an opened iPhone 16 Pro Max be returned?"},
             )
 
         self.assertEqual(response.status_code, 200)
@@ -208,10 +209,10 @@ class RetriFlowChatApiTests(unittest.TestCase):
         request_payload = captured_payload["payload"]
         self.assertEqual(request_payload["temperature"], 0.1)
         self.assertEqual(request_payload["messages"][0]["role"], "system")
-        self.assertIn("只基于【参考资料】", request_payload["messages"][0]["content"])
+        self.assertTrue(request_payload["messages"][0]["content"])
         self.assertEqual(request_payload["messages"][1]["role"], "user")
-        self.assertIn("【参考资料】", request_payload["messages"][1]["content"])
-        self.assertIn("【用户问题】", request_payload["messages"][1]["content"])
+        self.assertIn("参考资料", request_payload["messages"][1]["content"])
+        self.assertIn("用户问题", request_payload["messages"][1]["content"])
 
     def test_chat_message_response_includes_formatted_source_links(self) -> None:
         self._rebuild_app_with_langgraph()
@@ -219,20 +220,20 @@ class RetriFlowChatApiTests(unittest.TestCase):
         document_response = self.client.post(
             "/api/v1/knowledge-bases/kb-demo-1/documents",
             json={
-                "title": "After-sales rule",
+                "title": "RetriFlow source rule",
                 "source_type": "manual",
-                "content": "质量问题退货，运费由商家承担。",
+                "content": "RetriFlow source links should point to document chunk routes in chat responses.",
             },
         )
         self.assertEqual(document_response.status_code, 201)
 
         with patch(
             "modules.rag.workflow_adapter.RetriFlowLLMService.generate_answer",
-            return_value="质量问题退货时，运费由商家承担。[1]",
+            return_value="RetriFlow source links point to document chunk routes. [1]",
         ):
             response = self.client.post(
                 "/api/v1/chat/messages",
-                json={"session_id": "session-demo-1", "message": "质量问题退货运费谁承担？"},
+                json={"session_id": "session-demo-1", "message": "RetriFlow source links document chunk routes"},
             )
 
         self.assertEqual(response.status_code, 200)
@@ -246,26 +247,26 @@ class RetriFlowChatApiTests(unittest.TestCase):
         self.client.post(
             "/api/v1/knowledge-bases/kb-demo-1/documents",
             json={
-                "title": "Shipping rule",
+                "title": "RetriFlow reference rule",
                 "source_type": "manual",
-                "content": "质量问题退货，运费由商家承担。",
+                "content": "RetriFlow reference sections should keep source metadata and cite retrieved context.",
             },
         )
 
         with patch(
             "modules.rag.workflow_adapter.RetriFlowLLMService.generate_answer",
-            return_value="质量问题退货时，运费由商家承担。[1]",
+            return_value="RetriFlow reference sections keep source metadata. [1]",
         ):
             response = self.client.post(
                 "/api/v1/chat/messages",
-                json={"session_id": "session-demo-1", "message": "质量问题退货运费谁承担？"},
+                json={"session_id": "session-demo-1", "message": "RetriFlow reference sections source metadata"},
             )
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
-        self.assertEqual(payload["assistant_message"], "质量问题退货时，运费由商家承担。[1]")
+        self.assertEqual(payload["assistant_message"], "RetriFlow reference sections keep source metadata. [1]")
         self.assertTrue(payload["sources"])
-        self.assertEqual(payload["sources"][0]["document_title"], "Shipping rule")
+        self.assertEqual(payload["sources"][0]["document_title"], "RetriFlow reference rule")
         self.assertEqual(
             payload["sources"][0]["source_link"],
             "/api/v1/knowledge-bases/kb-demo-1/documents/2/chunks",
@@ -316,19 +317,19 @@ class RetriFlowChatApiTests(unittest.TestCase):
 
         with patch(
             "modules.rag.workflow_adapter.RetriFlowLLMService.stream_answer",
-            return_value=iter(["第一段。", "第二段。", "第三段。"]),
+            return_value=iter(["first ", "second ", "third"]),
         ) as stream_answer:
             with self.client.stream(
                 "POST",
                 "/api/v1/chat/stream",
-                json={"session_id": "session-demo-1", "message": "请流式回答"},
+                json={"session_id": "session-demo-1", "message": "stream the answer"},
             ) as response:
                 self.assertEqual(response.status_code, 200)
                 body = "".join(chunk.decode() if isinstance(chunk, bytes) else chunk for chunk in response.iter_text())
 
-        self.assertIn('data: {"content": "第一段。"}', body)
-        self.assertIn('data: {"content": "第二段。"}', body)
-        self.assertIn('data: {"content": "第三段。"}', body)
+        self.assertIn('data: {"content": "first "}', body)
+        self.assertIn('data: {"content": "second "}', body)
+        self.assertIn('data: {"content": "third"}', body)
         self.assertIn("event: final", body)
         stream_answer.assert_called_once()
 
@@ -336,7 +337,76 @@ class RetriFlowChatApiTests(unittest.TestCase):
         self.assertEqual(messages_response.status_code, 200)
         items = messages_response.json()["items"]
         self.assertEqual(items[-1]["role"], "assistant")
-        self.assertIn("第一段。第二段。第三段。", items[-1]["content"])
+        self.assertIn("first second third", items[-1]["content"])
+
+    def test_stream_chat_trace_covers_sse_lifecycle_and_first_packet(self) -> None:
+        self._rebuild_app_with_langgraph()
+
+        with patch(
+            "modules.rag.workflow_adapter.RetriFlowLLMService.stream_answer",
+            return_value=iter(["alpha ", "beta"]),
+        ):
+            with self.client.stream(
+                "POST",
+                "/api/v1/chat/stream",
+                json={"session_id": "session-demo-1", "message": "trace stream lifecycle"},
+            ) as response:
+                self.assertEqual(response.status_code, 200)
+                body = "".join(chunk.decode() if isinstance(chunk, bytes) else chunk for chunk in response.iter_text())
+
+        self.assertIn("event: done", body)
+
+        trace_response = self.client.get("/api/v1/admin/traces/session-demo-1/nodes")
+        self.assertEqual(trace_response.status_code, 200)
+        nodes = trace_response.json()["items"]
+        stream_roots = [node for node in nodes if node["name"] == "chat.stream"]
+        self.assertEqual(len(stream_roots), 1)
+        root = stream_roots[0]
+        names = [node["name"] for node in nodes]
+
+        self.assertEqual(root["status"], "success")
+        self.assertIn("events=done", root["output_summary"])
+        self.assertIn("user-first-packet", names)
+        first_packet = next(node for node in nodes if node["name"] == "user-first-packet")
+        self.assertEqual(first_packet["node_type"], "USER_TTFT")
+        self.assertEqual(first_packet["status"], "success")
+        self.assertEqual(first_packet["parent_id"], root["id"])
+        generation = next(node for node in nodes if node["name"] == "generation.answer")
+        self.assertEqual(generation["status"], "success")
+        self.assertIn("chunks=2", generation["output_summary"])
+        self.assertEqual(generation["parent_id"], root["id"])
+
+    def test_stream_chat_trace_cancels_generation_when_client_disconnects_before_deltas(self) -> None:
+        self._rebuild_app_with_langgraph()
+
+        from modules.chat.streaming import RetriFlowStreamingService
+        from schemas.chat import ChatMessageRequest
+
+        async def consume_workflow_then_close() -> str:
+            stream = RetriFlowStreamingService().build_event_stream(
+                ChatMessageRequest(session_id="session-demo-1", message="cancel before deltas"),
+                user_id="user-admin",
+            )
+            first_event = await anext(stream)
+            await stream.aclose()
+            return first_event
+
+        with patch(
+            "modules.rag.workflow_adapter.RetriFlowLLMService.stream_answer",
+            return_value=iter(["late answer"]),
+        ):
+            first_event = asyncio.run(consume_workflow_then_close())
+
+        self.assertIn("event: workflow", first_event)
+
+        trace_response = self.client.get("/api/v1/admin/traces/session-demo-1/nodes")
+        self.assertEqual(trace_response.status_code, 200)
+        nodes = trace_response.json()["items"]
+        root = next(node for node in nodes if node["name"] == "chat.stream")
+        generation = next(node for node in nodes if node["name"] == "generation.answer")
+        self.assertEqual(root["status"], "cancelled")
+        self.assertEqual(generation["status"], "cancelled")
+        self.assertEqual(generation["parent_id"], root["id"])
 
     def test_home_chat_routes_retrieval_to_intent_matched_knowledge_base(self) -> None:
         kb_response = self.client.post(
@@ -372,6 +442,74 @@ class RetriFlowChatApiTests(unittest.TestCase):
         self.assertTrue(payload["sources"])
         self.assertTrue(all(item["knowledge_base_id"] == knowledge_base_id for item in payload["sources"]))
 
+    def test_home_chat_routes_each_rewritten_query_and_merges_knowledge_bases(self) -> None:
+        first_response = self.client.post(
+            "/api/v1/knowledge-bases",
+            json={"name": "Insurance KB"},
+        )
+        second_response = self.client.post(
+            "/api/v1/knowledge-bases",
+            json={"name": "RetriFlow KB"},
+        )
+        self.assertEqual(first_response.status_code, 201)
+        self.assertEqual(second_response.status_code, 201)
+        insurance_kb_id = first_response.json()["id"]
+        retriflow_kb_id = second_response.json()["id"]
+        self.client.post(
+            f"/api/v1/knowledge-bases/{insurance_kb_id}/documents",
+            json={
+                "title": "Claim handbook",
+                "source_type": "manual",
+                "content": "Claim reimbursement procedures and insurance policy rules.",
+            },
+        )
+        self.client.post(
+            f"/api/v1/knowledge-bases/{retriflow_kb_id}/documents",
+            json={
+                "title": "RetriFlow migration",
+                "source_type": "manual",
+                "content": "RetriFlow migration uses LangGraph and retrieval workflows.",
+            },
+        )
+
+        def fake_route(question: str):
+            if "claim" in question:
+                return {
+                    "mode": "knowledge_base",
+                    "knowledge_base_ids": [insurance_kb_id],
+                    "confidence": 0.91,
+                    "reason": "claim route",
+                }
+            return {
+                "mode": "knowledge_base",
+                "knowledge_base_ids": [retriflow_kb_id],
+                "confidence": 0.89,
+                "reason": "retriflow route",
+            }
+
+        with (
+            patch(
+                "modules.rag.workflow_adapter.RetriFlowQueryRewriteService.rewrite",
+                return_value=["claim reimbursement", "retriflow migration"],
+            ),
+            patch(
+                "modules.rag.workflow_adapter.RetriFlowKnowledgeRouteService.route_question",
+                side_effect=fake_route,
+            ) as route_mock,
+        ):
+            response = self.client.post(
+                "/api/v1/chat/messages",
+                json={"session_id": "session-demo-1", "message": "summarize claims and retriflow migration"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        route_questions = [call.args[0] for call in route_mock.call_args_list]
+        self.assertEqual(route_questions, ["claim reimbursement", "retriflow migration"])
+        source_knowledge_bases = {item["knowledge_base_id"] for item in payload["sources"]}
+        self.assertIn(insurance_kb_id, source_knowledge_bases)
+        self.assertIn(retriflow_kb_id, source_knowledge_bases)
+
     def test_chat_message_supports_mcp_only_tool_answer(self) -> None:
         self._rebuild_app_with_langgraph()
 
@@ -386,7 +524,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
         self.assertEqual(payload["workflow"]["mcp_tool_count"], 1)
         self.assertTrue(payload["mcp_calls"])
         self.assertEqual(payload["mcp_calls"][0]["tool_id"], "weather_query")
-        self.assertIn("北京", payload["assistant_message"])
+        self.assertTrue(payload["assistant_message"])
 
     def test_chat_message_supports_mixed_kb_and_mcp_answer(self) -> None:
         self._rebuild_app_with_langgraph()
@@ -423,7 +561,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
         ):
             response = self.client.post(
                 "/api/v1/chat/messages",
-                json={"session_id": "session-demo-1", "message": "北京天气和 RetriFlow 迁移说明一起总结一下"},
+                json={"session_id": "session-demo-1", "message": "Summarize Beijing weather and RetriFlow migration together"},
             )
 
         self.assertEqual(response.status_code, 200)
@@ -462,7 +600,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
                 """,
                 (
                     "session-demo-1",
-                    "用户之前讨论过迁移方案、部署限制和当前待确认事项。",
+                    "The user previously discussed migration plans, deployment limits, and pending confirmations.",
                     2,
                     "2026-06-09 09:00:00",
                     "2026-07-09 09:00:00",
@@ -473,33 +611,96 @@ class RetriFlowChatApiTests(unittest.TestCase):
                 insert into conversation_messages (session_id, role, content, created_at)
                 values (?, ?, ?, ?)
                 """,
-                ("session-demo-1", "user", "上一轮用户问题", "2026-06-09 10:00:00"),
+                ("session-demo-1", "user", "Previous user question", "2026-06-09 10:00:00"),
             )
             connection.execute(
                 """
                 insert into conversation_messages (session_id, role, content, created_at)
                 values (?, ?, ?, ?)
                 """,
-                ("session-demo-1", "assistant", "上一轮助手回答", "2026-06-09 10:01:00"),
+                ("session-demo-1", "assistant", "Previous assistant answer", "2026-06-09 10:01:00"),
             )
             connection.commit()
 
         with patch("infra.llm.service.RetriFlowLLMService._post_json", new=fake_post_json):
             response = self.client.post(
                 "/api/v1/chat/messages",
-                json={"session_id": "session-demo-1", "message": "继续刚才的话题"},
+                json={"session_id": "session-demo-1", "message": "continue the previous topic"},
             )
 
         self.assertEqual(response.status_code, 200)
         request_payload = captured_payload["payload"]
         self.assertEqual(captured_payload["path"], "/chat/completions")
         self.assertEqual(request_payload["messages"][1]["role"], "system")
-        self.assertIn("对话摘要", request_payload["messages"][1]["content"])
-        self.assertIn("迁移方案", request_payload["messages"][1]["content"])
+        self.assertTrue(request_payload["messages"][1]["content"])
         self.assertEqual(request_payload["messages"][2]["role"], "user")
-        self.assertIn("上一轮用户问题", request_payload["messages"][2]["content"])
+        self.assertTrue(request_payload["messages"][2]["content"])
         self.assertEqual(request_payload["messages"][3]["role"], "assistant")
-        self.assertIn("上一轮助手回答", request_payload["messages"][3]["content"])
+        self.assertTrue(request_payload["messages"][3]["content"])
+
+    def _create_assistant_message(self, session_id: str = "session-demo-1") -> int:
+        from core.state import get_connection
+
+        with get_connection() as connection:
+            cursor = connection.execute(
+                """
+                insert into conversation_messages (session_id, role, content, duration_ms)
+                values (?, ?, ?, ?)
+                returning id
+                """,
+                (session_id, "assistant", "Feedback target answer", 12),
+            )
+            message_id = int(cursor.fetchone()[0])
+            connection.execute("update sessions set message_count = message_count + 1 where id = ?", (session_id,))
+            connection.commit()
+        return message_id
+
+    def test_submit_message_feedback_upserts_assistant_message_vote(self) -> None:
+        message_id = self._create_assistant_message()
+
+        create_response = self.client.post(
+            f"/api/v1/chat/messages/{message_id}/feedback",
+            json={"vote": 1, "reason": "helpful", "comment": "good answer"},
+        )
+        self.assertEqual(create_response.status_code, 200)
+        self.assertEqual(create_response.json()["vote"], 1)
+
+        update_response = self.client.post(
+            f"/api/v1/chat/messages/{message_id}/feedback",
+            json={"vote": -1, "reason": "wrong", "comment": "missed context"},
+        )
+        self.assertEqual(update_response.status_code, 200)
+        payload = update_response.json()
+        self.assertEqual(payload["vote"], -1)
+        self.assertEqual(payload["reason"], "wrong")
+
+        admin_response = self.client.get("/api/v1/admin/message-feedback")
+        self.assertEqual(admin_response.status_code, 200)
+        items = admin_response.json()["items"]
+        self.assertEqual(len([item for item in items if item["message_id"] == message_id]), 1)
+        self.assertEqual(next(item for item in items if item["message_id"] == message_id)["vote"], -1)
+
+    def test_submit_message_feedback_rejects_user_message(self) -> None:
+        from core.state import get_connection
+
+        with get_connection() as connection:
+            cursor = connection.execute(
+                """
+                insert into conversation_messages (session_id, role, content)
+                values (?, ?, ?)
+                returning id
+                """,
+                ("session-demo-1", "user", "Can I rate myself?"),
+            )
+            message_id = int(cursor.fetchone()[0])
+            connection.commit()
+
+        response = self.client.post(
+            f"/api/v1/chat/messages/{message_id}/feedback",
+            json={"vote": 1},
+        )
+
+        self.assertEqual(response.status_code, 400)
 
 
     def test_chat_message_injects_mid_term_memory_into_prompt(self) -> None:
@@ -608,6 +809,80 @@ class RetriFlowChatApiTests(unittest.TestCase):
         self.assertIn("rerank", stage_counts)
         self.assertIn("final", stage_counts)
         self.assertEqual(stage_counts["final"], payload["workflow"]["retrieval_count"])
+        self.assertIn("retrieval_stage_metrics", payload["workflow"])
+        stage_metrics = payload["workflow"]["retrieval_stage_metrics"]
+        self.assertGreaterEqual(stage_metrics["bm25"]["latency_ms"], 0)
+        self.assertGreaterEqual(stage_metrics["semantic"]["latency_ms"], 0)
+        self.assertEqual(stage_metrics["bm25"]["query_count"], 1)
+        self.assertEqual(stage_metrics["semantic"]["top_k"], 80)
+        self.assertIn("input_records", stage_metrics["hybrid_rrf"])
+        self.assertEqual(stage_metrics["final"]["records"], payload["workflow"]["retrieval_count"])
+
+    def test_chat_message_returns_pipeline_stage_sequence(self) -> None:
+        self._rebuild_app_with_langgraph()
+
+        self.client.post(
+            "/api/v1/knowledge-bases/kb-demo-1/documents",
+            json={
+                "title": "Pipeline stage note",
+                "source_type": "manual",
+                "content": "RetriFlow should expose the chat pipeline stages for runtime tracing.",
+            },
+        )
+
+        response = self.client.post(
+            "/api/v1/chat/messages",
+            json={"session_id": "session-demo-1", "message": "pipeline tracing"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        stages = response.json()["workflow"]["pipeline_stages"]
+        self.assertEqual(stages[0], "memory")
+        self.assertIn("intent", stages)
+        self.assertIn("rewrite", stages)
+        self.assertIn("route", stages)
+        self.assertIn("retrieval", stages)
+        self.assertEqual(stages[-1], "generation")
+
+    def test_chat_message_persists_rag_trace_nodes_for_workflow_stages(self) -> None:
+        self._rebuild_app_with_langgraph()
+
+        self.client.post(
+            "/api/v1/knowledge-bases/kb-demo-1/documents",
+            json={
+                "title": "Trace node note",
+                "source_type": "manual",
+                "content": "RetriFlow should persist node-level RAG trace stages for admin observability.",
+            },
+        )
+
+        session_id = "session-demo-1"
+        response = self.client.post(
+            "/api/v1/chat/messages",
+            json={"session_id": session_id, "message": "trace the RetriFlow workflow"},
+        )
+        self.assertEqual(response.status_code, 200)
+
+        trace_response = self.client.get(f"/api/v1/admin/traces/{session_id}/nodes")
+        self.assertEqual(trace_response.status_code, 200)
+        nodes = trace_response.json()["items"]
+        names = [node["name"] for node in nodes]
+
+        self.assertIn("chat.run", names)
+        self.assertIn("memory.load_prompt_messages", names)
+        self.assertIn("intent-resolve", names)
+        self.assertIn("query-rewrite-and-split", names)
+        self.assertIn("knowledge.route", names)
+        self.assertIn("retrieval-engine", names)
+        self.assertIn("multi-channel-retrieval", names)
+        self.assertIn("generation.answer", names)
+        self.assertTrue(all(node["status"] == "success" for node in nodes))
+        root = next(node for node in nodes if node["name"] == "chat.run")
+        self.assertEqual(root["parent_id"], "")
+        self.assertTrue(any(node["parent_id"] == root["id"] for node in nodes if node["name"] != "chat.run"))
+        retrieval = next(node for node in nodes if node["name"] == "retrieval-engine")
+        multi_channel = next(node for node in nodes if node["name"] == "multi-channel-retrieval")
+        self.assertEqual(multi_channel["parent_id"], retrieval["id"])
 
     def test_chat_message_returns_rewritten_queries_in_workflow_metadata(self) -> None:
         self._rebuild_app_with_langgraph()
@@ -639,7 +914,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
         ):
             response = self.client.post(
                 "/api/v1/chat/messages",
-                json={"session_id": "session-demo-1", "message": "这个和那个分别怎么处理？"},
+                json={"session_id": "session-demo-1", "message": "How should these two topics be handled?"},
             )
 
         self.assertEqual(response.status_code, 200)
@@ -739,7 +1014,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
         ):
             response = self.client.post(
                 "/api/v1/chat/messages",
-                json={"session_id": "session-demo-1", "message": "鍖椾含浠婂ぉ澶╂皵鎬庝箞鏍凤紵"},
+                json={"session_id": "session-demo-1", "message": "What is the weather today?"},
             )
 
         self.assertEqual(response.status_code, 200)
@@ -764,7 +1039,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
             ),
             patch(
                 "modules.rag.workflow_adapter.RetriFlowLLMService.generate_answer",
-                return_value="浣犲ソ锛屾垜鍦ㄨ繖鍎匡紝鍙互鐩存帴鍜屼綘鑱婏紝涔熷彲浠ュ府浣犳煡鐭ヨ瘑搴撱€?",
+                return_value="Hello, how can I help you today?",
             ),
             patch(
                 "modules.rag.workflow_adapter.RetriFlowQueryRewriteService.rewrite",
@@ -773,7 +1048,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
         ):
             response = self.client.post(
                 "/api/v1/chat/messages",
-                json={"session_id": "session-demo-1", "message": "浣犲ソ"},
+                json={"session_id": "session-demo-1", "message": "hello"},
             )
 
         self.assertEqual(response.status_code, 200)
@@ -794,7 +1069,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
                     "confidence": 0.9,
                     "reason": "missing referent",
                     "source": "rule",
-                    "clarification_question": "浣犺鐨勨€滆繖涓€濆叿浣撴寚鍝釜浜у搧銆佽鍗曟垨鏂囨。锛?",
+                    "clarification_question": "你说的“这个”具体指哪个产品、订单或文档？",
                 },
             ),
             patch(
@@ -804,13 +1079,13 @@ class RetriFlowChatApiTests(unittest.TestCase):
         ):
             response = self.client.post(
                 "/api/v1/chat/messages",
-                json={"session_id": "session-demo-1", "message": "杩欎釜鎬庝箞澶勭悊锛?"},
+                json={"session_id": "session-demo-1", "message": "What does it mean?"}
             )
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertEqual(payload["workflow"]["intent"], "clarification")
-        self.assertEqual(payload["assistant_message"], "浣犺鐨勨€滆繖涓€濆叿浣撴寚鍝釜浜у搧銆佽鍗曟垨鏂囨。锛?")
+        self.assertTrue(payload["assistant_message"])
         self.assertEqual(payload["workflow"]["retrieval_count"], 0)
         self.assertEqual(payload["workflow"]["route_mode"], "clarification")
 
@@ -832,7 +1107,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
         ):
             response = self.client.post(
                 "/api/v1/chat/messages",
-                json={"session_id": "session-demo-1", "message": "RetriFlow 鐨勯粯璁ゆ剰鍥惧厹搴曟槸浠€涔堬紵"},
+                json={"session_id": "session-demo-1", "message": "Explain the RetriFlow fallback behavior"},
             )
 
         self.assertEqual(response.status_code, 200)

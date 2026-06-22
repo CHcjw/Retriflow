@@ -72,6 +72,30 @@ async function request<T>(config: {
   }
 }
 
+async function requestBlob(url: string): Promise<{ blob: Blob; filename: string }> {
+  try {
+    const response = await apiClient.request<Blob>({
+      url,
+      method: "GET",
+      responseType: "blob"
+    });
+    const disposition = response.headers["content-disposition"];
+    const filename = parseContentDispositionFilename(typeof disposition === "string" ? disposition : "") || "document-source";
+    return { blob: response.data, filename };
+  } catch (error) {
+    throw toRequestError(error);
+  }
+}
+
+function parseContentDispositionFilename(disposition: string): string {
+  const encodedMatch = /filename\*=UTF-8''([^;]+)/iu.exec(disposition);
+  if (encodedMatch) {
+    return decodeURIComponent(encodedMatch[1]);
+  }
+  const plainMatch = /filename="?([^";]+)"?/iu.exec(disposition);
+  return plainMatch?.[1] ?? "";
+}
+
 export interface MetaResponse {
   name: string;
   version: string;
@@ -132,6 +156,12 @@ export interface KnowledgeBaseListResponse {
   items: KnowledgeBaseItem[];
 }
 
+export interface KnowledgeBaseUpsertOptions {
+  name: string;
+  embeddingModel?: string;
+  collectionName?: string;
+}
+
 export interface KnowledgeDocumentItem {
   id: number;
   knowledge_base_id: string;
@@ -144,12 +174,23 @@ export interface KnowledgeDocumentItem {
   vector_chunk_count: number;
   document_type: string;
   size_label: string;
+  source_uri: string;
   vector_indexed_at: string;
   created_at: string;
 }
 
 export interface KnowledgeDocumentListResponse {
   items: KnowledgeDocumentItem[];
+}
+
+export interface KnowledgeDocumentPreviewResponse {
+  id: number;
+  knowledge_base_id: string;
+  title: string;
+  source_type: string;
+  content: string;
+  source_uri: string;
+  created_at: string;
 }
 
 export interface KnowledgeChunkItem {
@@ -170,6 +211,11 @@ export interface KnowledgeChunkListResponse {
   items: KnowledgeChunkItem[];
 }
 
+export interface KnowledgeChunkUpdatePayload {
+  enabled?: boolean;
+  content?: string;
+}
+
 export interface IngestionTaskItem {
   id: number;
   knowledge_base_id: string;
@@ -188,10 +234,14 @@ export interface IngestionTaskListResponse {
 export interface IngestionTaskNodeItem {
   id: number;
   task_id: number;
+  node_id: string;
   node_type: string;
   node_order: number;
   success: boolean;
+  status: string;
   message: string;
+  error_message: string;
+  output: Record<string, unknown>;
   duration_ms: number;
   created_at: string;
 }
@@ -234,6 +284,7 @@ export interface AdminUserItem {
   id: string;
   username: string;
   role: string;
+  avatar_url: string;
   created_at: string;
 }
 
@@ -241,10 +292,25 @@ export interface AdminUserCreateRequest {
   username: string;
   password: string;
   role: string;
+  avatar_url?: string;
+}
+
+export interface AdminUserUpdateRequest {
+  username?: string;
+  role?: string;
+  avatar_url?: string;
+}
+
+export interface AdminUserPasswordChangeRequest {
+  old_password: string;
+  new_password: string;
 }
 
 export interface AdminUserListResponse {
   items: AdminUserItem[];
+  total: number;
+  page: number;
+  page_size: number;
 }
 
 export interface AdminTraceMessageItem {
@@ -257,10 +323,14 @@ export interface AdminTraceMessageItem {
 
 export interface AdminTraceSessionItem {
   id: string;
+  trace_id: string;
+  task_id: string;
+  status: string;
   title: string;
   owner_id: string;
   owner_username: string;
   message_count: number;
+  started_at: string;
   latest_message_at: string;
   duration_ms: number;
   latest_messages: AdminTraceMessageItem[];
@@ -268,10 +338,88 @@ export interface AdminTraceSessionItem {
 
 export interface AdminTraceListResponse {
   items: AdminTraceSessionItem[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface AdminMessageFeedbackItem {
+  id: number;
+  message_id: number;
+  session_id: string;
+  user_id: string;
+  username: string;
+  vote: 1 | -1;
+  reason: string;
+  comment: string;
+  message_preview: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AdminMessageFeedbackListResponse {
+  items: AdminMessageFeedbackItem[];
 }
 
 export interface AdminTraceDetailResponse extends AdminTraceSessionItem {
   messages: AdminTraceMessageItem[];
+}
+
+export interface AdminTraceMemoryDiagnosticsResponse {
+  session_id: string;
+  has_summary: boolean;
+  summary_preview: string;
+  recent_message_count: number;
+  mid_term_count: number;
+  long_term_count: number;
+  prompt_message_count: number;
+}
+
+export interface AdminTraceNodeItem {
+  id: string;
+  session_id: string;
+  task_id: string;
+  parent_id: string;
+  name: string;
+  node_type: string;
+  status: string;
+  input_summary: string;
+  output_summary: string;
+  error_message: string;
+  metadata: Record<string, unknown>;
+  started_at: string;
+  finished_at: string;
+  duration_ms: number;
+}
+
+export interface AdminTraceNodeListResponse {
+  items: AdminTraceNodeItem[];
+}
+
+export interface AdminModelHealthItem {
+  capability: string;
+  provider_name: string;
+  model: string;
+  state: string;
+  failure_count: number;
+  success_count: number;
+  opened_at: number | null;
+  last_success_at: number | null;
+  last_failure_at: number | null;
+  last_error: string;
+  last_success_duration_ms: number | null;
+  last_first_packet_ms: number | null;
+  half_open_in_flight: boolean;
+}
+
+export interface AdminModelHealthListResponse {
+  items: AdminModelHealthItem[];
+}
+
+export interface AdminModelHealthProbeRequest {
+  capability: string;
+  provider_name?: string;
+  model?: string;
 }
 
 export interface AdminSettingItem {
@@ -386,6 +534,17 @@ export interface AdminIntentNodeListResponse {
   items: AdminIntentNodeItem[];
 }
 
+export interface AdminIntentTreeCacheStatusResponse {
+  enabled: boolean;
+  available: boolean;
+  exists: boolean;
+  key: string;
+  ttl_seconds: number | null;
+  ttl_days: number;
+  backend: string;
+  error: string;
+}
+
 export interface AdminKeywordMappingItem {
   id: string;
   raw_keyword: string;
@@ -437,6 +596,7 @@ export interface ChatWorkflow {
   retrieval_stage_counts: Record<string, number>;
   rewritten_queries: string[];
   rewrite_query_count: number;
+  pipeline_stages: string[];
   route_mode: string;
   mcp_tool_count: number;
   deep_thinking?: boolean;
@@ -451,10 +611,20 @@ export interface ChatMcpCallItem {
 
 export interface ChatMessageResponse {
   session_id: string;
+  assistant_message_id: number | null;
   assistant_message: string;
   sources: ChatSourceItem[];
   workflow: ChatWorkflow;
   mcp_calls: ChatMcpCallItem[];
+}
+
+export interface MessageFeedbackResponse {
+  message_id: number;
+  session_id: string;
+  vote: 1 | -1;
+  reason: string;
+  comment: string;
+  updated_at: string;
 }
 
 export interface ConversationMessageItem {
@@ -463,6 +633,7 @@ export interface ConversationMessageItem {
   role: "assistant" | "user";
   content: string;
   created_at: string;
+  duration_ms: number;
 }
 
 export interface ConversationMessageListResponse {
@@ -470,12 +641,24 @@ export interface ConversationMessageListResponse {
 }
 
 export interface ChatStreamHandlers {
+  onTask?: (payload: ChatTaskEvent) => void | Promise<void>;
   onWorkflow?: (workflow: ChatWorkflow) => void | Promise<void>;
   onSources?: (sources: ChatSourceItem[]) => void | Promise<void>;
   onMcpCalls?: (mcpCalls: ChatMcpCallItem[]) => void | Promise<void>;
   onDelta?: (delta: string) => void | Promise<void>;
+  onCancel?: (payload: ChatTaskEvent) => void | Promise<void>;
+  onReject?: (payload: ChatRejectEvent) => void | Promise<void>;
   onFinal?: (payload: ChatFinalEvent) => void | Promise<void>;
   onDone?: (sessionId: string) => void | Promise<void>;
+}
+
+export interface ChatTaskEvent {
+  task_id: string;
+}
+
+export interface ChatRejectEvent {
+  message: string;
+  reason?: string;
 }
 
 export interface ChatFinalEvent {
@@ -497,10 +680,13 @@ async function yieldForPaint(): Promise<void> {
 
 export interface KnowledgeChunkingOptions {
   documentType?: string;
+  processMode?: "chunk_strategy" | "data_channel";
+  pipelineId?: number;
   chunkStrategy?: string;
   chunkSize?: number;
   chunkOverlap?: number;
   recursiveSeparators?: string[];
+  chunkConfig?: Record<string, unknown>;
 }
 
 export function fetchMeta(): Promise<MetaResponse> {
@@ -558,11 +744,34 @@ export function fetchKnowledgeBases(): Promise<KnowledgeBaseListResponse> {
   return request<KnowledgeBaseListResponse>({ url: "/api/v1/knowledge-bases" });
 }
 
-export function createKnowledgeBase(name: string): Promise<KnowledgeBaseItem> {
+export function createKnowledgeBase(options: string | KnowledgeBaseUpsertOptions): Promise<KnowledgeBaseItem> {
+  const payload =
+    typeof options === "string"
+      ? { name: options }
+      : {
+          name: options.name,
+          embedding_model: options.embeddingModel,
+          collection_name: options.collectionName
+        };
   return request<KnowledgeBaseItem>({
     url: "/api/v1/knowledge-bases",
     method: "POST",
-    data: { name }
+    data: payload
+  });
+}
+
+export function updateKnowledgeBase(
+  knowledgeBaseId: string,
+  options: Partial<KnowledgeBaseUpsertOptions>
+): Promise<KnowledgeBaseItem> {
+  return request<KnowledgeBaseItem>({
+    url: `/api/v1/knowledge-bases/${knowledgeBaseId}`,
+    method: "PATCH",
+    data: {
+      name: options.name,
+      embedding_model: options.embeddingModel,
+      collection_name: options.collectionName
+    }
   });
 }
 
@@ -593,10 +802,13 @@ export function createKnowledgeDocument(
       source_type: "manual",
       content,
       document_type: options?.documentType ?? "manual",
+      process_mode: options?.processMode ?? "chunk_strategy",
+      pipeline_id: options?.pipelineId,
       chunk_strategy: options?.chunkStrategy ?? "auto",
       chunk_size: options?.chunkSize ?? 600,
       chunk_overlap: options?.chunkOverlap ?? 120,
-      recursive_separators: options?.recursiveSeparators ?? []
+      recursive_separators: options?.recursiveSeparators ?? [],
+      chunk_config: options?.chunkConfig ?? {}
     }
   });
 }
@@ -609,11 +821,18 @@ export function uploadKnowledgeDocument(
   const formData = new FormData();
   formData.append("file", file);
   formData.append("document_type", options?.documentType ?? "knowledge_base");
-  formData.append("chunk_strategy", options?.chunkStrategy ?? "auto");
+  formData.append("process_mode", options?.processMode ?? "chunk_strategy");
+  if (options?.pipelineId !== undefined) {
+    formData.append("pipeline_id", String(options.pipelineId));
+  }
+  formData.append("chunk_strategy", options?.chunkStrategy ?? "recursive");
   formData.append("chunk_size", String(options?.chunkSize ?? 600));
   formData.append("chunk_overlap", String(options?.chunkOverlap ?? 120));
   if (options?.recursiveSeparators && options.recursiveSeparators.length > 0) {
     formData.append("recursive_separators_text", options.recursiveSeparators.join("\n"));
+  }
+  if (options?.chunkConfig) {
+    formData.append("chunk_config_json", JSON.stringify(options.chunkConfig));
   }
   return request<KnowledgeDocumentItem>({
     url: `/api/v1/knowledge-bases/${knowledgeBaseId}/documents/upload`,
@@ -632,10 +851,13 @@ export function reindexKnowledgeDocument(
     method: "POST",
     data: {
       document_type: options?.documentType,
+      process_mode: options?.processMode ?? "chunk_strategy",
+      pipeline_id: options?.pipelineId,
       chunk_strategy: options?.chunkStrategy ?? "auto",
       chunk_size: options?.chunkSize ?? 600,
       chunk_overlap: options?.chunkOverlap ?? 120,
-      recursive_separators: options?.recursiveSeparators ?? []
+      recursive_separators: options?.recursiveSeparators ?? [],
+      chunk_config: options?.chunkConfig ?? {}
     }
   });
 }
@@ -645,6 +867,34 @@ export function deleteKnowledgeDocument(knowledgeBaseId: string, documentId: num
     url: `/api/v1/knowledge-bases/${knowledgeBaseId}/documents/${documentId}`,
     method: "DELETE"
   });
+}
+
+export function updateKnowledgeDocument(
+  knowledgeBaseId: string,
+  documentId: number,
+  payload: { title?: string; enabled?: boolean }
+): Promise<KnowledgeDocumentItem> {
+  return request<KnowledgeDocumentItem>({
+    url: `/api/v1/knowledge-bases/${knowledgeBaseId}/documents/${documentId}`,
+    method: "PATCH",
+    data: payload
+  });
+}
+
+export function fetchKnowledgeDocumentPreview(
+  knowledgeBaseId: string,
+  documentId: number
+): Promise<KnowledgeDocumentPreviewResponse> {
+  return request<KnowledgeDocumentPreviewResponse>({
+    url: `/api/v1/knowledge-bases/${knowledgeBaseId}/documents/${documentId}/preview`
+  });
+}
+
+export function downloadKnowledgeDocumentSource(
+  knowledgeBaseId: string,
+  documentId: number
+): Promise<{ blob: Blob; filename: string }> {
+  return requestBlob(`/api/v1/knowledge-bases/${knowledgeBaseId}/documents/${documentId}/file`);
 }
 
 export function fetchKnowledgeChunks(
@@ -660,12 +910,12 @@ export function updateKnowledgeChunk(
   knowledgeBaseId: string,
   documentId: number,
   chunkId: number,
-  enabled: boolean
+  payload: boolean | KnowledgeChunkUpdatePayload
 ): Promise<KnowledgeChunkItem> {
   return request<KnowledgeChunkItem>({
     url: `/api/v1/knowledge-bases/${knowledgeBaseId}/documents/${documentId}/chunks/${chunkId}`,
     method: "PATCH",
-    data: { enabled }
+    data: typeof payload === "boolean" ? { enabled: payload } : payload
   });
 }
 
@@ -689,8 +939,10 @@ export function deleteKnowledgeChunk(knowledgeBaseId: string, documentId: number
   });
 }
 
-export function fetchIngestionTasks(): Promise<IngestionTaskListResponse> {
-  return request<IngestionTaskListResponse>({ url: "/api/v1/ingestion/tasks" });
+export function fetchIngestionTasks(options?: { documentId?: number }): Promise<IngestionTaskListResponse> {
+  const query =
+    options?.documentId !== undefined ? `?document_id=${encodeURIComponent(String(options.documentId))}` : "";
+  return request<IngestionTaskListResponse>({ url: `/api/v1/ingestion/tasks${query}` });
 }
 
 export function fetchIngestionPipelines(): Promise<IngestionPipelineListResponse> {
@@ -712,7 +964,7 @@ export function fetchIngestionTaskNodes(taskId: number): Promise<IngestionTaskNo
 }
 
 export function fetchAdminUsers(): Promise<AdminUserListResponse> {
-  return request<AdminUserListResponse>({ url: "/api/v1/admin/users" });
+  return request<AdminUserListResponse>({ url: "/api/v1/admin/users?page_size=100" });
 }
 
 export function fetchAdminDashboard(range = "24h"): Promise<AdminDashboardResponse> {
@@ -735,12 +987,100 @@ export function updateAdminUserRole(userId: string, role: string): Promise<Admin
   });
 }
 
-export function fetchAdminTraces(): Promise<AdminTraceListResponse> {
-  return request<AdminTraceListResponse>({ url: "/api/v1/admin/traces" });
+export function updateAdminUser(userId: string, payload: AdminUserUpdateRequest): Promise<AdminUserItem> {
+  return request<AdminUserItem>({
+    url: `/api/v1/admin/users/${userId}`,
+    method: "PATCH",
+    data: payload
+  });
+}
+
+export function deleteAdminUser(userId: string): Promise<void> {
+  return request<void>({
+    url: `/api/v1/admin/users/${userId}`,
+    method: "DELETE"
+  });
+}
+
+export function changeAdminUserPassword(payload: AdminUserPasswordChangeRequest): Promise<void> {
+  return request<void>({
+    url: "/api/v1/admin/users/me/password",
+    method: "PATCH",
+    data: payload
+  });
+}
+
+export interface AdminTraceQueryOptions {
+  page?: number;
+  pageSize?: number;
+  query?: string;
+  traceId?: string;
+  taskId?: string;
+  userQuery?: string;
+  status?: "success" | "error" | "running" | "cancelled" | "empty" | "";
+  startedFrom?: string;
+  startedTo?: string;
+}
+
+export function fetchAdminTraces(options: AdminTraceQueryOptions = {}): Promise<AdminTraceListResponse> {
+  const params = new URLSearchParams();
+  if (options.page !== undefined) {
+    params.set("page", String(options.page));
+  }
+  if (options.pageSize !== undefined) {
+    params.set("page_size", String(options.pageSize));
+  }
+  if (options.query?.trim()) {
+    params.set("q", options.query.trim());
+  }
+  if (options.traceId?.trim()) {
+    params.set("trace_id", options.traceId.trim());
+  }
+  if (options.taskId?.trim()) {
+    params.set("task_id", options.taskId.trim());
+  }
+  if (options.userQuery?.trim()) {
+    params.set("user_query", options.userQuery.trim());
+  }
+  if (options.status) {
+    params.set("status", options.status);
+  }
+  if (options.startedFrom?.trim()) {
+    params.set("started_from", options.startedFrom.trim());
+  }
+  if (options.startedTo?.trim()) {
+    params.set("started_to", options.startedTo.trim());
+  }
+  const query = params.toString();
+  return request<AdminTraceListResponse>({ url: `/api/v1/admin/traces${query ? `?${query}` : ""}` });
+}
+
+export function fetchAdminMessageFeedback(): Promise<AdminMessageFeedbackListResponse> {
+  return request<AdminMessageFeedbackListResponse>({ url: "/api/v1/admin/message-feedback" });
 }
 
 export function fetchAdminTraceDetail(sessionId: string): Promise<AdminTraceDetailResponse> {
   return request<AdminTraceDetailResponse>({ url: `/api/v1/admin/traces/${sessionId}` });
+}
+
+export function fetchAdminTraceMemoryDiagnostics(sessionId: string): Promise<AdminTraceMemoryDiagnosticsResponse> {
+  return request<AdminTraceMemoryDiagnosticsResponse>({ url: `/api/v1/admin/traces/${sessionId}/memory` });
+}
+
+export function fetchAdminTraceNodes(sessionId: string): Promise<AdminTraceNodeListResponse> {
+  return request<AdminTraceNodeListResponse>({ url: `/api/v1/admin/traces/${sessionId}/nodes` });
+}
+
+export function fetchAdminModelHealth(): Promise<AdminModelHealthListResponse> {
+  return request<AdminModelHealthListResponse>({ url: "/api/v1/admin/model-health" });
+}
+
+export function probeAdminModelHealth(payload: AdminModelHealthProbeRequest): Promise<AdminModelHealthItem> {
+  return request<AdminModelHealthItem>({
+    url: "/api/v1/admin/model-health/probe",
+    method: "POST",
+    data: payload
+  });
 }
 
 export function fetchAdminSettings(): Promise<AdminSettingListResponse> {
@@ -749,6 +1089,17 @@ export function fetchAdminSettings(): Promise<AdminSettingListResponse> {
 
 export function fetchAdminIntentNodes(): Promise<AdminIntentNodeListResponse> {
   return request<AdminIntentNodeListResponse>({ url: "/api/v1/admin/intent-nodes" });
+}
+
+export function fetchAdminIntentTreeCacheStatus(): Promise<AdminIntentTreeCacheStatusResponse> {
+  return request<AdminIntentTreeCacheStatusResponse>({ url: "/api/v1/admin/intent-tree-cache" });
+}
+
+export function clearAdminIntentTreeCache(): Promise<AdminIntentTreeCacheStatusResponse> {
+  return request<AdminIntentTreeCacheStatusResponse>({
+    url: "/api/v1/admin/intent-tree-cache",
+    method: "DELETE"
+  });
 }
 
 export function createAdminIntentNode(payload: AdminIntentNodeUpsertRequest): Promise<AdminIntentNodeItem> {
@@ -821,6 +1172,30 @@ export function sendChatMessage(sessionId: string, message: string, deepThinking
   });
 }
 
+export function submitMessageFeedback(
+  messageId: number,
+  vote: 1 | -1,
+  payload: { reason?: string; comment?: string } = {}
+): Promise<MessageFeedbackResponse> {
+  return request<MessageFeedbackResponse>({
+    url: `/api/v1/chat/messages/${messageId}/feedback`,
+    method: "POST",
+    data: {
+      vote,
+      reason: payload.reason ?? "",
+      comment: payload.comment ?? ""
+    }
+  });
+}
+
+export function cancelChatStreamTask(taskId: string): Promise<{ task_id: string; status: string }> {
+  return request<{ task_id: string; status: string }>({
+    url: `/api/v1/chat/stream/${encodeURIComponent(taskId)}/cancel`,
+    method: "POST",
+    data: {}
+  });
+}
+
 export async function streamChatMessage(
   sessionId: string,
   message: string,
@@ -871,6 +1246,9 @@ export async function streamChatMessage(
         continue;
       }
 
+      if (eventName === "task") {
+        await handlers.onTask?.(JSON.parse(data) as ChatTaskEvent);
+      }
       if (eventName === "workflow") {
         await handlers.onWorkflow?.(JSON.parse(data) as ChatWorkflow);
       }
@@ -883,6 +1261,12 @@ export async function streamChatMessage(
       if (eventName === "delta") {
         await handlers.onDelta?.((JSON.parse(data) as { content: string }).content);
         await yieldForPaint();
+      }
+      if (eventName === "cancel") {
+        await handlers.onCancel?.(JSON.parse(data) as ChatTaskEvent);
+      }
+      if (eventName === "reject") {
+        await handlers.onReject?.(JSON.parse(data) as ChatRejectEvent);
       }
       if (eventName === "final") {
         await handlers.onFinal?.(JSON.parse(data) as ChatFinalEvent);

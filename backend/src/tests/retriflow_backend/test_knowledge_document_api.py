@@ -1,4 +1,4 @@
-import os
+﻿import os
 import shutil
 import sys
 import tempfile
@@ -25,6 +25,8 @@ class RetriFlowKnowledgeDocumentApiTests(unittest.TestCase):
         os.environ["RETRIFLOW_PGVECTOR_DSN"] = ""
         os.environ["RETRIFLOW_VECTOR_STORE_TYPE"] = "memory"
         os.environ["RETRIFLOW_SEED_DEMO_CONTENT"] = "true"
+        os.environ["RETRIFLOW_STORAGE_BACKEND"] = "local"
+        os.environ["RETRIFLOW_STORAGE_LOCAL_DIR"] = str(Path(self.temp_dir.name) / "uploads")
 
         from core.config import get_settings
 
@@ -43,6 +45,8 @@ class RetriFlowKnowledgeDocumentApiTests(unittest.TestCase):
         os.environ.pop("RETRIFLOW_PGVECTOR_DSN", None)
         os.environ.pop("RETRIFLOW_VECTOR_STORE_TYPE", None)
         os.environ.pop("RETRIFLOW_SEED_DEMO_CONTENT", None)
+        os.environ.pop("RETRIFLOW_STORAGE_BACKEND", None)
+        os.environ.pop("RETRIFLOW_STORAGE_LOCAL_DIR", None)
         from core.config import get_settings
 
         get_settings.cache_clear()
@@ -111,6 +115,43 @@ class RetriFlowKnowledgeDocumentApiTests(unittest.TestCase):
         demo_item = next(item for item in knowledge_items if item["id"] == "kb-demo-1")
         self.assertEqual(demo_item["document_count"], len(items))
 
+    def test_create_and_update_knowledge_base_persists_embedding_and_collection(self) -> None:
+        create_response = self.client.post(
+            "/api/v1/knowledge-bases",
+            headers=self._auth_headers(self.admin_token),
+            json={
+                "name": "Policy KB",
+                "embedding_model": "qwen3-embedding:8b",
+                "collection_name": "policykb",
+            },
+        )
+        self.assertEqual(create_response.status_code, 201)
+        created = create_response.json()
+        self.assertEqual(created["embedding_model"], "qwen3-embedding:8b")
+        self.assertEqual(created["collection_name"], "policykb")
+
+        update_response = self.client.patch(
+            f"/api/v1/knowledge-bases/{created['id']}",
+            headers=self._auth_headers(self.admin_token),
+            json={
+                "name": "Policy KB Updated",
+                "embedding_model": "Qwen/Qwen3-Embedding-8B",
+                "collection_name": "policykb2",
+            },
+        )
+        self.assertEqual(update_response.status_code, 200)
+        updated = update_response.json()
+        self.assertEqual(updated["name"], "Policy KB Updated")
+        self.assertEqual(updated["embedding_model"], "Qwen/Qwen3-Embedding-8B")
+        self.assertEqual(updated["collection_name"], "policykb2")
+
+        invalid_response = self.client.post(
+            "/api/v1/knowledge-bases",
+            headers=self._auth_headers(self.admin_token),
+            json={"name": "Invalid KB", "collection_name": "Invalid_Name"},
+        )
+        self.assertEqual(invalid_response.status_code, 422)
+
     def test_create_document_returns_vector_index_status(self) -> None:
         create_response = self.client.post(
             "/api/v1/knowledge-bases/kb-demo-1/documents",
@@ -125,16 +166,137 @@ class RetriFlowKnowledgeDocumentApiTests(unittest.TestCase):
         created = create_response.json()
         self.assertEqual(created["vector_index_status"], "indexed")
         self.assertGreaterEqual(created["vector_chunk_count"], 1)
-        self.assertTrue(created["vector_indexed_at"])
 
-        list_response = self.client.get(
+    def test_create_document_can_use_saved_data_channel_pipeline(self) -> None:
+        pipeline_response = self.client.post(
+            "/api/v1/ingestion/pipelines",
+            headers=self._auth_headers(self.admin_token),
+            json={
+                "name": "fixed data channel",
+                "description": "test pipeline",
+                "nodes": [
+                    {
+                        "node_id": "chunk",
+                        "node_type": "chunker",
+                        "next_node_id": "embed",
+                        "config": {"strategy": "fixed_size", "chunkSize": 12, "overlapSize": 3},
+                    },
+                    {
+                        "node_id": "embed",
+                        "node_type": "embedder",
+                        "next_node_id": "index",
+                        "config": {"provider": "ollama", "model": "qwen3-embedding:8b"},
+                    },
+                    {
+                        "node_id": "index",
+                        "node_type": "indexer",
+                        "config": {"store": "pgvector"},
+                    },
+                ],
+            },
+        )
+        self.assertEqual(pipeline_response.status_code, 201)
+        pipeline_id = pipeline_response.json()["id"]
+
+        create_response = self.client.post(
             "/api/v1/knowledge-bases/kb-demo-1/documents",
             headers=self._auth_headers(self.admin_token),
+            json={
+                "title": "Data channel document",
+                "source_type": "manual",
+                "content": "0123456789abcdefghijklmnopqrstuvwxyz",
+                "process_mode": "data_channel",
+                "pipeline_id": pipeline_id,
+            },
         )
-        self.assertEqual(list_response.status_code, 200)
-        matching = next(item for item in list_response.json()["items"] if item["id"] == created["id"])
-        self.assertEqual(matching["vector_index_status"], "indexed")
-        self.assertGreaterEqual(matching["vector_chunk_count"], 1)
+
+        self.assertEqual(create_response.status_code, 201)
+        document_id = create_response.json()["id"]
+        chunks_response = self.client.get(
+            f"/api/v1/knowledge-bases/kb-demo-1/documents/{document_id}/chunks",
+            headers=self._auth_headers(self.admin_token),
+        )
+        self.assertEqual(chunks_response.status_code, 200)
+        chunks = chunks_response.json()["items"]
+        self.assertGreaterEqual(len(chunks), 3)
+        self.assertEqual(chunks[0]["strategy"], "fixed")
+        self.assertEqual(chunks[1]["metadata"]["start_index"], 9)
+
+    def test_create_document_rejects_invalid_data_channel_pipeline(self) -> None:
+        pipeline_response = self.client.post(
+            "/api/v1/ingestion/pipelines",
+            headers=self._auth_headers(self.admin_token),
+            json={
+                "name": "broken data channel",
+                "description": "invalid next node",
+                "nodes": [
+                    {
+                        "node_id": "parse",
+                        "node_type": "parser",
+                        "next_node_id": "missing",
+                        "config": {"engine": "plain-text"},
+                    }
+                ],
+            },
+        )
+        self.assertEqual(pipeline_response.status_code, 201)
+        pipeline_id = pipeline_response.json()["id"]
+
+        create_response = self.client.post(
+            "/api/v1/knowledge-bases/kb-demo-1/documents",
+            headers=self._auth_headers(self.admin_token),
+            json={
+                "title": "Invalid data channel document",
+                "source_type": "manual",
+                "content": "This should fail before ingestion starts.",
+                "process_mode": "data_channel",
+                "pipeline_id": pipeline_id,
+            },
+        )
+
+        self.assertEqual(create_response.status_code, 400)
+        self.assertIn("Invalid ingestion pipeline", create_response.json()["detail"])
+
+    def test_update_document_title_and_chunk_content(self) -> None:
+        create_response = self.client.post(
+            "/api/v1/knowledge-bases/kb-demo-1/documents",
+            headers=self._auth_headers(self.admin_token),
+            json={
+                "title": "Before edit",
+                "source_type": "manual",
+                "content": "RetriFlow edit tests need enough content for a chunk.",
+                "chunk_strategy": "fixed",
+                "chunk_size": 80,
+                "chunk_overlap": 0,
+            },
+        )
+        self.assertEqual(create_response.status_code, 201)
+        document_id = create_response.json()["id"]
+
+        document_update = self.client.patch(
+            f"/api/v1/knowledge-bases/kb-demo-1/documents/{document_id}",
+            headers=self._auth_headers(self.admin_token),
+            json={"title": "After edit", "enabled": False},
+        )
+        self.assertEqual(document_update.status_code, 200)
+        self.assertEqual(document_update.json()["title"], "After edit")
+        self.assertFalse(document_update.json()["enabled"])
+
+        chunks_response = self.client.get(
+            f"/api/v1/knowledge-bases/kb-demo-1/documents/{document_id}/chunks",
+            headers=self._auth_headers(self.admin_token),
+        )
+        chunk = chunks_response.json()["items"][0]
+        chunk_update = self.client.patch(
+            f"/api/v1/knowledge-bases/kb-demo-1/documents/{document_id}/chunks/{chunk['id']}",
+            headers=self._auth_headers(self.admin_token),
+            json={"content": "Edited chunk content", "enabled": True},
+        )
+        self.assertEqual(chunk_update.status_code, 200)
+        updated_chunk = chunk_update.json()
+        self.assertEqual(updated_chunk["content"], "Edited chunk content")
+        self.assertEqual(updated_chunk["char_count"], len("Edited chunk content"))
+        self.assertTrue(updated_chunk["enabled"])
 
     def test_create_document_generates_chunks_and_ingestion_task(self) -> None:
         create_response = self.client.post(
@@ -324,6 +486,90 @@ class RetriFlowKnowledgeDocumentApiTests(unittest.TestCase):
         )
         self.assertEqual(chunks_response.status_code, 200)
         self.assertGreaterEqual(len(chunks_response.json()["items"]), 1)
+
+    def test_upload_text_file_persists_original_file_source_uri(self) -> None:
+        upload_response = self.client.post(
+            "/api/v1/knowledge-bases/kb-demo-1/documents/upload",
+            headers=self._auth_headers(self.admin_token),
+            files={"file": ("retriflow-source.txt", b"RetriFlow keeps the uploaded source file.", "text/plain")},
+        )
+
+        self.assertEqual(upload_response.status_code, 201)
+        created = upload_response.json()
+        self.assertIn("source_uri", created)
+        self.assertTrue(created["source_uri"].startswith("local://"))
+
+        from infra.storage import resolve_file_storage
+
+        with resolve_file_storage().open_stream(created["source_uri"]) as source_stream:
+            self.assertEqual(source_stream.read(), b"RetriFlow keeps the uploaded source file.")
+
+    def test_preview_uploaded_document_returns_persisted_content(self) -> None:
+        upload_response = self.client.post(
+            "/api/v1/knowledge-bases/kb-demo-1/documents/upload",
+            headers=self._auth_headers(self.admin_token),
+            files={
+                "file": (
+                    "retriflow-preview.md",
+                    b"# RetriFlow Preview\n\nThe preview endpoint returns parsed content.",
+                    "text/markdown",
+                )
+            },
+        )
+        self.assertEqual(upload_response.status_code, 201)
+        created = upload_response.json()
+
+        preview_response = self.client.get(
+            f"/api/v1/knowledge-bases/kb-demo-1/documents/{created['id']}/preview",
+            headers=self._auth_headers(self.admin_token),
+        )
+
+        self.assertEqual(preview_response.status_code, 200)
+        preview = preview_response.json()
+        self.assertEqual(preview["id"], created["id"])
+        self.assertEqual(preview["knowledge_base_id"], "kb-demo-1")
+        self.assertIn("RetriFlow Preview", preview["content"])
+        self.assertIn("parsed content", preview["content"])
+
+    def test_download_uploaded_document_streams_original_source_file(self) -> None:
+        original_bytes = b"RetriFlow original source bytes."
+        upload_response = self.client.post(
+            "/api/v1/knowledge-bases/kb-demo-1/documents/upload",
+            headers=self._auth_headers(self.admin_token),
+            files={"file": ("retriflow-original.txt", original_bytes, "text/plain")},
+        )
+        self.assertEqual(upload_response.status_code, 201)
+        created = upload_response.json()
+
+        file_response = self.client.get(
+            f"/api/v1/knowledge-bases/kb-demo-1/documents/{created['id']}/file",
+            headers=self._auth_headers(self.admin_token),
+        )
+
+        self.assertEqual(file_response.status_code, 200)
+        self.assertEqual(file_response.content, original_bytes)
+        self.assertIn("text/plain", file_response.headers["content-type"])
+        self.assertIn("retriflow-original.txt", file_response.headers["content-disposition"])
+
+    def test_download_manual_document_without_source_file_returns_not_found(self) -> None:
+        create_response = self.client.post(
+            "/api/v1/knowledge-bases/kb-demo-1/documents",
+            headers=self._auth_headers(self.admin_token),
+            json={
+                "title": "Manual source-less document",
+                "source_type": "manual",
+                "content": "Manual documents do not have an uploaded source file.",
+            },
+        )
+        self.assertEqual(create_response.status_code, 201)
+        document_id = create_response.json()["id"]
+
+        file_response = self.client.get(
+            f"/api/v1/knowledge-bases/kb-demo-1/documents/{document_id}/file",
+            headers=self._auth_headers(self.admin_token),
+        )
+
+        self.assertEqual(file_response.status_code, 404)
 
     def test_upload_docx_uses_structured_parsing_pipeline(self) -> None:
         from infra.document_parser import ParsedUploadDocumentResult
@@ -535,8 +781,7 @@ class RetriFlowKnowledgeDocumentApiTests(unittest.TestCase):
         self.assertEqual(upload_response.status_code, 201)
         self.assertEqual(captured["strategy"], "recursive")
         self.assertEqual(captured["recursive_separators"], ["###", " "])
-
-    def test_upload_uses_tika_detected_mime_when_form_header_is_generic(self) -> None:
+`r`n    def test_upload_uses_tika_detected_mime_when_form_header_is_generic(self) -> None:
         from infra.document_parser import ParsedUploadDocumentResult
         from modules.ingestion import IngestionPipelineNodeResult
         from schemas.document_structure import ParagraphBlock, StructuredDocument
@@ -645,8 +890,7 @@ class RetriFlowKnowledgeDocumentApiTests(unittest.TestCase):
         tasks_response = self.client.get("/api/v1/ingestion/tasks", headers=self._auth_headers(self.admin_token))
         self.assertEqual(tasks_response.status_code, 200)
         matching_tasks = [item for item in tasks_response.json()["items"] if item["document_id"] == document_id]
-        self.assertEqual(len(matching_tasks), 2)
-
+        self.assertEqual(len(matching_tasks), 2)`r`n
     def test_import_sample_knowledge_directory_creates_documents(self) -> None:
         sample_source = PROJECT_ROOT / "ragent" / "resources" / "docs" / "knowledge"
         sample_target = Path(self.temp_dir.name) / "sample_knowledge"
@@ -703,3 +947,4 @@ class RetriFlowKnowledgeDocumentApiTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

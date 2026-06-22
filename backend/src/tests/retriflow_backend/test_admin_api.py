@@ -4,6 +4,7 @@ import tempfile
 import unittest
 import uuid
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -39,8 +40,10 @@ class RetriFlowAdminApiTests(unittest.TestCase):
         os.environ.pop("RETRIFLOW_VECTOR_STORE_TYPE", None)
 
         from core.config import get_settings
+        from infra.llm.health import get_model_health_service
 
         get_settings.cache_clear()
+        get_model_health_service().reset()
         try:
             self.temp_dir.cleanup()
         except PermissionError:
@@ -71,6 +74,91 @@ class RetriFlowAdminApiTests(unittest.TestCase):
         self.assertEqual(payload["username"], "created-user")
         self.assertEqual(payload["role"], "user")
         self.assertTrue(payload["created_at"])
+
+    def test_admin_can_page_filter_update_and_delete_users(self) -> None:
+        token = self._register_and_login("admin-owner", "admin")
+        created_ids: list[str] = []
+        for index in range(12):
+            response = self.client.post(
+                "/api/v1/admin/users",
+                json={"username": f"staff-{index:02d}", "password": "Password123", "role": "user"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            self.assertEqual(response.status_code, 201)
+            created_ids.append(response.json()["id"])
+
+        page_response = self.client.get(
+            "/api/v1/admin/users?page=1&page_size=5&q=staff",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        self.assertEqual(page_response.status_code, 200)
+        page_payload = page_response.json()
+        self.assertEqual(page_payload["total"], 12)
+        self.assertEqual(page_payload["page"], 1)
+        self.assertEqual(page_payload["page_size"], 5)
+        self.assertEqual(len(page_payload["items"]), 5)
+
+        update_response = self.client.patch(
+            f"/api/v1/admin/users/{created_ids[0]}",
+            json={"username": "staff-renamed", "role": "admin", "avatar_url": "https://example.test/avatar.png"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        self.assertEqual(update_response.status_code, 200)
+        updated = update_response.json()
+        self.assertEqual(updated["username"], "staff-renamed")
+        self.assertEqual(updated["role"], "admin")
+        self.assertEqual(updated["avatar_url"], "https://example.test/avatar.png")
+
+        delete_response = self.client.delete(
+            f"/api/v1/admin/users/{created_ids[1]}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        self.assertEqual(delete_response.status_code, 204)
+        filtered_response = self.client.get(
+            "/api/v1/admin/users?q=staff-01",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(filtered_response.status_code, 200)
+        self.assertEqual(filtered_response.json()["total"], 0)
+
+    def test_admin_user_can_change_own_password(self) -> None:
+        token = self._register_and_login("password-admin", "admin")
+
+        response = self.client.patch(
+            "/api/v1/admin/users/me/password",
+            json={"old_password": "Password123", "new_password": "NewPassword123"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        self.assertEqual(response.status_code, 204)
+        old_login = self.client.post(
+            "/api/v1/auth/login",
+            json={"username": "password-admin", "password": "Password123"},
+        )
+        self.assertEqual(old_login.status_code, 401)
+        new_login = self.client.post(
+            "/api/v1/auth/login",
+            json={"username": "password-admin", "password": "NewPassword123"},
+        )
+        self.assertEqual(new_login.status_code, 200)
+
+    def test_admin_cannot_delete_self(self) -> None:
+        token = self._register_and_login("self-delete-admin", "admin")
+        users_response = self.client.get(
+            "/api/v1/admin/users?q=self-delete-admin",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        user_id = users_response.json()["items"][0]["id"]
+
+        response = self.client.delete(
+            f"/api/v1/admin/users/{user_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        self.assertEqual(response.status_code, 400)
 
     def test_seed_admin_password_hash_matches_default_password(self) -> None:
         from modules.auth import RetriFlowAuthService
@@ -134,6 +222,232 @@ class RetriFlowAdminApiTests(unittest.TestCase):
         self.assertEqual(list_response.status_code, 200)
         trace_item = next(item for item in list_response.json()["items"] if item["id"] == session_id)
         self.assertEqual(trace_item["duration_ms"], 1234)
+
+    def test_admin_can_get_trace_memory_diagnostics(self) -> None:
+        token = self._register_and_login("memory-admin", "admin")
+        session_response = self.client.post(
+            "/api/v1/sessions",
+            json={"title": "Memory diagnostic session"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        session_id = session_response.json()["id"]
+
+        from core.state import get_connection
+
+        with get_connection() as connection:
+            connection.execute(
+                """
+                insert into conversation_memory_summaries (session_id, content, last_message_id, updated_at, expires_at)
+                values (?, ?, ?, ?, ?)
+                """,
+                (session_id, "memory summary", 1, "2026-06-17 10:00:00", "2026-07-17 10:00:00"),
+            )
+            connection.execute(
+                "insert into conversation_messages (session_id, role, content) values (?, ?, ?)",
+                (session_id, "user", "remember this preference"),
+            )
+            connection.commit()
+
+        response = self.client.get(
+            f"/api/v1/admin/traces/{session_id}/memory",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["session_id"], session_id)
+        self.assertTrue(payload["has_summary"])
+        self.assertEqual(payload["summary_preview"], "memory summary")
+        self.assertGreaterEqual(payload["recent_message_count"], 1)
+        self.assertGreaterEqual(payload["prompt_message_count"], 1)
+
+    def test_admin_can_get_trace_nodes(self) -> None:
+        token = self._register_and_login("trace-node-admin", "admin")
+        session_response = self.client.post(
+            "/api/v1/sessions",
+            json={"title": "Trace node session"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        session_id = session_response.json()["id"]
+
+        from modules.rag.trace import RetriFlowTraceService
+
+        trace_service = RetriFlowTraceService()
+        with trace_service.start_root(session_id=session_id, task_id="task-node", name="chat") as root:
+            with trace_service.span(name="retrieve", node_type="RETRIEVAL") as child:
+                child.finish_success(output_summary="chunks")
+            root.finish_success(output_summary="done")
+
+        response = self.client.get(
+            f"/api/v1/admin/traces/{session_id}/nodes",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(len(payload["items"]), 2)
+        self.assertEqual(payload["items"][0]["name"], "chat")
+        self.assertEqual(payload["items"][1]["parent_id"], payload["items"][0]["id"])
+        self.assertEqual(payload["items"][1]["node_type"], "RETRIEVAL")
+
+    def test_admin_can_filter_trace_runs_by_root_trace_fields(self) -> None:
+        token = self._register_and_login("trace-filter-admin", "admin")
+        first_session = self.client.post(
+            "/api/v1/sessions",
+            json={"title": "Trace filter success"},
+            headers={"Authorization": f"Bearer {token}"},
+        ).json()["id"]
+        second_session = self.client.post(
+            "/api/v1/sessions",
+            json={"title": "Trace filter error"},
+            headers={"Authorization": f"Bearer {token}"},
+        ).json()["id"]
+
+        from core.state import get_connection
+        from modules.rag.trace import RetriFlowTraceService
+
+        trace_service = RetriFlowTraceService()
+        with trace_service.start_root(session_id=first_session, task_id="task-filter-ok", name="chat") as root:
+            root.finish_success(output_summary="ok")
+        with trace_service.start_root(session_id=second_session, task_id="task-filter-fail", name="chat") as root:
+            root.finish_error("failed")
+
+        with get_connection() as connection:
+            success_trace = connection.execute(
+                """
+                select id, started_at
+                from rag_trace_nodes
+                where session_id = ? and task_id = ? and parent_id = ''
+                """,
+                (first_session, "task-filter-ok"),
+            ).fetchone()
+            error_trace = connection.execute(
+                """
+                select id, started_at
+                from rag_trace_nodes
+                where session_id = ? and task_id = ? and parent_id = ''
+                """,
+                (second_session, "task-filter-fail"),
+            ).fetchone()
+
+        by_task = self.client.get(
+            "/api/v1/admin/traces?task_id=task-filter-ok",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(by_task.status_code, 200)
+        self.assertEqual([item["id"] for item in by_task.json()["items"]], [first_session])
+        self.assertEqual(by_task.json()["items"][0]["status"], "success")
+
+        by_status = self.client.get(
+            "/api/v1/admin/traces?status=error",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(by_status.status_code, 200)
+        self.assertEqual([item["id"] for item in by_status.json()["items"]], [second_session])
+
+        by_trace = self.client.get(
+            f"/api/v1/admin/traces?trace_id={success_trace['id']}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(by_trace.status_code, 200)
+        self.assertEqual([item["id"] for item in by_trace.json()["items"]], [first_session])
+
+        invalid_trace = self.client.get(
+            "/api/v1/admin/traces?trace_id=trace-abc",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(invalid_trace.status_code, 422)
+
+        by_time = self.client.get(
+            "/api/v1/admin/traces",
+            params={"started_from": success_trace["started_at"], "started_to": error_trace["started_at"]},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(by_time.status_code, 200)
+        self.assertEqual(by_time.json()["total"], 2)
+
+    def test_admin_can_list_model_health_snapshots(self) -> None:
+        token = self._register_and_login("model-health-admin", "admin")
+
+        from infra.llm.health import get_model_health_service
+
+        get_model_health_service().record_failure(
+            capability="chat",
+            provider_name="bailian",
+            model="qwen3-max",
+            error="timeout",
+        )
+
+        response = self.client.get(
+            "/api/v1/admin/model-health",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(len(payload["items"]), 1)
+        item = payload["items"][0]
+        self.assertEqual(item["capability"], "chat")
+        self.assertEqual(item["provider_name"], "bailian")
+        self.assertEqual(item["model"], "qwen3-max")
+        self.assertEqual(item["state"], "healthy")
+        self.assertEqual(item["failure_count"], 1)
+        self.assertEqual(item["last_error"], "timeout")
+
+    def test_admin_model_health_survives_memory_reset(self) -> None:
+        token = self._register_and_login("model-health-persist-admin", "admin")
+
+        from infra.llm.health import get_model_health_service
+
+        health_service = get_model_health_service()
+        health_service.record_failure(
+            capability="chat",
+            provider_name="bailian",
+            model="qwen3-max",
+            error="timeout",
+        )
+        health_service.reset()
+
+        response = self.client.get(
+            "/api/v1/admin/model-health",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(len(payload["items"]), 1)
+        self.assertEqual(payload["items"][0]["provider_name"], "bailian")
+        self.assertEqual(payload["items"][0]["failure_count"], 1)
+        self.assertEqual(payload["items"][0]["last_error"], "timeout")
+
+    def test_admin_can_probe_model_health(self) -> None:
+        token = self._register_and_login("model-health-probe-admin", "admin")
+
+        from infra.llm.health import ModelHealthSnapshot
+
+        with patch(
+            "modules.admin.service.RetriFlowLLMService.probe_model_health",
+            return_value=ModelHealthSnapshot(
+                capability="chat",
+                provider_name="bailian",
+                model="qwen3-max",
+                state="healthy",
+                success_count=1,
+                last_success_duration_ms=12,
+            ),
+        ):
+            response = self.client.post(
+                "/api/v1/admin/model-health/probe",
+                json={"capability": "chat", "provider_name": "bailian", "model": "qwen3-max"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["provider_name"], "bailian")
+        self.assertEqual(payload["model"], "qwen3-max")
+        self.assertEqual(payload["success_count"], 1)
+        self.assertEqual(payload["last_success_duration_ms"], 12)
 
     def test_admin_dashboard_is_backed_by_database(self) -> None:
         token = self._register_and_login("dashboard-admin", "admin")

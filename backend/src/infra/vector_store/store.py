@@ -21,6 +21,8 @@ class VectorChunkRecord:
     content: str
     document_type: str
     strategy: str
+    collection_name: str = ""
+    embedding_model: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -106,8 +108,8 @@ class PostgresRetriFlowVectorStore:
             return
 
         try:
-            vectors = self.embedding_service.embed_texts([record.content for record in records])
-            dimension = len(vectors[0]) if vectors else 0
+            vector_by_chunk_id = self._embed_records(records)
+            dimension = len(next(iter(vector_by_chunk_id.values()), []))
             if dimension == 0:
                 return
 
@@ -127,10 +129,13 @@ class PostgresRetriFlowVectorStore:
                             record.content,
                             record.document_type,
                             record.strategy,
+                            record.collection_name,
+                            record.embedding_model,
                             json.dumps(record.metadata, ensure_ascii=False),
-                            numpy.array(vector, dtype=numpy.float32),
+                            numpy.array(vector_by_chunk_id[record.chunk_id], dtype=numpy.float32),
                         )
-                        for record, vector in zip(records, vectors, strict=False)
+                        for record in records
+                        if record.chunk_id in vector_by_chunk_id
                     ]
                     cursor.executemany(insert_sql, payload)
                 connection.commit()
@@ -217,11 +222,19 @@ class PostgresRetriFlowVectorStore:
                     content text not null,
                     document_type text not null,
                     strategy text not null,
+                    collection_name text not null default '',
+                    embedding_model text not null default '',
                     metadata_json jsonb not null default '{{}}'::jsonb,
                     embedding vector({dimension}) not null,
                     updated_at timestamptz not null default now()
                 )
                 """
+            )
+            cursor.execute(
+                f"alter table {self.settings.pgvector_table} add column if not exists collection_name text not null default ''"
+            )
+            cursor.execute(
+                f"alter table {self.settings.pgvector_table} add column if not exists embedding_model text not null default ''"
             )
             cursor.execute(
                 f"""
@@ -242,7 +255,7 @@ class PostgresRetriFlowVectorStore:
         if not records:
             return
 
-        vectors = self.embedding_service.embed_texts([record.content for record in records])
+        vector_by_chunk_id = self._embed_records(records)
         with connection.cursor() as cursor:
             cursor.executemany(
                 self._build_insert_sql(),
@@ -255,10 +268,13 @@ class PostgresRetriFlowVectorStore:
                         record.content,
                         record.document_type,
                         record.strategy,
+                        record.collection_name,
+                        record.embedding_model,
                         json.dumps(record.metadata, ensure_ascii=False),
-                        numpy.array(vector, dtype=numpy.float32),
+                        numpy.array(vector_by_chunk_id[record.chunk_id], dtype=numpy.float32),
                     )
-                    for record, vector in zip(records, vectors, strict=False)
+                    for record in records
+                    if record.chunk_id in vector_by_chunk_id
                 ],
             )
         connection.commit()
@@ -274,11 +290,13 @@ class PostgresRetriFlowVectorStore:
                 content,
                 document_type,
                 strategy,
+                collection_name,
+                embedding_model,
                 metadata_json,
                 embedding,
                 updated_at
             )
-            values (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, now())
+            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, now())
             on conflict (chunk_id) do update set
                 knowledge_base_id = excluded.knowledge_base_id,
                 document_id = excluded.document_id,
@@ -286,6 +304,8 @@ class PostgresRetriFlowVectorStore:
                 content = excluded.content,
                 document_type = excluded.document_type,
                 strategy = excluded.strategy,
+                collection_name = excluded.collection_name,
+                embedding_model = excluded.embedding_model,
                 metadata_json = excluded.metadata_json,
                 embedding = excluded.embedding,
                 updated_at = now()
@@ -341,9 +361,12 @@ class PostgresRetriFlowVectorStore:
                     kc.content,
                     kc.document_type,
                     kc.strategy,
+                    kb.collection_name,
+                    kb.embedding_model,
                     kc.metadata_json
                 from knowledge_chunks kc
                 join knowledge_documents kd on kd.id = kc.document_id
+                join knowledge_bases kb on kb.id = kc.knowledge_base_id
                 where kc.enabled = 1
                 order by kc.id
                 """
@@ -358,6 +381,8 @@ class PostgresRetriFlowVectorStore:
                 content=str(row["content"]),
                 document_type=str(row["document_type"]),
                 strategy=str(row["strategy"]),
+                collection_name=str(row["collection_name"] or row["knowledge_base_id"]).replace("-", ""),
+                embedding_model=str(row["embedding_model"] or "Qwen/Qwen3-Embedding-8B"),
                 metadata=PostgresRetriFlowVectorStore._parse_json_field(
                     row["metadata_json"],
                     default={},
@@ -365,6 +390,35 @@ class PostgresRetriFlowVectorStore:
             )
             for row in rows
         ]
+
+    def _embed_records(self, records: list[VectorChunkRecord]) -> dict[int, list[float]]:
+        vectors: dict[int, list[float]] = {}
+        groups: dict[tuple[str | None, str | None], list[VectorChunkRecord]] = {}
+        for record in records:
+            model_name = record.embedding_model.strip() or None
+            provider_name = self._derive_embedding_provider(model_name)
+            groups.setdefault((provider_name, model_name), []).append(record)
+
+        for (provider_name, model_name), group in groups.items():
+            embedded = self.embedding_service.embed_texts(
+                [record.content for record in group],
+                provider_name=provider_name,
+                model_name=model_name,
+            )
+            for record, vector in zip(group, embedded, strict=False):
+                vectors[record.chunk_id] = vector
+        return vectors
+
+    @staticmethod
+    def _derive_embedding_provider(model_name: str | None) -> str | None:
+        normalized = (model_name or "").strip().lower()
+        if not normalized:
+            return None
+        if "qwen3-embedding:8b" in normalized or normalized.startswith("ollama:"):
+            return "ollama"
+        if "qwen/qwen3-embedding" in normalized:
+            return "siliconflow"
+        return None
 
     @staticmethod
     def _parse_json_field(value, *, default):

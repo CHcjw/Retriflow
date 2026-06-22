@@ -53,6 +53,9 @@ class RetriFlowKnowledgeRouteTests(unittest.TestCase):
         os.environ.pop("RETRIFLOW_VECTOR_STORE_TYPE", None)
         os.environ.pop("RETRIFLOW_LLM_PROVIDER", None)
         os.environ.pop("RETRIFLOW_ROUTE_USE_LLM", None)
+        os.environ.pop("RETRIFLOW_INTENT_TREE_CACHE_ENABLED", None)
+        os.environ.pop("RETRIFLOW_INTENT_TREE_CACHE_REDIS_URL", None)
+        os.environ.pop("RETRIFLOW_INTENT_TREE_CACHE_KEY", None)
         from core.config import get_settings
 
         get_settings.cache_clear()
@@ -127,6 +130,181 @@ class RetriFlowKnowledgeRouteTests(unittest.TestCase):
         self.assertEqual(decision.mode, "knowledge_base")
         self.assertEqual(decision.knowledge_base_ids, ["kb-1"])
         self.assertGreater(decision.confidence, 0.45)
+
+    def test_route_question_uses_admin_intent_tree_nodes(self) -> None:
+        from modules.admin import RetriFlowAdminService
+        from modules.knowledge.routing import RetriFlowKnowledgeRouteService
+        from schemas.admin import AdminIntentNodeCreateRequest
+
+        RetriFlowAdminService().create_intent_node(
+            AdminIntentNodeCreateRequest(
+                name="Insurance Claims",
+                code="insurance_claims",
+                level="INTENT",
+                node_type="KB",
+                knowledge_base_id="kb-1",
+                description="Claims reimbursement routing",
+                sample_questions=["How do I submit claim reimbursement materials?"],
+                rule_snippet="claim reimbursement materials payout",
+                sort_order=1,
+            )
+        )
+
+        decision = RetriFlowKnowledgeRouteService().route_question("claim reimbursement materials checklist")
+
+        self.assertEqual(decision.mode, "knowledge_base")
+        self.assertEqual(decision.knowledge_base_ids, ["kb-1"])
+        self.assertGreaterEqual(decision.confidence, 0.45)
+        self.assertIn("intent path", decision.reason)
+
+    def test_route_question_falls_back_from_matched_parent_to_child_kb_node(self) -> None:
+        from modules.admin import RetriFlowAdminService
+        from modules.knowledge.routing import RetriFlowKnowledgeRouteService
+        from schemas.admin import AdminIntentNodeCreateRequest
+
+        parent = RetriFlowAdminService().create_intent_node(
+            AdminIntentNodeCreateRequest(
+                name="Claims Domain",
+                code="claims_domain",
+                level="DOMAIN",
+                node_type="KB",
+                description="insurance claims domain",
+                sort_order=1,
+            )
+        )
+        RetriFlowAdminService().create_intent_node(
+            AdminIntentNodeCreateRequest(
+                name="Claims Reimbursement Leaf",
+                code="claims_reimbursement_leaf",
+                level="TOPIC",
+                node_type="KB",
+                parent_id=parent.id,
+                knowledge_base_id="kb-1",
+                description="reimbursement materials checklist",
+                sort_order=1,
+            )
+        )
+
+        decision = RetriFlowKnowledgeRouteService().route_question("insurance claims domain")
+
+        self.assertEqual(decision.mode, "knowledge_base")
+        self.assertEqual(decision.knowledge_base_ids, ["kb-1"])
+        self.assertIn("Claims Domain", decision.reason)
+        self.assertIn("Claims Reimbursement Leaf", decision.reason)
+
+    def test_route_question_keeps_multiple_intent_tree_candidates(self) -> None:
+        from modules.admin import RetriFlowAdminService
+        from modules.knowledge import RetriFlowKnowledgeService
+        from modules.knowledge.routing import RetriFlowKnowledgeRouteService
+        from schemas.admin import AdminIntentNodeCreateRequest
+        from schemas.knowledge import KnowledgeBaseCreateRequest, KnowledgeDocumentCreateRequest
+
+        knowledge_service = RetriFlowKnowledgeService()
+        knowledge_service.create_knowledge_base(KnowledgeBaseCreateRequest(name="RetriFlow KB"))
+        knowledge_service.create_document(
+            "kb-2",
+            KnowledgeDocumentCreateRequest(
+                title="RetriFlow migration guide",
+                source_type="manual",
+                content="RetriFlow migration uses LangGraph, LangChain, RAG and retrieval workflows.",
+            ),
+        )
+
+        admin_service = RetriFlowAdminService()
+        admin_service.create_intent_node(
+            AdminIntentNodeCreateRequest(
+                name="Insurance Claims",
+                code="multi_insurance_claims",
+                level="INTENT",
+                node_type="KB",
+                knowledge_base_id="kb-1",
+                description="insurance claim reimbursement policy",
+                sample_questions=["How do claim reimbursements work?"],
+                rule_snippet="claim reimbursement insurance policy",
+                sort_order=1,
+            )
+        )
+        admin_service.create_intent_node(
+            AdminIntentNodeCreateRequest(
+                name="RetriFlow Migration",
+                code="multi_retriflow_migration",
+                level="INTENT",
+                node_type="KB",
+                knowledge_base_id="kb-2",
+                description="retriflow migration langgraph rag",
+                sample_questions=["How does RetriFlow migration work?"],
+                rule_snippet="retriflow migration langgraph rag",
+                sort_order=2,
+            )
+        )
+
+        decision = RetriFlowKnowledgeRouteService().route_question(
+            "claim reimbursement and retriflow migration"
+        )
+
+        self.assertEqual(decision.mode, "knowledge_base")
+        self.assertEqual(decision.knowledge_base_ids, ["kb-1", "kb-2"])
+        self.assertLessEqual(len(decision.knowledge_base_ids), 3)
+        self.assertIn("Insurance Claims", decision.reason)
+        self.assertIn("RetriFlow Migration", decision.reason)
+        self.assertEqual([candidate.knowledge_base_id for candidate in decision.candidates], ["kb-1", "kb-2"])
+
+        from modules.rag.guidance import RetriFlowIntentGuidanceService
+
+        guidance = RetriFlowIntentGuidanceService().detect("policy workflow", decision)
+        self.assertTrue(guidance.is_prompt)
+        self.assertIn("Insurance Claims", guidance.prompt)
+        self.assertIn("RetriFlow Migration", guidance.prompt)
+
+    def test_intent_tree_is_cached_in_redis_and_cleared_on_admin_change(self) -> None:
+        import redis
+
+        redis_url = os.getenv("RETRIFLOW_TEST_REDIS_URL", "redis://127.0.0.1:6379/15")
+        cache_key = f"retriflow:test:intent:tree:{uuid.uuid4().hex}"
+        client = redis.Redis.from_url(redis_url, decode_responses=True)
+        client.ping()
+        client.delete(cache_key)
+
+        os.environ["RETRIFLOW_INTENT_TREE_CACHE_ENABLED"] = "true"
+        os.environ["RETRIFLOW_INTENT_TREE_CACHE_REDIS_URL"] = redis_url
+        os.environ["RETRIFLOW_INTENT_TREE_CACHE_KEY"] = cache_key
+
+        from core.config import get_settings
+        from modules.admin import RetriFlowAdminService
+        from modules.knowledge.routing import RetriFlowKnowledgeRouteService
+        from schemas.admin import AdminIntentNodeCreateRequest
+
+        get_settings.cache_clear()
+        RetriFlowAdminService().create_intent_node(
+            AdminIntentNodeCreateRequest(
+                name="Cached Claims",
+                code="cached_claims",
+                level="INTENT",
+                node_type="KB",
+                knowledge_base_id="kb-1",
+                description="cached claim reimbursement",
+                sort_order=1,
+            )
+        )
+
+        decision = RetriFlowKnowledgeRouteService().route_question("cached claim reimbursement")
+
+        self.assertEqual(decision.mode, "knowledge_base")
+        self.assertTrue(client.exists(cache_key))
+
+        RetriFlowAdminService().create_intent_node(
+            AdminIntentNodeCreateRequest(
+                name="Another Cached Claims",
+                code="another_cached_claims",
+                level="INTENT",
+                node_type="KB",
+                knowledge_base_id="kb-1",
+                description="another cached claim",
+                sort_order=2,
+            )
+        )
+
+        self.assertFalse(client.exists(cache_key))
 
 
 if __name__ == "__main__":

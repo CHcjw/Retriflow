@@ -1,132 +1,120 @@
-# 产品需求文档（PRD）
+# RetriFlow PRD
 
 ## 产品概述
 
-RetriFlow 是一个基于 `Python + FastAPI + LangChain + LangGraph + LangSmith + Vue 3` 的 Agentic RAG 项目，用于复现并优化原 `ragent` 项目的核心能力。系统面向“文档驱动问答”场景，用户可以在首页直接提问，系统根据会话记忆、意图识别、查询重写、知识库路由、混合检索和工具调用自动完成回答。
+RetriFlow 是一个面向企业知识问答的 Agentic RAG 系统，使用 Python + FastAPI + LangChain/LangGraph 与 Vue 3 实现，目标是在 Python 技术栈中复现并逐步优化 ragent 的核心能力。
 
-当前产品已形成完整 RAG 主链路：文档解析、结构化提取、标准化清洗、分块、向量化、pgvector 持久化、BM25 + 向量混合检索、RRF 融合、rerank、三段式 Prompt 生成、答案后处理、流式 Markdown 输出、引用来源展示、会话记忆和链路追踪。
+系统支持用户在首页直接提问，由后端自动完成会话记忆、意图识别、知识库路由、查询改写、混合检索、MCP 工具调用、答案生成和链路追踪。后台用于管理知识库、文档、分块、流水线、意图树、模型健康、用户和系统配置。
 
 ## 目标用户
 
-- 需要搭建企业知识库问答系统的开发者。
-- 需要维护知识库、文档、切块、索引和检索效果的运营人员。
-- 需要从 `ragent` 迁移到 Python + Vue 技术栈的项目团队。
+- 需要搭建企业知识库问答系统的开发团队。
+- 需要维护知识库、文档、分块、索引和检索效果的运营人员。
+- 需要从 ragent 迁移到 Python + Vue 技术栈的项目团队。
 - 需要在 RAG 问答中接入 MCP 工具、会话记忆、链路追踪和后台配置的 AI 应用开发者。
 
 ## 核心功能
 
-- 登录认证：注册、登录、Bearer Token 鉴权、用户角色、admin 权限控制。
-- 首页直接聊天：用户不需要先选择知识库，系统自动做意图识别和知识库路由。
-- 流式回答：聊天页默认 SSE 流式输出，前端按 Markdown 样式渲染回答。
-- 会话管理：会话创建、会话列表、历史消息持久化、会话删除、用户隔离。
-- 多轮记忆：短期记忆使用“摘要 + 最近 N 轮”，中期和长期记忆支持 TTL、相关性筛选和 Prompt 注入上限。
-- 意图识别：知识检索、工具调用、闲聊对话、引导澄清四类意图，规则快速过滤 + LLM 精确分类，失败默认知识检索。
-- 查询重写：在记忆之后、检索之前执行指代消解、上下文补全、口语转正式、多意图拆分。
-- 文档解析：基于 Apache Tika 做 MIME 检测和文档解析，支持 PDF、DOC、DOCX、Markdown、文本和表格类文档。
-- 结构化提取：保留标题层级、正文段落、表格 row/col/header 关系、图片说明、页码。
-- OCR / 图片说明：支持本地 OCR 服务，优先从文档内嵌图片抽取说明；OCR 不可用时降级。
-- 标准化清洗：统一编码、单位格式、空值和异常值处理，关键字段使用 Pydantic schema 校验。
-- 文档分块：固定大小、重叠、递归、语义、混合分块，支持自定义 chunk size、overlap 和递归分隔符。
-- 向量持久化：使用 PostgreSQL + pgvector 存储 chunk 向量，测试环境支持内存向量存储。
-- 混合检索：BM25 Top80 + 向量 Top80，RRF Top50，rerank Top10，最终 Top5。
-- 重排序：支持 OpenAI-compatible reranker，例如 `Qwen/Qwen3-Reranker-8B`。
-- 答案生成：三段式 Prompt，包括 System Prompt、Retrieved Context、User Query，低 temperature 抑制幻觉。
-- 答案后处理：引用补齐、来源展示、安全过滤、Markdown 格式整理、兜底回复。
-- MCP 工具调用：支持内置工具和远程 MCP Server，支持顺序/并行执行、单轮多工具和失败容错。
-- 后台管理：Dashboard、知识库管理、文档管理、切块管理、意图树、关键词映射、流水线管理、链路追踪、用户管理、系统设置。
+### 必须做（当前主链路）
 
-## 功能优先级
+1. 登录与权限
+   - 支持注册、登录、Bearer Token 鉴权。
+   - 支持普通用户和 admin 角色。
+   - 后台管理操作仅 admin 可用，普通用户进入后台时给出明确权限提示。
 
-### P0：必做
+2. 首页聊天
+   - 首页就是聊天入口，不要求用户先选择知识库。
+   - 支持 SSE 流式回答和 Markdown 渲染。
+   - 支持深度思考开关、引用来源、workflow metadata 和 MCP 调用结果展示。
+   - 支持对助手消息提交 `vote/reason/comment` 反馈，反馈采用 upsert 语义并可在后台查看。
 
-- FastAPI + Vue 3 主架构。
-- 根目录统一 `.venv`。
-- 登录认证与角色权限。
-- 首页直接聊天、流式输出、Markdown 渲染。
-- 会话与消息持久化。
-- Apache Tika 文档解析与结构化提取。
-- 文档分块、向量化、pgvector 持久化。
-- BM25 + 向量混合检索、RRF、rerank、Top5 返回。
-- LangGraph 工作流适配。
-- 三段式 Prompt 生成与答案后处理。
-- 短期/中期/长期记忆第一版。
-- 意图识别和查询重写。
-- 后台知识库、文档、切块、索引、用户、系统设置基础管理。
-- PostgreSQL 初始化脚本和默认管理员账号。
-- 链路追踪真实耗时记录。
+3. 会话与记忆
+   - 支持会话创建、列表、删除、历史消息持久化。
+   - 支持短期摘要记忆、中期记忆和长期记忆。
+   - 记忆链路提供后台诊断接口，便于排查 Prompt 注入内容。
 
-### P1：增强
+4. 知识库管理
+   - 支持知识库新增、修改、列表、搜索和统计。
+   - 支持 embedding 模型与 collection name 配置。
+   - collection name 仅允许小写英文字母和数字。
+   - 支持知识库路由画像、示例问题和关键词。
 
-- 更完整的 LangGraph 节点级编排和节点级耗时。
-- 更强的意图树可视化编辑和版本管理。
-- 中长期记忆冲突合并、重要性评分和生命周期治理。
-- 更完整的 MCP 工具编排和模型原生 function calling 适配。
-- LangSmith 深度接入。
-- Dashboard 更丰富的运营指标和可视化图表。
+5. 文档管理
+   - 支持上传、修改、列表、搜索、重新索引和删除。
+   - 文档修改使用与上传一致的表单，只是填入已有配置。
+   - 上传时不再手动选择文档类型，而是选择分块策略和数据通道。
+   - 上传源文件先进入可替换文件存储，当前本地实现返回 `local://` source URI，文档列表和详情保留该 URI。
+   - 支持 Tika 解析、结构化块、表格单元格、图片说明、OCR 降级和标准化清洗。
 
-### P2：远期
+6. 分块管理
+   - 支持固定大小、递归、语义、混合和结构感知分块。
+   - 默认策略为结构感知分块。
+   - 结构感知分块保留 Markdown 标题、段落和代码块边界，默认 overlap 为 0。
+   - 列表左下角展示“共 x 条”，后台搜索为点击式下拉跳转，不做输入即跳转。
 
-- 多租户与细粒度 RBAC。
-- 异步任务队列。
-- 批量导入和评测系统。
-- 多模态文档理解和图片说明生成。
-- 更完整的审计日志和告警体系。
+7. 检索与答案生成
+   - 支持 BM25、向量召回、RRF 融合、rerank 和 final topK。
+   - 检索流程已抽象为 SearchChannel 和 SearchResultPostProcessor。
+   - 意图树路由可保留多个阈值以上的 KB 候选，最多 3 个目标参与后续检索。
+   - workflow metadata 暴露检索 stage counts 和 stage metrics，包括通道耗时、query count、topK 与后处理器输入输出数量。
+   - 使用三段式 Prompt：System Prompt、Retrieved Context、User Query。
+   - Prompt 已由场景化模板服务加载和渲染，覆盖 rewrite、intent、guidance 和 answer 场景。
+   - 答案后处理包含引用补齐、来源展示、安全过滤、Markdown 格式整理和兜底回复。
 
-## 界面设计
+8. MCP 工具调用
+   - 支持内置工具和远程 MCP Server。
+   - 支持单轮多工具顺序或并行执行。
+   - 远程 MCP Server 初始化失败时只标记该 server 不健康并跳过，不影响内置工具和其他远程工具注册。
+   - 保留远程 MCP Server 健康状态、注册工具数量和错误信息，便于后台后续治理展示。
+   - 工具调用失败应返回结构化错误，不应拖垮整个问答链路。
+   - 工具执行接入节点级 trace，并记录 server、transport 和 schema version。
 
-### 首页 / 聊天页
+9. 模型健康
+   - 支持 provider/model 级健康快照、失败计数、healthy/open/half_open 三态熔断。
+   - 支持持久化恢复、主动探测接口、半开并发保护和 provider fallback。
+   - 非流式 LLM 调用按 ragent 候选模型执行语义进行当次请求 fallback，首选 provider 调用失败后记录失败并继续尝试下一个健康候选。
+   - 后台已有模型健康 API，后续需要继续产品化为可视化面板和主动任务。
 
-- 默认就是聊天入口，不要求用户先进入某个知识库。
-- 左侧展示会话列表，支持创建和删除会话。
-- 空会话展示示例问题，引导用户开始提问。
-- 中间展示消息流，AI 回答以流式 Markdown 格式输出。
-- 输入区支持深度思考开关。
-- 回答下方展示参考来源，避免直接暴露内部 API 路由或冗长路径。
-- 可展示 rewritten queries、命中来源、工作流元数据和 MCP 调用结果。
+10. 链路 Trace
+   - 支持 `rag_trace_nodes` 节点级 trace。
+   - 同步和流式聊天均记录真实运行节点。
+   - 后台 Trace 列表支持按 trace id、session id、task id、用户、状态和起止时间分页筛选。
+   - 流式 `chat.stream` 覆盖 SSE 生命周期，`generation.answer` 在完成、异常或取消时关闭。
+   - 检索节点命名对齐 ragent：`retrieval-engine`、`multi-channel-retrieval`。
+   - 意图和改写节点命名对齐 ragent：`intent-resolve`、`query-rewrite-and-split`。
 
-### 后台管理页
+11. 队列限流
+   - 支持内存 FIFO 队列和 Redis 队列。
+   - Redis 使用 Docker 服务，基于 ZSET、entry TTL、Lua claim、active permit 和 release publish。
+   - SSE 会先发 `event: queue`，内容来自 limiter snapshot。
+   - 超时拒绝会持久化用户问题和助手忙碌回复，并发送 `reject`、`final`、`done`。
+   - 等待中断开连接会清理 memory/Redis 等待项。
 
-- 普通用户进入后台时隐藏管理操作，并给出明确的无权限提示。
-- admin 用户可管理知识库、文档、切块、索引、用户和系统配置。
-- 知识库管理采用“知识库 -> 文档 -> 切块”的层级体验。
-- 文档列表展示来源、状态、索引状态、chunk 数、上传时间、最近索引时间。
-- 切块表格避免文字挤压成竖排，长文本可换行展示。
-- Dashboard 支持 24h / 7d / 30d 范围切换，并联动图表和统计卡片。
-- 链路追踪展示 trace 列表、详情、消息节点、真实耗时、平均耗时和 P95。
+### 后续继续对齐 ragent
 
-## 技术栈建议
+1. 流式 Trace 还需要更完整的实时覆盖和后台可视化验证。
+2. Redis 队列还缺更细的队列位置遥测；用户级并发只有在 ragent 或产品需求明确后再做。
+3. Ingestion runtime 还需继续贴近 ragent 的节点上下文、条件执行和输出抽取。
+4. 意图树 resolver 已支持多 KB 候选保留、父节点 fallback、多 query 路由合并和接近分数下的澄清引导；但还需要更深的置信度传播、节点级参数和完整 trace。
+5. 检索插件体系已具备 channel/postprocessor 抽象和 stage metrics，但还缺 ES 真实通道、缓存、版本过滤和更完整治理。
+6. MCP 已具备远程 server 注册健康状态和失败跳过机制，但还缺原生模型 function calling 与更完整的远程治理展示。
+7. 模型健康已有后台 API、手动 probe、熔断、持久化和非流式当次请求 fallback；还缺更完整后台面板、定时探测、启动预热和流式首包探针 fallback。
+8. 后台 UI 还需要继续从 `AdminView` 拆成 ragent 风格的独立管理面板。
 
-- 后端：`Python 3.12`、`FastAPI`、`LangChain`、`LangGraph`、`LangSmith`、`Pydantic`、`httpx`、`psycopg`。
-- 前端：`Vue 3`、`TypeScript`、`Vite`、`Vue Router`、`Pinia`、`Axios`。
-- 数据库：`PostgreSQL`，测试兼容 `SQLite`。
-- 向量存储：`pgvector`，测试兼容内存向量存储。
-- 文档解析：`Apache Tika`。
-- OCR：本地 OCR 服务，推荐通过 Docker Desktop 管理。
-- 本地模型：`Ollama` 可用于意图识别、查询重写、路由和记忆摘要等轻量任务。
-- 在线模型：支持 OpenAI-compatible API，例如 SiliconFlow、DashScope、DeepSeek 等。
+## 后台界面设计
 
-## 代码风格和架构模式
+- 后台保持左侧侧边栏布局，缩放和窄屏时侧边栏不能跳到顶部。
+- 侧边栏每个入口都需要有清晰 icon。
+- 知识库、文档、分块等列表统一在左下角展示“共 x 条”。
+- 搜索框只有在 focus 且输入内容后显示下拉结果，鼠标离开或失焦后隐藏。
+- 下拉结果由用户点击后跳转，不进行输入实时跳转。
+- 所有下拉框需要使用统一的产品化样式，避免浏览器原生选择框的突兀感。
+- Trace 详情采用 ragent 风格的执行耗时表，不堆叠无关调试卡片。
+- 系统设置页需要逐步拆成独立后台面板；模型健康已独立展示 provider/model 状态汇总、手动探测表单和快照表格。
 
-- 后端采用 `api / core / modules / infra / schemas / tests` 分层。
-- `modules/` 存放业务模块：auth、chat、session、knowledge、ingestion、memory、mcp、rag、admin。
-- `infra/` 存放基础设施适配：llm、embeddings、vector_store、document_parser。
-- `domain/` 已移除；新业务代码和测试必须从 `modules` 或 `infra` 导入。
-- API 层保持薄，只做参数接收、鉴权依赖和 service 调用。
-- 配置集中在 `backend/src/core/config.py`。
-- 数据库连接、初始化、自动补表和 seed 集中在 `backend/src/core/state.py`。
-- 前端常规 HTTP 请求使用 Axios，流式聊天保留 SSE / `fetch + ReadableStream`。
-- Vue 使用 Composition API 和 `<script setup lang="ts">`。
-- 修改接口、数据库、RAG 链路、后台能力或配置后，需要同步更新 `docx/` 文档。
+## 产品边界
 
-## 限制条件和边界场景
-
-- 正式运行默认使用 PostgreSQL；SQLite 仅用于测试和兼容模式。
-- 默认向量存储是 pgvector；测试中应显式设置 `RETRIFLOW_VECTOR_STORE_TYPE=memory`，避免连接外部 PostgreSQL。
-- pgvector 向量维度必须与 embedding 模型一致。
-- Tika 不可用时，文本类文档允许 UTF-8 fallback；复杂文档解析能力会下降。
-- OCR 不可用时，图片说明能力会退化。
-- LLM、embedding 或 reranker 不可用时允许降级，但检索和生成质量会下降。
-- 查询重写失败时必须回退到原始问题，不能阻断主检索链路。
-- 意图识别失败时默认走知识检索。
-- 新消息必须写入 `conversation_messages.duration_ms`；历史消息没有耗时时，链路追踪才允许回退到时间戳估算。
-- 默认 PostgreSQL seed 管理员账号为 `admin / admin`，密码哈希必须与当前 Python 校验算法一致。
+- 不新增 ragent 源码没有体现、RetriFlow 也没有真实支撑的空功能。
+- ES 只在存在真实后端实现后接入；当前不添加空 Elasticsearch 服务。
+- `guidance-detect` 属于 ragent 意图树候选歧义检测，RetriFlow 当前简单澄清意图不等价，不能伪造 trace 节点。
+- `conversation-title-gen` 属于 ragent 的 LLM 标题生成，RetriFlow 当前是请求/手动标题，不添加伪 trace。

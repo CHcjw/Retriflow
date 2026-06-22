@@ -1,4 +1,5 @@
 import os
+import sys
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -7,6 +8,15 @@ import uvicorn
 from api.router import router
 from core.config import get_settings
 from core.state import get_connection, initialize_database
+
+
+def configure_utf8_stdio() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
+
+
+configure_utf8_stdio()
 
 
 def create_app() -> FastAPI:

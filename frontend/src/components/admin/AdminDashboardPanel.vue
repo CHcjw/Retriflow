@@ -370,7 +370,7 @@ function insightTone(insight: AdminDashboardOpsInsight): string {
 <style scoped>
 .dashboard-panel {
   display: grid;
-  gap: 24px;
+  gap: 20px;
 }
 
 .dashboard-head,
@@ -382,7 +382,7 @@ function insightTone(insight: AdminDashboardOpsInsight): string {
 }
 
 .dashboard-head {
-  align-items: flex-start;
+  align-items: center;
 }
 
 .dashboard-head h1,
@@ -396,9 +396,10 @@ function insightTone(insight: AdminDashboardOpsInsight): string {
 .dashboard-head p,
 .panel-head p,
 .section-head p {
-  margin: 8px 0 0;
+  display: none;
+  margin: 0;
   color: #607089;
-  line-height: 1.6;
+  line-height: 1.5;
 }
 
 .dashboard-actions {
@@ -418,9 +419,9 @@ function insightTone(insight: AdminDashboardOpsInsight): string {
 
 .range-switch button,
 .refresh-btn {
-  min-height: 42px;
+  min-height: 40px;
   border: 0;
-  border-radius: 10px;
+  border-radius: 8px;
   padding: 0 16px;
   font: inherit;
   font-weight: 800;
@@ -453,15 +454,16 @@ function insightTone(insight: AdminDashboardOpsInsight): string {
 .core-card,
 .panel-card {
   border: 1px solid rgba(222, 230, 240, 0.92);
-  border-radius: 24px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 251, 255, 0.94));
-  box-shadow: 0 22px 60px rgba(15, 23, 42, 0.07);
+  border-radius: 20px;
+  background: #ffffff;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.05);
 }
 
 .core-card {
   display: grid;
-  gap: 10px;
-  padding: 22px 24px;
+  min-height: 118px;
+  gap: 7px;
+  padding: 18px 20px;
 }
 
 .core-card span,
@@ -470,7 +472,7 @@ function insightTone(insight: AdminDashboardOpsInsight): string {
 .ai-metric span,
 .traffic-mini-stats i {
   color: #6a7a92;
-  font-size: 13px;
+  font-size: 14px;
   font-style: normal;
 }
 
@@ -480,7 +482,7 @@ function insightTone(insight: AdminDashboardOpsInsight): string {
 .ai-metric strong,
 .traffic-mini-stats strong {
   color: #162033;
-  font-size: 30px;
+  font-size: 28px;
   line-height: 1;
 }
 
@@ -500,7 +502,7 @@ function insightTone(insight: AdminDashboardOpsInsight): string {
 }
 
 .panel-card {
-  padding: 24px;
+  padding: 18px 22px;
 }
 
 .traffic-mini-stats {
@@ -516,14 +518,18 @@ function insightTone(insight: AdminDashboardOpsInsight): string {
 
 .main-chart,
 .mini-chart {
-  margin-top: 22px;
+  margin-top: 16px;
 }
 
 .main-chart svg,
 .mini-chart svg {
   width: 100%;
-  height: auto;
+  height: 210px;
   display: block;
+}
+
+.mini-chart svg {
+  height: 150px;
 }
 
 .chart-grid line {
@@ -550,7 +556,7 @@ function insightTone(insight: AdminDashboardOpsInsight): string {
   display: flex;
   flex-wrap: wrap;
   gap: 14px;
-  margin-top: 16px;
+  margin-top: 12px;
   color: #5d6d86;
   font-size: 13px;
 }
@@ -575,9 +581,9 @@ function insightTone(insight: AdminDashboardOpsInsight): string {
 
 .ai-performance {
   display: grid;
-  grid-template-columns: 190px 1fr;
-  gap: 18px;
-  margin-top: 20px;
+  grid-template-columns: 140px 1fr;
+  gap: 14px;
+  margin-top: 16px;
 }
 
 .gauge-card {
@@ -587,8 +593,8 @@ function insightTone(insight: AdminDashboardOpsInsight): string {
 
 .gauge-shell {
   position: relative;
-  width: 180px;
-  height: 180px;
+  width: 136px;
+  height: 136px;
   display: grid;
   place-items: center;
 }
@@ -614,8 +620,8 @@ function insightTone(insight: AdminDashboardOpsInsight): string {
 
 .gauge-center {
   position: relative;
-  width: 106px;
-  height: 106px;
+  width: 82px;
+  height: 82px;
   display: grid;
   place-items: center;
   gap: 6px;
@@ -629,13 +635,13 @@ function insightTone(insight: AdminDashboardOpsInsight): string {
 }
 
 .gauge-center strong {
-  font-size: 28px;
+  font-size: 24px;
 }
 
 .ai-metrics {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
+  gap: 12px;
 }
 
 .ai-metric,
@@ -649,20 +655,22 @@ function insightTone(insight: AdminDashboardOpsInsight): string {
 
 .ai-metric {
   display: grid;
-  gap: 8px;
-  padding: 16px;
+  gap: 6px;
+  padding: 10px 12px;
 }
 
 .quality-bars {
   display: grid;
-  gap: 12px;
-  margin-top: 18px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 14px;
 }
 
 .quality-bar {
   display: grid;
-  gap: 8px;
-  padding: 14px 16px;
+  align-content: start;
+  gap: 6px;
+  padding: 12px 14px;
 }
 
 .quality-bar.success {
@@ -676,18 +684,26 @@ function insightTone(insight: AdminDashboardOpsInsight): string {
 .dashboard-body {
   display: grid;
   grid-template-columns: minmax(0, 1.5fr) minmax(320px, 0.72fr);
+  align-items: stretch;
   gap: 20px;
+}
+
+.trend-section,
+.side-section {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  align-content: stretch;
 }
 
 .trend-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 18px;
-  margin-top: 18px;
+  gap: 16px;
+  margin-top: 14px;
 }
 
 .trend-card {
-  padding: 20px;
+  padding: 16px;
 }
 
 .panel-head.compact,
@@ -705,20 +721,19 @@ function insightTone(insight: AdminDashboardOpsInsight): string {
 }
 
 .side-section {
-  display: grid;
-  gap: 20px;
+  gap: 16px;
 }
 
 .metric-stack {
   display: grid;
-  gap: 12px;
-  margin-top: 18px;
+  gap: 10px;
+  margin-top: 14px;
 }
 
 .metric-row {
   display: grid;
-  gap: 8px;
-  padding: 16px;
+  gap: 6px;
+  padding: 12px;
 }
 
 .metric-row.warning {
@@ -730,20 +745,20 @@ function insightTone(insight: AdminDashboardOpsInsight): string {
 }
 
 .insight-card {
-  padding: 24px;
+  padding: 18px 22px;
 }
 
 .insight-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
-  margin-top: 18px;
+  gap: 14px;
+  margin-top: 14px;
 }
 
 .insight-item {
   display: grid;
-  gap: 12px;
-  padding: 18px;
+  gap: 10px;
+  padding: 14px;
 }
 
 .insight-meta {
@@ -795,6 +810,7 @@ function insightTone(insight: AdminDashboardOpsInsight): string {
   .core-grid,
   .hero-grid,
   .dashboard-body,
+  .quality-bars,
   .trend-grid,
   .insight-grid {
     grid-template-columns: 1fr;

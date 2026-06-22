@@ -1,10 +1,18 @@
 <script setup lang="ts">
-import { computed, ref, shallowRef } from "vue";
+import { computed, ref, shallowRef, watch } from "vue";
 import { useRouter } from "vue-router";
 
 import AdminDashboardPanel from "../components/admin/AdminDashboardPanel.vue";
 import { useRetriFlowAdmin } from "../composables/useRetriFlowAdmin";
-import { deleteKnowledgeChunk, updateKnowledgeChunk, updateKnowledgeChunks, type IngestionPipelineNodeConfig } from "../services/api";
+import {
+  deleteKnowledgeChunk,
+  downloadKnowledgeDocumentSource,
+  fetchKnowledgeDocumentPreview,
+  updateKnowledgeChunk,
+  updateKnowledgeChunks,
+  type IngestionPipelineNodeConfig,
+  type KnowledgeDocumentPreviewResponse
+} from "../services/api";
 import { useAuthStore } from "../stores/auth";
 
 type AdminTab =
@@ -30,6 +38,7 @@ const {
   loading,
   documentLoading,
   chunkLoading,
+  taskNodeLoading,
   uploadLoading,
   reindexLoading,
   error,
@@ -43,25 +52,44 @@ const {
   chunks,
   ingestionPipelines,
   ingestionTasks,
+  selectedDocumentTask,
   ingestionTaskNodes,
   adminUsers,
   adminDashboard,
   adminIntentNodes,
   adminKeywordMappings,
   adminTraces,
+  adminTraceTotal,
+  adminTracePage,
+  adminTracePageSize,
+  adminTraceId,
   selectedAdminTrace,
+  selectedAdminTraceNodes,
   adminSettings,
   canManageKnowledge,
   dashboardRange,
   readonlyNotice,
-  uploadDocumentType,
+  relatedTask,
+  uploadProcessMode,
+  uploadPipelineId,
   uploadChunkStrategy,
   uploadChunkSize,
   uploadChunkOverlap,
+  uploadStructureMaxChars,
+  uploadStructureMinChars,
   uploadRecursiveSeparatorsText,
+  documentProcessMode,
+  documentPipelineId,
+  documentChunkStrategy,
+  documentChunkSize,
+  documentChunkOverlap,
+  documentStructureMaxChars,
+  documentStructureMinChars,
+  documentRecursiveSeparatorsText,
   documentTypeOptions,
   chunkStrategyOptions,
   uploadChunkSummary,
+  uploadShowChunkSizeControls,
   uploadAutoStrategyRecommendation,
   uploadRecursiveSeparatorSummary,
   uploadShowRecursiveSeparatorControls,
@@ -77,6 +105,11 @@ const {
   loadTaskNodes,
   refreshKnowledgeData,
   uploadDocument,
+  saveKnowledgeBase,
+  saveDocument,
+  saveChunk,
+  syncDocumentEditorDefaults,
+  reindexDocumentWithOptions,
   reindexDocument,
   routeProfileLoading,
   routeProfile,
@@ -86,6 +119,9 @@ const {
   addSampleQuestion,
   removeSampleQuestion,
   changeUserRole,
+  saveUser,
+  removeUser,
+  changeOwnPassword,
   createUser,
   loadDashboard,
   createIntentNode,
@@ -94,6 +130,8 @@ const {
   createKeywordMapping,
   updateKeywordMapping,
   removeKeywordMapping,
+  loadAdminTraces,
+  searchAdminTraces,
   loadTraceDetail,
   clearTraceDetail
 } = useRetriFlowAdmin();
@@ -120,22 +158,50 @@ const newKeywordRemark = shallowRef("");
 const newSampleQuestion = shallowRef("");
 const newSampleTitle = shallowRef("");
 const newSampleDescription = shallowRef("");
-const selectedTaskId = shallowRef<number | null>(null);
+const pipelineSearch = shallowRef("");
+const ingestionTaskStatusFilter = shallowRef("all");
+const newPipelineTaskPipelineId = shallowRef<number | null>(null);
+const newPipelineTaskSourceType = shallowRef("local_file");
+const newPipelineTaskFile = shallowRef<File | null>(null);
+const newPipelineTaskFileInput = ref<HTMLInputElement | null>(null);
+const newPipelineTaskMetadataText = shallowRef('{"source":"manual"}');
 const intentSearch = shallowRef("");
 const intentMode = shallowRef<"list" | "tree">("tree");
 const selectedIntentNodeId = shallowRef("");
 const keywordSearch = shallowRef("");
 const sampleQuestionSearch = shallowRef("");
 const pipelineTab = shallowRef<"pipelines" | "tasks">("pipelines");
-const traceSearch = shallowRef("");
+const pipelineMenuOpen = shallowRef(false);
 const userSearch = shallowRef("");
 const newAdminUsername = shallowRef("");
 const newAdminPassword = shallowRef("");
 const newAdminRole = shallowRef("user");
 const newAdminAvatarUrl = shallowRef("");
-const selectedFileInput = ref<HTMLInputElement | null>(null);
+const editingKnowledgeBaseId = shallowRef("");
+const editingDocumentId = shallowRef<number | null>(null);
+const editingChunkId = shallowRef<number | null>(null);
+const editingUserId = shallowRef("");
+const editDocumentTitle = shallowRef("");
+const editDocumentEnabled = shallowRef(true);
+const editChunkContent = shallowRef("");
+const editChunkEnabled = shallowRef(true);
+const inlineUploadFileInput = ref<HTMLInputElement | null>(null);
+const modalUploadFileInput = ref<HTMLInputElement | null>(null);
+const documentPreviewLoading = shallowRef(false);
+const documentPreview = shallowRef<KnowledgeDocumentPreviewResponse | null>(null);
 const activeAdminModal = shallowRef<
-  "intent" | "keyword" | "knowledgeBase" | "pipeline" | "sampleQuestion" | "uploadDocument" | "user" | null
+  | "chunkEdit"
+  | "documentEdit"
+  | "documentPreview"
+  | "intent"
+  | "keyword"
+  | "knowledgeBase"
+  | "pipeline"
+  | "pipelineTask"
+  | "sampleQuestion"
+  | "uploadDocument"
+  | "user"
+  | null
 >(null);
 
 const newIntentName = shallowRef("");
@@ -163,11 +229,44 @@ function parseLines(value: string): string[] {
     .filter(Boolean);
 }
 
-const knowledgeEmbeddingModelOptions = ["qwen-emb-8b", "BAAI/bge-m3", "text-embedding-v3"];
+const baseKnowledgeEmbeddingModelOptions = ["qwen-emb-8b", "Qwen/Qwen3-Embedding-8B", "BAAI/bge-m3", "text-embedding-v3"];
 const newKnowledgeEmbeddingModel = shallowRef("qwen-emb-8b");
 const newKnowledgeCollectionName = shallowRef("");
 
 const uploadAccept = ".txt,.md,.pdf,.doc,.docx,.xls,.xlsx,.html,.htm,text/plain,text/markdown,application/pdf";
+const tablePageSize = 10;
+const knowledgeBasePage = shallowRef(1);
+const documentPage = shallowRef(1);
+const chunkPage = shallowRef(1);
+const realIntentPage = shallowRef(1);
+const keywordPage = shallowRef(1);
+const pipelinePage = shallowRef(1);
+const ingestionTaskPage = shallowRef(1);
+const tracePage = shallowRef(1);
+const userPage = shallowRef(1);
+const sampleQuestionPage = shallowRef(1);
+
+function totalPages(total: number) {
+  return Math.max(1, Math.ceil(total / tablePageSize));
+}
+
+function pageSlice<T>(items: T[], page: number) {
+  const currentPage = Math.min(Math.max(1, page), totalPages(items.length));
+  const start = (currentPage - 1) * tablePageSize;
+  return items.slice(start, start + tablePageSize);
+}
+
+function paginationLabel(total: number, page: number) {
+  return `第 ${Math.min(Math.max(1, page), totalPages(total))} / ${totalPages(total)} 页，共 ${total} 条`;
+}
+
+function previousPage(pageRef: { value: number }) {
+  pageRef.value = Math.max(1, pageRef.value - 1);
+}
+
+function nextPage(pageRef: { value: number }, total: number) {
+  pageRef.value = Math.min(totalPages(total), pageRef.value + 1);
+}
 
 const dashboardStats = computed(() => ({
   knowledgeBaseCount: knowledgeBases.value.length,
@@ -186,6 +285,18 @@ const filteredKnowledgeBases = computed(() => {
   });
 });
 
+const pagedKnowledgeBases = computed(() => pageSlice(filteredKnowledgeBases.value, knowledgeBasePage.value));
+
+const knowledgeEmbeddingModelOptions = computed(() =>
+  Array.from(
+    new Set([
+      ...baseKnowledgeEmbeddingModelOptions,
+      ...knowledgeBases.value.map((item) => item.embedding_model).filter(Boolean),
+      newKnowledgeEmbeddingModel.value
+    ])
+  )
+);
+
 const filteredDocuments = computed(() => {
   const query = documentSearch.value.trim().toLowerCase();
   return documents.value.filter((item) => {
@@ -200,6 +311,8 @@ const filteredDocuments = computed(() => {
   });
 });
 
+const pagedDocuments = computed(() => pageSlice(filteredDocuments.value, documentPage.value));
+
 const filteredChunks = computed(() => {
   if (chunkStatusFilter.value === "all") {
     return chunks.value;
@@ -210,18 +323,11 @@ const filteredChunks = computed(() => {
   return chunks.value.filter((item) => !item.enabled);
 });
 
+const pagedChunks = computed(() => pageSlice(filteredChunks.value, chunkPage.value));
+
 const allVisibleChunksSelected = computed(() => {
-  return filteredChunks.value.length > 0 && filteredChunks.value.every((item) => selectedChunkIds.value.includes(item.id));
+  return pagedChunks.value.length > 0 && pagedChunks.value.every((item) => selectedChunkIds.value.includes(item.id));
 });
-
-const selectedTask = computed(() => {
-  if (!selectedDocumentId.value) {
-    return null;
-  }
-  return ingestionTasks.value.find((task) => task.document_id === selectedDocumentId.value) ?? null;
-});
-
-const selectedPipelineTask = computed(() => ingestionTasks.value.find((item) => item.id === selectedTaskId.value) ?? null);
 
 const legacyPipelineRows = computed(() => [
   {
@@ -256,8 +362,9 @@ const pipelineNodeTypeOptions = [
   "custom"
 ];
 
-const pipelineRows = computed(() =>
-  ingestionPipelines.value.map((pipeline) => ({
+const pipelineRows = computed(() => {
+  const query = pipelineSearch.value.trim().toLowerCase();
+  return ingestionPipelines.value.map((pipeline) => ({
     id: pipeline.id,
     name: pipeline.name,
     description: pipeline.description || "-",
@@ -266,8 +373,19 @@ const pipelineRows = computed(() =>
     updatedAt: pipeline.updated_at,
     taskCount: pipeline.name === "retriflow-ingestion-pipeline" ? ingestionTasks.value.length : 0,
     nodes: pipeline.nodes
-  }))
+  })).filter((pipeline) => {
+    if (!query) {
+      return true;
+    }
+    return `${pipeline.name} ${pipeline.description}`.toLowerCase().includes(query);
+  });
+});
+
+const pagedPipelineRows = computed(() => pageSlice(pipelineRows.value, pipelinePage.value));
+const filteredIngestionTasks = computed(() =>
+  ingestionTasks.value.filter((task) => ingestionTaskStatusFilter.value === "all" || task.status === ingestionTaskStatusFilter.value)
 );
+const pagedIngestionTasks = computed(() => pageSlice(filteredIngestionTasks.value, ingestionTaskPage.value));
 
 const intentRows = computed(() => {
   const profile = routeProfile.value;
@@ -300,6 +418,8 @@ const intentRows = computed(() => {
     return !query || item.name.toLowerCase().includes(query) || item.id.toLowerCase().includes(query);
   });
 });
+
+const pagedIntentRows = computed(() => pageSlice(intentRows.value, realIntentPage.value));
 
 const keywordRows = computed(() => {
   const keywords = routeProfile.value?.keywords ?? [];
@@ -344,6 +464,8 @@ const realIntentRows = computed(() => {
     });
 });
 
+const pagedRealIntentRows = computed(() => pageSlice(realIntentRows.value, realIntentPage.value));
+
 const selectedIntentNode = computed(() =>
   adminIntentNodes.value.find((item) => item.id === selectedIntentNodeId.value) ?? adminIntentNodes.value[0] ?? null
 );
@@ -378,6 +500,8 @@ const realKeywordRows = computed(() => {
     .filter((item) => !query || item.raw.toLowerCase().includes(query) || item.target.toLowerCase().includes(query));
 });
 
+const pagedRealKeywordRows = computed(() => pageSlice(realKeywordRows.value, keywordPage.value));
+
 const sampleQuestionRows = computed(() => {
   const questions = routeProfile.value?.sample_questions ?? [];
   return questions
@@ -393,8 +517,10 @@ const sampleQuestionRows = computed(() => {
     });
 });
 
+const pagedSampleQuestionRows = computed(() => pageSlice(sampleQuestionRows.value, sampleQuestionPage.value));
+
 const traceStats = computed(() => {
-  const total = adminTraces.value.length;
+  const total = adminTraceTotal.value;
   const success = total;
   const failed = 0;
   const running = 0;
@@ -415,15 +541,7 @@ const traceStats = computed(() => {
   };
 });
 
-const filteredTraces = computed(() => {
-  const query = traceSearch.value.trim().toLowerCase();
-  if (!query) {
-    return adminTraces.value;
-  }
-  return adminTraces.value.filter((trace) =>
-    [trace.id, trace.title, trace.owner_username, trace.owner_id].some((value) => value.toLowerCase().includes(query))
-  );
-});
+const filteredTraces = computed(() => adminTraces.value);
 
 const filteredAdminUsers = computed(() => {
   const query = userSearch.value.trim().toLowerCase();
@@ -433,10 +551,13 @@ const filteredAdminUsers = computed(() => {
   return adminUsers.value.filter((user) => user.username.toLowerCase().includes(query) || user.role.toLowerCase().includes(query));
 });
 
+const pagedAdminUsers = computed(() => pageSlice(filteredAdminUsers.value, userPage.value));
+
 const traceRows = computed(() =>
   filteredTraces.value.map((trace) => ({
     name: "rag-stream-chat",
     id: trace.id,
+    traceId: trace.trace_id || trace.id,
     owner: trace.owner_username || trace.owner_id || "unknown",
     messageCount: trace.message_count,
     latestMessageId: trace.latest_messages.at(-1)?.id ?? "-",
@@ -446,6 +567,8 @@ const traceRows = computed(() =>
     title: trace.title
   }))
 );
+
+const pagedTraceRows = computed(() => traceRows.value);
 
 const selectedTraceRows = computed(() => {
   if (!selectedAdminTrace.value) {
@@ -484,6 +607,43 @@ const selectedTraceStats = computed(() => {
     assistantMessages,
     totalDuration: formatDuration(selectedAdminTrace.value?.duration_ms ?? 0)
   };
+});
+
+watch([knowledgeSearch], () => {
+  knowledgeBasePage.value = 1;
+});
+
+watch([documentSearch, documentStatusFilter, selectedKnowledgeBaseId], () => {
+  documentPage.value = 1;
+});
+
+watch([chunkStatusFilter, selectedDocumentId], () => {
+  chunkPage.value = 1;
+});
+
+watch([intentSearch], () => {
+  realIntentPage.value = 1;
+});
+
+watch([keywordSearch], () => {
+  keywordPage.value = 1;
+});
+
+watch([pipelineTab, pipelineSearch, ingestionTaskStatusFilter], () => {
+  pipelinePage.value = 1;
+  ingestionTaskPage.value = 1;
+});
+
+watch(adminTraceId, () => {
+  adminTraceId.value = adminTraceId.value.replace(/\D/gu, "").slice(0, 20);
+});
+
+watch([userSearch], () => {
+  userPage.value = 1;
+});
+
+watch([sampleQuestionSearch], () => {
+  sampleQuestionPage.value = 1;
 });
 
 function settingValue(key: string, fallback = "-") {
@@ -559,6 +719,9 @@ const settingCards = computed<SettingCard[]>(() => [
 ]);
 
 const breadcrumbItems = computed(() => {
+  if (currentTab.value === "pipeline") {
+    return ["首页", "数据通道", pipelineTab.value === "pipelines" ? "流水线管理" : "流水线任务"];
+  }
   if (currentTab.value !== "knowledge") {
     return ["首页", navItems.value.find((item) => item.key === currentTab.value)?.label ?? "后台"];
   }
@@ -576,18 +739,46 @@ const navItems = computed<Array<{ key: AdminTab; label: string; group: "main" | 
   { key: "knowledge", label: "知识库管理", group: "main" },
   { key: "intent", label: "意图管理", group: "main" },
   { key: "keyword", label: "关键词映射", group: "main" },
-  { key: "pipeline", label: "流水线管理", group: "main" },
+  { key: "pipeline", label: "数据通道", group: "main" },
   { key: "trace", label: "链路追踪", group: "main" },
   { key: "users", label: "用户管理", group: "settings" },
   { key: "sampleQuestions", label: "示例问题", group: "settings" },
   { key: "settings", label: "系统设置", group: "settings" }
 ]);
 
+const navIconMap: Record<AdminTab, string> = {
+  dashboard: "▦",
+  knowledge: "▣",
+  intent: "◇",
+  keyword: "⌕",
+  pipeline: "⇧",
+  trace: "⛓",
+  users: "♙",
+  sampleQuestions: "?",
+  settings: "⚙"
+};
+
+const pipelineNavItems = [
+  { key: "pipelines" as const, label: "流水线管理", icon: "▣" },
+  { key: "tasks" as const, label: "流水线任务", icon: "▤" }
+];
+
 function activateTab(tab: AdminTab) {
+  if (tab === "pipeline") {
+    pipelineMenuOpen.value = !pipelineMenuOpen.value;
+    return;
+  }
   currentTab.value = tab;
+  pipelineMenuOpen.value = false;
   if (tab === "knowledge" && !selectedKnowledgeBaseId.value) {
     knowledgeStage.value = "knowledge-bases";
   }
+}
+
+function activatePipelineTab(tab: "pipelines" | "tasks") {
+  currentTab.value = "pipeline";
+  pipelineTab.value = tab;
+  pipelineMenuOpen.value = true;
 }
 
 function closeAdminModal() {
@@ -595,16 +786,146 @@ function closeAdminModal() {
 }
 
 function openKnowledgeBaseModal() {
+  editingKnowledgeBaseId.value = "";
   newKnowledgeBaseName.value = "";
   newKnowledgeEmbeddingModel.value = "qwen-emb-8b";
   newKnowledgeCollectionName.value = "";
   activeAdminModal.value = "knowledgeBase";
 }
 
+function openKnowledgeBaseEditModal(knowledgeBaseId: string) {
+  const knowledgeBase = knowledgeBases.value.find((item) => item.id === knowledgeBaseId);
+  if (!knowledgeBase) {
+    return;
+  }
+  editingKnowledgeBaseId.value = knowledgeBase.id;
+  newKnowledgeBaseName.value = knowledgeBase.name;
+  newKnowledgeEmbeddingModel.value = knowledgeBase.embedding_model;
+  newKnowledgeCollectionName.value = knowledgeBase.collection_name;
+  activeAdminModal.value = "knowledgeBase";
+}
+
 function openUploadDocumentModal() {
+  editingDocumentId.value = null;
+  editDocumentTitle.value = "";
+  editDocumentEnabled.value = true;
   selectedUploadFile.value = null;
   selectedUploadFileName.value = "";
+  if (modalUploadFileInput.value) {
+    modalUploadFileInput.value.value = "";
+  }
   activeAdminModal.value = "uploadDocument";
+}
+
+function openPipelineTaskModal() {
+  newPipelineTaskPipelineId.value = ingestionPipelines.value[0]?.id ?? null;
+  newPipelineTaskSourceType.value = "local_file";
+  newPipelineTaskFile.value = null;
+  newPipelineTaskMetadataText.value = '{"source":"manual"}';
+  if (newPipelineTaskFileInput.value) {
+    newPipelineTaskFileInput.value.value = "";
+  }
+  activeAdminModal.value = "pipelineTask";
+}
+
+function onPipelineTaskFileSelected(event: Event) {
+  const input = event.target as HTMLInputElement;
+  newPipelineTaskFile.value = input.files?.[0] ?? null;
+}
+
+function pipelineTaskMetadataValid() {
+  if (!newPipelineTaskMetadataText.value.trim()) {
+    return true;
+  }
+  try {
+    JSON.parse(newPipelineTaskMetadataText.value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function createPipelineTaskFromModal() {
+  if (newPipelineTaskSourceType.value !== "local_file" || !newPipelineTaskFile.value || !newPipelineTaskPipelineId.value) {
+    return;
+  }
+  if (!pipelineTaskMetadataValid()) {
+    error.value = "任务元数据不是合法 JSON。";
+    return;
+  }
+  if (!selectedKnowledgeBaseId.value && knowledgeBases.value[0]) {
+    selectKnowledgeBase(knowledgeBases.value[0].id);
+  }
+  if (!selectedKnowledgeBaseId.value) {
+    error.value = "请先创建知识库后再新建通道任务。";
+    return;
+  }
+  uploadProcessMode.value = "data_channel";
+  uploadPipelineId.value = newPipelineTaskPipelineId.value;
+  await uploadDocument(newPipelineTaskFile.value);
+  newPipelineTaskFile.value = null;
+  if (newPipelineTaskFileInput.value) {
+    newPipelineTaskFileInput.value.value = "";
+  }
+  closeAdminModal();
+  await refreshKnowledgeData();
+  pipelineTab.value = "tasks";
+}
+
+function openDocumentEditModal(documentId: number) {
+  const document = documents.value.find((item) => item.id === documentId);
+  if (!document) {
+    return;
+  }
+  editingDocumentId.value = document.id;
+  editDocumentTitle.value = document.title;
+  editDocumentEnabled.value = document.enabled;
+  uploadProcessMode.value = document.processing_mode === "data_channel" ? "data_channel" : "chunk_strategy";
+  selectedUploadFile.value = null;
+  selectedUploadFileName.value = document.source_uri || document.title;
+  if (modalUploadFileInput.value) {
+    modalUploadFileInput.value.value = "";
+  }
+  activeAdminModal.value = "uploadDocument";
+}
+
+function openChunkEditModal(chunkId: number) {
+  const chunk = chunks.value.find((item) => item.id === chunkId);
+  if (!chunk) {
+    return;
+  }
+  editingChunkId.value = chunk.id;
+  editChunkContent.value = chunk.content;
+  editChunkEnabled.value = chunk.enabled;
+  activeAdminModal.value = "chunkEdit";
+}
+
+async function openDocumentPreview(documentId: number) {
+  documentPreviewLoading.value = true;
+  documentPreview.value = null;
+  activeAdminModal.value = "documentPreview";
+  try {
+    documentPreview.value = await fetchKnowledgeDocumentPreview(selectedKnowledgeBaseId.value, documentId);
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : "文档预览失败";
+    closeAdminModal();
+  } finally {
+    documentPreviewLoading.value = false;
+  }
+}
+
+async function openDocumentSource(documentId: number) {
+  try {
+    const { blob, filename } = await downloadKnowledgeDocumentSource(selectedKnowledgeBaseId.value, documentId);
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : "源文件下载失败";
+  }
 }
 
 function openKeywordModal() {
@@ -641,10 +962,24 @@ function openSampleQuestionModal() {
 }
 
 function openUserModal() {
+  editingUserId.value = "";
   newAdminUsername.value = "";
   newAdminPassword.value = "";
   newAdminRole.value = "user";
   newAdminAvatarUrl.value = "";
+  activeAdminModal.value = "user";
+}
+
+function openUserEditModal(userId: string) {
+  const user = adminUsers.value.find((item) => item.id === userId);
+  if (!user) {
+    return;
+  }
+  editingUserId.value = user.id;
+  newAdminUsername.value = user.username;
+  newAdminPassword.value = "";
+  newAdminRole.value = user.role;
+  newAdminAvatarUrl.value = user.avatar_url;
   activeAdminModal.value = "user";
 }
 
@@ -738,6 +1073,9 @@ function addSampleQuestionFromInput() {
 }
 
 function selectedUploadFileLabel() {
+  if (editingDocumentId.value) {
+    return selectedUploadFileName.value || "保留原文件";
+  }
   return selectedUploadFile.value?.name || "未选择文件";
 }
 
@@ -763,6 +1101,18 @@ function removeSampleQuestionByValue(question: string) {
 }
 
 async function createAdminUserFromInput() {
+  if (editingUserId.value) {
+    if (!newAdminUsername.value.trim()) {
+      return;
+    }
+    await saveUser(editingUserId.value, {
+      username: newAdminUsername.value.trim(),
+      role: newAdminRole.value,
+      avatar_url: newAdminAvatarUrl.value.trim()
+    });
+    closeAdminModal();
+    return;
+  }
   if (!newAdminUsername.value.trim() || !newAdminPassword.value.trim()) {
     return;
   }
@@ -778,19 +1128,51 @@ async function createAdminUserFromInput() {
   closeAdminModal();
 }
 
-async function openPipelineTask(taskId: number) {
-  selectedTaskId.value = taskId;
-  await loadTaskNodes(taskId);
-}
-
 async function createKnowledgeBaseFromInput() {
   if (!newKnowledgeBaseName.value.trim()) {
+    return;
+  }
+  if (editingKnowledgeBaseId.value) {
+    const updated = await saveKnowledgeBase(editingKnowledgeBaseId.value, {
+      name: newKnowledgeBaseName.value.trim(),
+      embeddingModel: newKnowledgeEmbeddingModel.value,
+      collectionName: newKnowledgeCollectionName.value.trim()
+    });
+    if (updated) {
+      closeAdminModal();
+    }
     return;
   }
   await addKnowledgeBase(newKnowledgeBaseName.value);
   newKnowledgeBaseName.value = "";
   knowledgeStage.value = "knowledge-bases";
   closeAdminModal();
+}
+
+async function saveDocumentEditFromModal() {
+  if (editingDocumentId.value === null || !editDocumentTitle.value.trim()) {
+    return;
+  }
+  const updated = await saveDocument(editingDocumentId.value, {
+    title: editDocumentTitle.value.trim(),
+    enabled: editDocumentEnabled.value
+  });
+  if (updated) {
+    closeAdminModal();
+  }
+}
+
+async function saveChunkEditFromModal() {
+  if (editingChunkId.value === null || !editChunkContent.value.trim()) {
+    return;
+  }
+  const updated = await saveChunk(editingChunkId.value, {
+    content: editChunkContent.value,
+    enabled: editChunkEnabled.value
+  });
+  if (updated) {
+    closeAdminModal();
+  }
 }
 
 async function openDocuments(knowledgeBaseId: string) {
@@ -829,13 +1211,17 @@ async function onFileChange(event: Event) {
 }
 
 async function uploadSelectedDocumentFromModal() {
+  if (editingDocumentId.value !== null) {
+    await saveDocumentEditFromModal();
+    return;
+  }
   if (!selectedUploadFile.value) {
     return;
   }
   await uploadDocument(selectedUploadFile.value);
   selectedUploadFile.value = null;
-  if (selectedFileInput.value) {
-    selectedFileInput.value.value = "";
+  if (modalUploadFileInput.value) {
+    modalUploadFileInput.value.value = "";
   }
   closeAdminModal();
   await refreshKnowledgeData();
@@ -1146,17 +1532,34 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
       </div>
 
       <div class="nav-section-title">导航</div>
-      <button
+      <template
         v-for="item in navItems.filter((nav) => nav.group === 'main')"
         :key="item.key"
+      >
+      <button
         class="nav-item"
-        :class="{ active: currentTab === item.key }"
+        :class="{ active: currentTab === item.key || (item.key === 'pipeline' && pipelineMenuOpen) }"
         type="button"
         @click="activateTab(item.key)"
       >
-        <span class="nav-dot"></span>
+        <span class="nav-icon" aria-hidden="true">{{ navIconMap[item.key] }}</span>
         <span class="nav-label">{{ item.label }}</span>
+        <span v-if="item.key === 'pipeline'" class="nav-chevron" aria-hidden="true">{{ pipelineMenuOpen ? "⌄" : "›" }}</span>
       </button>
+        <div v-if="item.key === 'pipeline' && pipelineMenuOpen" class="nav-sub-items">
+          <button
+            v-for="pipelineItem in pipelineNavItems"
+            :key="pipelineItem.key"
+            class="nav-sub-item"
+            :class="{ active: currentTab === 'pipeline' && pipelineTab === pipelineItem.key }"
+            type="button"
+            @click="activatePipelineTab(pipelineItem.key)"
+          >
+            <span class="nav-icon" aria-hidden="true">{{ pipelineItem.icon }}</span>
+            <span>{{ pipelineItem.label }}</span>
+          </button>
+        </div>
+      </template>
 
       <div class="nav-section-title settings-title">设置</div>
       <button
@@ -1167,7 +1570,7 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
         type="button"
         @click="activateTab(item.key)"
       >
-        <span class="nav-dot"></span>
+        <span class="nav-icon" aria-hidden="true">{{ navIconMap[item.key] }}</span>
         <span class="nav-label">{{ item.label }}</span>
       </button>
 
@@ -1266,7 +1669,7 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="knowledgeBase in filteredKnowledgeBases" :key="knowledgeBase.id">
+                <tr v-for="knowledgeBase in pagedKnowledgeBases" :key="knowledgeBase.id">
                   <td>
                     <button class="link-btn" type="button" @click="openDocuments(knowledgeBase.id)">
                       {{ knowledgeBase.name }}
@@ -1279,7 +1682,8 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
                   <td>{{ formatDate(knowledgeBase.created_at) }}</td>
                   <td>{{ formatDate(knowledgeBase.updated_at || knowledgeBase.created_at) }}</td>
                   <td class="row-actions">
-                    <button class="ghost-btn compact" type="button" @click="openDocuments(knowledgeBase.id)">文档管理</button>
+                    <button class="ghost-btn compact" type="button" @click="openDocuments(knowledgeBase.id)">文档</button>
+                    <button class="ghost-btn compact" type="button" @click="openKnowledgeBaseEditModal(knowledgeBase.id)">修改</button>
                     <button
                       v-if="canManageKnowledge"
                       class="danger-btn compact"
@@ -1295,6 +1699,13 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
                 </tr>
               </tbody>
             </table>
+            </div>
+            <div class="table-pagination">
+              <span>{{ paginationLabel(filteredKnowledgeBases.length, knowledgeBasePage) }}</span>
+              <div>
+                <button class="ghost-btn compact" type="button" :disabled="knowledgeBasePage <= 1" @click="previousPage(knowledgeBasePage)">上一页</button>
+                <button class="ghost-btn compact" type="button" :disabled="knowledgeBasePage >= totalPages(filteredKnowledgeBases.length)" @click="nextPage(knowledgeBasePage, filteredKnowledgeBases.length)">下一页</button>
+              </div>
             </div>
           </section>
 
@@ -1319,14 +1730,22 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
 
             <section v-if="showUploadPanel" class="form-panel upload-panel">
               <label>
-                文档类型
-                <select v-model="uploadDocumentType" class="ui-input">
-                  <option v-for="option in documentTypeOptions" :key="option.value" :value="option.value">
-                    {{ option.label }}
+                处理模式
+                <select v-model="uploadProcessMode" class="ui-input">
+                  <option value="chunk_strategy">按切块策略入库</option>
+                  <option value="data_channel">按数据通道入库</option>
+                </select>
+              </label>
+              <label v-if="uploadProcessMode === 'data_channel'">
+                数据通道
+                <select v-model="uploadPipelineId" class="ui-input">
+                  <option :value="null">自动选择默认通道</option>
+                  <option v-for="pipeline in ingestionPipelines" :key="pipeline.id" :value="pipeline.id">
+                    {{ pipeline.name }}
                   </option>
                 </select>
               </label>
-              <label>
+              <label v-if="uploadProcessMode === 'chunk_strategy'">
                 切块策略
                 <select v-model="uploadChunkStrategy" class="ui-input">
                   <option v-for="option in chunkStrategyOptions" :key="option.value" :value="option.value">
@@ -1334,26 +1753,35 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
                   </option>
                 </select>
               </label>
-              <label>
+              <label v-if="uploadProcessMode === 'chunk_strategy' && uploadShowChunkSizeControls">
                 Chunk Size
                 <input v-model.number="uploadChunkSize" class="ui-input" min="200" max="1000" type="number" />
               </label>
-              <label>
+              <label v-if="uploadProcessMode === 'chunk_strategy' && uploadShowChunkSizeControls">
                 Overlap
                 <input v-model.number="uploadChunkOverlap" class="ui-input" min="0" type="number" />
               </label>
-              <label v-if="uploadShowRecursiveSeparatorControls" class="wide">
+              <label v-if="uploadProcessMode === 'chunk_strategy' && uploadChunkStrategy === 'structure_aware'" class="wide">
+                结构最大字符数
+                <input v-model.number="uploadStructureMaxChars" class="ui-input" min="200" type="number" />
+              </label>
+              <label v-if="uploadProcessMode === 'chunk_strategy' && uploadChunkStrategy === 'structure_aware'" class="wide">
+                结构最小字符数
+                <input v-model.number="uploadStructureMinChars" class="ui-input" min="50" type="number" />
+              </label>
+              <label v-if="uploadProcessMode === 'chunk_strategy' && uploadShowRecursiveSeparatorControls" class="wide">
                 递归分隔符
                 <textarea v-model="uploadRecursiveSeparatorsText" class="ui-input" rows="4"></textarea>
               </label>
-              <p class="form-hint wide">
+              <p v-if="uploadProcessMode === 'chunk_strategy'" class="form-hint wide">
                 {{ uploadChunkSummary }}
                 <span v-if="uploadAutoStrategyRecommendation"> {{ uploadAutoStrategyRecommendation }}</span>
                 <span v-if="uploadShowSemanticNotice"> 语义分块会调用 embedding 能力。</span>
                 <span v-if="uploadShowRecursiveSeparatorControls"> {{ uploadRecursiveSeparatorSummary }}</span>
               </p>
-              <input ref="selectedFileInput" :accept="uploadAccept" hidden type="file" @change="onFileChange" />
-              <button class="primary-btn wide" type="button" :disabled="uploadLoading" @click="selectedFileInput?.click()">
+              <p v-else class="form-hint wide">文档将按选定数据通道的节点配置执行解析、清洗、切块和向量化。</p>
+              <input ref="inlineUploadFileInput" :accept="uploadAccept" hidden type="file" @change="onFileChange" />
+              <button class="primary-btn wide" type="button" :disabled="uploadLoading" @click="inlineUploadFileInput?.click()">
                 {{ uploadLoading ? "上传并切块中..." : "选择文件并上传" }}
               </button>
               <p v-if="selectedUploadFileName" class="form-hint wide">最近选择：{{ selectedUploadFileName }}</p>
@@ -1394,7 +1822,7 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="document in filteredDocuments" :key="document.id">
+                  <tr v-for="document in pagedDocuments" :key="document.id">
                     <td>
                       <button
                         class="link-btn"
@@ -1422,22 +1850,26 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
                     <td>{{ document.size_label }}</td>
                     <td>{{ formatDate(document.vector_indexed_at || document.created_at) }}</td>
                     <td class="row-actions">
+                      <button class="ghost-btn compact" type="button" @click="openDocumentPreview(document.id)">
+                        预览
+                      </button>
                       <button
                         class="ghost-btn compact"
                         type="button"
                         :disabled="document.vector_chunk_count <= 0"
                         @click="openChunks(document.id)"
                       >
-                        分块管理
+                        分块
                       </button>
+                      <button class="ghost-btn compact" type="button" @click="openDocumentEditModal(document.id)">修改</button>
                       <button
                         v-if="canManageKnowledge"
                         class="ghost-btn compact"
                         type="button"
-                        :disabled="reindexLoading"
+                        :disabled="reindexLoading || document.vector_index_status === 'indexed'"
                         @click="runChunking(document.id)"
                       >
-                        开启切块
+                        切块
                       </button>
                       <button
                         v-if="canManageKnowledge"
@@ -1454,6 +1886,13 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
                   </tr>
                 </tbody>
               </table>
+              </div>
+              <div class="table-pagination">
+                <span>{{ paginationLabel(filteredDocuments.length, documentPage) }}</span>
+                <div>
+                  <button class="ghost-btn compact" type="button" :disabled="documentPage <= 1" @click="previousPage(documentPage)">上一页</button>
+                  <button class="ghost-btn compact" type="button" :disabled="documentPage >= totalPages(filteredDocuments.length)" @click="nextPage(documentPage, filteredDocuments.length)">下一页</button>
+                </div>
               </div>
             </section>
           </template>
@@ -1536,7 +1975,7 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="chunk in filteredChunks" :key="chunk.id">
+                  <tr v-for="chunk in pagedChunks" :key="chunk.id">
                     <td class="select-col">
                       <input v-model="selectedChunkIds" :value="chunk.id" type="checkbox" />
                     </td>
@@ -1552,6 +1991,7 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
                     <td>{{ chunkMetadataSummary(chunk.metadata) }}</td>
                     <td>{{ formatDate(chunk.created_at) }}</td>
                     <td class="row-actions">
+                      <button class="ghost-btn compact" type="button" @click="openChunkEditModal(chunk.id)">修改</button>
                       <button class="ghost-btn compact" type="button" @click="setChunkEnabled(chunk.id, !chunk.enabled)">
                         {{ chunk.enabled ? "禁用" : "启用" }}
                       </button>
@@ -1564,11 +2004,13 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
                 </tbody>
               </table>
               </div>
-            </section>
-
-            <section v-if="selectedTask" class="task-card">
-              <h2>最近流水线任务</h2>
-              <p>#{{ selectedTask.id }} · {{ selectedTask.status }} · {{ selectedTask.message }}</p>
+              <div class="table-pagination">
+                <span>{{ paginationLabel(filteredChunks.length, chunkPage) }}</span>
+                <div>
+                  <button class="ghost-btn compact" type="button" :disabled="chunkPage <= 1" @click="previousPage(chunkPage)">上一页</button>
+                  <button class="ghost-btn compact" type="button" :disabled="chunkPage >= totalPages(filteredChunks.length)" @click="nextPage(chunkPage, filteredChunks.length)">下一页</button>
+                </div>
+              </div>
             </section>
           </template>
         </template>
@@ -1700,7 +2142,7 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="item in realIntentRows" :key="item.id">
+                  <tr v-for="item in pagedRealIntentRows" :key="item.id">
                     <td><strong>{{ item.name }}</strong><p class="muted-line">{{ item.code }} · {{ item.id }}</p></td>
                     <td><span class="badge">{{ item.level }}</span></td>
                     <td>{{ item.type }}</td>
@@ -1718,6 +2160,13 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
                   </tr>
                 </tbody>
               </table>
+            </div>
+            <div class="table-pagination">
+              <span>{{ paginationLabel(realIntentRows.length, realIntentPage) }}</span>
+              <div>
+                <button class="ghost-btn compact" type="button" :disabled="realIntentPage <= 1" @click="previousPage(realIntentPage)">上一页</button>
+                <button class="ghost-btn compact" type="button" :disabled="realIntentPage >= totalPages(realIntentRows.length)" @click="nextPage(realIntentPage, realIntentRows.length)">下一页</button>
+              </div>
             </div>
           </section>
         </template>
@@ -1848,7 +2297,7 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="item in realKeywordRows" :key="item.id">
+                  <tr v-for="item in pagedRealKeywordRows" :key="item.id">
                     <td>{{ item.raw }}</td>
                     <td>{{ item.target }}</td>
                     <td>{{ item.matchType }}</td>
@@ -1867,6 +2316,13 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
                 </tbody>
               </table>
             </div>
+            <div class="table-pagination">
+              <span>{{ paginationLabel(realKeywordRows.length, keywordPage) }}</span>
+              <div>
+                <button class="ghost-btn compact" type="button" :disabled="keywordPage <= 1" @click="previousPage(keywordPage)">上一页</button>
+                <button class="ghost-btn compact" type="button" :disabled="keywordPage >= totalPages(realKeywordRows.length)" @click="nextPage(keywordPage, realKeywordRows.length)">下一页</button>
+              </div>
+            </div>
           </section>
         </template>
 
@@ -1874,23 +2330,21 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
           <div class="page-head">
             <div>
               <h1>数据通道</h1>
-              <p>管理文档摄取流水线，并监控解析、切块、向量化任务的执行状态。</p>
-            </div>
-            <div class="page-actions">
-              <div class="segmented-tabs">
-                <button :class="{ active: pipelineTab === 'pipelines' }" type="button" @click="pipelineTab = 'pipelines'">流水线</button>
-                <button :class="{ active: pipelineTab === 'tasks' }" type="button" @click="pipelineTab = 'tasks'">任务</button>
-              </div>
-              <button v-if="pipelineTab === 'pipelines'" class="primary-btn" type="button" @click="openCreatePipelineModal">新增流水线</button>
-              <button class="ghost-btn" type="button" @click="void refreshKnowledgeData()">刷新</button>
+              <p>{{ pipelineTab === "pipelines" ? "配置节点顺序与处理逻辑。" : "监控流水线任务执行状态。" }}</p>
             </div>
           </div>
 
           <section v-if="pipelineTab === 'pipelines'" class="table-card">
             <div class="table-toolbar">
               <div>
-                <h2>流水线管理</h2>
-                <p>当前 RetriFlow 后端已接入的文档入库流水线。</p>
+                <h2>通道流水线</h2>
+                <p>配置节点顺序与处理逻辑。</p>
+              </div>
+              <div class="toolbar-actions">
+                <input v-model="pipelineSearch" class="ui-input toolbar-input" type="text" placeholder="搜索流水线名称" />
+                <button class="ghost-btn" type="button" @click="pipelinePage = 1">搜索</button>
+                <button class="ghost-btn" type="button" @click="void refreshKnowledgeData()">刷新</button>
+                <button class="primary-btn" type="button" @click="openCreatePipelineModal">新建流水线</button>
               </div>
             </div>
             <div class="table-scroll">
@@ -1907,14 +2361,14 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="pipeline in pipelineRows" :key="pipeline.id">
+                  <tr v-for="pipeline in pagedPipelineRows" :key="pipeline.id">
                     <td><strong>{{ pipeline.name }}</strong></td>
                     <td class="wide-cell">{{ pipeline.description }}</td>
                     <td>{{ pipeline.nodeCount }}</td>
                     <td>{{ pipeline.owner }}</td>
                     <td>{{ pipeline.taskCount }}</td>
                     <td>{{ formatDate(pipeline.updatedAt) }}</td>
-                    <td><button class="ghost-btn compact" type="button" @click="pipelineTab = 'tasks'">查看任务</button></td>
+                    <td class="row-actions"><button class="ghost-btn compact" type="button" @click="pipelineTab = 'tasks'">任务</button></td>
                   </tr>
                   <tr v-if="pipelineRows.length === 0">
                     <td colspan="7" class="empty-cell">暂无流水线，请点击“新增流水线”创建。</td>
@@ -1922,22 +2376,36 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
                 </tbody>
               </table>
             </div>
+            <div class="table-pagination">
+              <span>{{ paginationLabel(pipelineRows.length, pipelinePage) }}</span>
+              <div>
+                <button class="ghost-btn compact" type="button" :disabled="pipelinePage <= 1" @click="previousPage(pipelinePage)">上一页</button>
+                <button class="ghost-btn compact" type="button" :disabled="pipelinePage >= totalPages(pipelineRows.length)" @click="nextPage(pipelinePage, pipelineRows.length)">下一页</button>
+              </div>
+            </div>
           </section>
 
-          <section v-else class="admin-grid-two">
-            <article class="table-card">
+          <section v-else class="table-card">
               <div class="table-toolbar">
                 <div>
                   <h2>通道任务</h2>
-                  <p>监控执行状态与节点日志，共 {{ ingestionTasks.length }} 条任务。</p>
+                  <p>监控执行状态，共 {{ filteredIngestionTasks.length }} 条任务。</p>
                 </div>
                 <div class="toolbar-actions">
+                  <select v-model="ingestionTaskStatusFilter" class="ui-input toolbar-select">
+                    <option value="all">全部状态</option>
+                    <option value="pending">pending</option>
+                    <option value="running">running</option>
+                    <option value="completed">completed</option>
+                    <option value="failed">failed</option>
+                  </select>
                   <button class="ghost-btn" type="button" @click="void refreshKnowledgeData()">刷新</button>
-                  <button class="ghost-btn" type="button" @click="activateTab('knowledge')">上传文件</button>
+                  <button class="ghost-btn" type="button" @click="openPipelineTaskModal">上传文件</button>
+                  <button class="primary-btn" type="button" @click="openPipelineTaskModal">新建任务</button>
                 </div>
               </div>
               <div class="table-scroll">
-                <table class="data-table pipeline-table">
+                <table class="data-table pipeline-table pipeline-task-table">
                   <thead>
                     <tr>
                       <th>任务 ID</th>
@@ -1947,11 +2415,10 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
                       <th>状态</th>
                       <th>分块数</th>
                       <th>创建时间</th>
-                      <th>操作</th>
                     </tr>
                   </thead>
                   <tbody>
-                    <tr v-for="task in ingestionTasks" :key="task.id" @click="openPipelineTask(task.id)">
+                    <tr v-for="task in pagedIngestionTasks" :key="task.id">
                       <td>#{{ task.id }}</td>
                       <td>{{ task.knowledge_base_id }}</td>
                       <td>{{ task.document_id }}</td>
@@ -1963,28 +2430,20 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
                       </td>
                       <td>{{ task.chunk_count }}</td>
                       <td>{{ formatDate(task.created_at) }}</td>
-                      <td><button class="ghost-btn compact" type="button" @click.stop="openPipelineTask(task.id)">节点日志</button></td>
                     </tr>
-                    <tr v-if="ingestionTasks.length === 0">
-                      <td colspan="8" class="empty-cell">暂无流水线任务。</td>
+                    <tr v-if="filteredIngestionTasks.length === 0">
+                      <td colspan="7" class="empty-cell">暂无流水线任务。</td>
                     </tr>
                   </tbody>
                 </table>
               </div>
-            </article>
-
-            <article class="task-card">
-              <h2>节点日志</h2>
-              <p v-if="selectedPipelineTask">任务 #{{ selectedPipelineTask.id }}：{{ selectedPipelineTask.message }}</p>
-              <p v-else>点击左侧任务查看节点明细。</p>
-              <div class="node-list">
-                <div v-for="node in ingestionTaskNodes" :key="node.id" class="node-item">
-                  <span class="status-pill" :class="{ success: node.success, danger: !node.success }">{{ node.node_type }}</span>
-                  <strong>#{{ node.node_order }} · {{ node.duration_ms }}ms</strong>
-                  <p>{{ node.message }}</p>
+              <div class="table-pagination">
+                <span>{{ paginationLabel(filteredIngestionTasks.length, ingestionTaskPage) }}</span>
+                <div>
+                  <button class="ghost-btn compact" type="button" :disabled="ingestionTaskPage <= 1" @click="previousPage(ingestionTaskPage)">上一页</button>
+                  <button class="ghost-btn compact" type="button" :disabled="ingestionTaskPage >= totalPages(filteredIngestionTasks.length)" @click="nextPage(ingestionTaskPage, filteredIngestionTasks.length)">下一页</button>
                 </div>
               </div>
-            </article>
           </section>
         </template>
 
@@ -1993,20 +2452,14 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
             <div class="page-head">
               <div>
                 <h1>链路追踪</h1>
-                <p>独立列表页聚焦运行检索，点击任意运行记录进入详情页分析节点与消息链路。</p>
+                <p>按 TraceID 检索运行记录，点击查看链路详情。</p>
               </div>
               <div class="page-actions">
-                <input v-model="traceSearch" class="ui-input" type="text" placeholder="搜索 Trace Id / 用户 / 标题" />
-                <button class="ghost-btn" type="button" @click="void refreshKnowledgeData()">刷新</button>
+                <input v-model="adminTraceId" class="ui-input" inputmode="numeric" maxlength="20" type="text" placeholder="输入 20 位 TraceID" />
+                <button class="ghost-btn" type="button" @click="void searchAdminTraces()">搜索</button>
+                <button class="ghost-btn" type="button" @click="void loadAdminTraces(adminTracePage)">刷新</button>
               </div>
             </div>
-
-            <section class="metric-grid trace-metrics">
-              <article class="metric-card"><span>成功 / 失败 / 运行中</span><strong>{{ traceStats.success }} / {{ traceStats.failed }} / {{ traceStats.running }}</strong></article>
-              <article class="metric-card"><span>成功率</span><strong>{{ traceStats.successRate }}%</strong></article>
-              <article class="metric-card"><span>平均耗时</span><strong>{{ traceStats.averageMs }}</strong></article>
-              <article class="metric-card"><span>P95 耗时</span><strong>{{ traceStats.p95Ms }}</strong></article>
-            </section>
 
             <section class="table-card">
               <div class="table-scroll">
@@ -2024,9 +2477,9 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
                     </tr>
                   </thead>
                   <tbody>
-                    <tr v-for="trace in traceRows" :key="trace.id">
+                    <tr v-for="trace in pagedTraceRows" :key="trace.id">
                       <td><strong>{{ trace.name }}</strong><p class="muted-line">{{ trace.title }}</p></td>
-                      <td>{{ trace.id }}</td>
+                      <td>{{ trace.traceId }}</td>
                       <td>{{ trace.id }} / {{ trace.latestMessageId }}</td>
                       <td>{{ trace.owner }}</td>
                       <td>{{ trace.duration }}</td>
@@ -2039,6 +2492,13 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
                     </tr>
                   </tbody>
                 </table>
+              </div>
+              <div class="table-pagination">
+                <span>第 {{ adminTracePage }} / {{ Math.max(1, Math.ceil(adminTraceTotal / adminTracePageSize)) }} 页，共 {{ adminTraceTotal }} 条</span>
+                <div>
+                  <button class="ghost-btn compact" type="button" :disabled="adminTracePage <= 1" @click="void loadAdminTraces(adminTracePage - 1)">上一页</button>
+                  <button class="ghost-btn compact" type="button" :disabled="adminTracePage >= Math.max(1, Math.ceil(adminTraceTotal / adminTracePageSize))" @click="void loadAdminTraces(adminTracePage + 1)">下一页</button>
+                </div>
               </div>
             </section>
           </template>
@@ -2096,19 +2556,6 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
                 </div>
               </article>
 
-              <article class="task-card trace-side-card">
-                <h2>链路摘要</h2>
-                <dl class="setting-list">
-                  <dt>Trace Id</dt>
-                  <dd>{{ selectedAdminTrace.id }}</dd>
-                  <dt>会话标题</dt>
-                  <dd>{{ selectedAdminTrace.title }}</dd>
-                  <dt>用户</dt>
-                  <dd>{{ selectedAdminTrace.owner_username || selectedAdminTrace.owner_id || "unknown" }}</dd>
-                  <dt>消息数</dt>
-                  <dd>{{ selectedAdminTrace.message_count }}</dd>
-                </dl>
-              </article>
             </section>
 
             <section class="table-card section-gap">
@@ -2166,14 +2613,16 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="user in filteredAdminUsers" :key="user.id">
+                  <tr v-for="user in pagedAdminUsers" :key="user.id">
                     <td><strong>{{ user.username }}</strong><p class="muted-line">{{ user.id }}</p></td>
                     <td><span class="status-pill" :class="{ success: user.role === 'admin' }">{{ user.role }}</span></td>
                     <td>{{ formatDate(user.created_at) }}</td>
                     <td>{{ formatDate(user.created_at) }}</td>
                     <td class="row-actions">
-                      <button class="ghost-btn compact" type="button" :disabled="user.role === 'admin'" @click="changeUserRole(user.id, 'admin')">设为 admin</button>
-                      <button class="ghost-btn compact" type="button" :disabled="user.role === 'user'" @click="changeUserRole(user.id, 'user')">设为 user</button>
+                      <button class="ghost-btn compact" type="button" @click="openUserEditModal(user.id)">修改</button>
+                      <button class="ghost-btn compact" type="button" :disabled="user.role === 'admin'" @click="changeUserRole(user.id, 'admin')">设置管理员</button>
+                      <button class="ghost-btn compact" type="button" :disabled="user.role === 'user'" @click="changeUserRole(user.id, 'user')">设置普通用户</button>
+                      <button class="danger-btn compact" type="button" @click="removeUser(user.id)">删除</button>
                     </td>
                   </tr>
                   <tr v-if="filteredAdminUsers.length === 0">
@@ -2181,6 +2630,13 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
                   </tr>
                 </tbody>
               </table>
+            </div>
+            <div class="table-pagination">
+              <span>{{ paginationLabel(filteredAdminUsers.length, userPage) }}</span>
+              <div>
+                <button class="ghost-btn compact" type="button" :disabled="userPage <= 1" @click="previousPage(userPage)">上一页</button>
+                <button class="ghost-btn compact" type="button" :disabled="userPage >= totalPages(filteredAdminUsers.length)" @click="nextPage(userPage, filteredAdminUsers.length)">下一页</button>
+              </div>
             </div>
           </section>
         </template>
@@ -2222,7 +2678,7 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="item in sampleQuestionRows" :key="item.question">
+                  <tr v-for="item in pagedSampleQuestionRows" :key="item.question">
                     <td>{{ item.title }}</td>
                     <td>{{ item.description }}</td>
                     <td class="wide-cell">{{ item.question }}</td>
@@ -2234,6 +2690,13 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
                   </tr>
                 </tbody>
               </table>
+            </div>
+            <div class="table-pagination">
+              <span>{{ paginationLabel(sampleQuestionRows.length, sampleQuestionPage) }}</span>
+              <div>
+                <button class="ghost-btn compact" type="button" :disabled="sampleQuestionPage <= 1" @click="previousPage(sampleQuestionPage)">上一页</button>
+                <button class="ghost-btn compact" type="button" :disabled="sampleQuestionPage >= totalPages(sampleQuestionRows.length)" @click="nextPage(sampleQuestionPage, sampleQuestionRows.length)">下一页</button>
+              </div>
             </div>
           </section>
         </template>
@@ -2353,11 +2816,28 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
     </div>
 
     <div v-if="activeAdminModal" class="modal-backdrop" @click.self="closeAdminModal">
-      <section v-if="activeAdminModal === 'knowledgeBase'" class="admin-modal" aria-label="创建知识库">
+      <section v-if="activeAdminModal === 'documentPreview'" class="admin-modal admin-modal-tall" aria-label="文档预览">
         <header class="modal-head">
           <div>
-            <h2>创建知识库</h2>
-            <p>创建一个新的知识库，用于存储和检索文档。</p>
+            <h2>{{ documentPreview?.title || "文档预览" }}</h2>
+            <p>{{ documentPreview?.source_uri || "正在加载文档内容" }}</p>
+          </div>
+          <button class="modal-close" type="button" aria-label="关闭" @click="closeAdminModal">×</button>
+        </header>
+        <div class="document-preview-box">
+          <p v-if="documentPreviewLoading" class="empty-cell">正在加载预览...</p>
+          <pre v-else>{{ documentPreview?.content || "暂无可预览内容" }}</pre>
+        </div>
+        <footer class="modal-actions">
+          <button class="ghost-btn" type="button" @click="closeAdminModal">关闭</button>
+        </footer>
+      </section>
+
+      <section v-else-if="activeAdminModal === 'knowledgeBase'" class="admin-modal" aria-label="创建知识库">
+        <header class="modal-head">
+          <div>
+            <h2>{{ editingKnowledgeBaseId ? "修改知识库" : "创建知识库" }}</h2>
+            <p>{{ editingKnowledgeBaseId ? "更新知识库名称、模型和 collection 配置。" : "创建一个新的知识库，用于存储和检索文档。" }}</p>
           </div>
           <button class="modal-close" type="button" aria-label="关闭" @click="closeAdminModal">×</button>
         </header>
@@ -2382,19 +2862,25 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
         </div>
         <footer class="modal-actions">
           <button class="ghost-btn" type="button" @click="closeAdminModal">取消</button>
-          <button class="primary-btn" type="button" :disabled="!newKnowledgeBaseName.trim()" @click="void createKnowledgeBaseFromInput()">创建</button>
+          <button class="primary-btn" type="button" :disabled="!newKnowledgeBaseName.trim()" @click="void createKnowledgeBaseFromInput()">
+            {{ editingKnowledgeBaseId ? "保存" : "创建" }}
+          </button>
         </footer>
       </section>
 
       <section v-else-if="activeAdminModal === 'uploadDocument'" class="admin-modal admin-modal-tall" aria-label="上传文档">
         <header class="modal-head">
           <div>
-            <h2>上传文档</h2>
-            <p>支持本地文件上传，并配置解析、清洗、切块与向量化策略。</p>
+            <h2>{{ editingDocumentId ? "修改文档" : "上传文档" }}</h2>
+            <p>{{ editingDocumentId ? "更新文档标题、启用状态和处理配置。" : "支持本地文件上传，并配置解析、清洗、切块与向量化策略。" }}</p>
           </div>
           <button class="modal-close" type="button" aria-label="关闭" @click="closeAdminModal">×</button>
         </header>
         <div class="modal-form single">
+          <label v-if="editingDocumentId" class="modal-label">
+            文档标题
+            <input v-model="editDocumentTitle" class="ui-input modal-control" type="text" placeholder="请输入文档标题" />
+          </label>
           <label class="modal-label">
             来源类型
             <select class="ui-input modal-control" disabled>
@@ -2403,23 +2889,37 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
           </label>
           <label class="modal-label">
             本地文件
-            <input ref="selectedFileInput" :accept="uploadAccept" class="ui-input modal-file" type="file" @change="onUploadFileSelected" />
+            <input ref="modalUploadFileInput" :accept="uploadAccept" class="ui-input modal-file" type="file" :disabled="!!editingDocumentId" @change="onUploadFileSelected" />
             <span>{{ selectedUploadFileLabel() }}</span>
           </label>
-          <label class="modal-label">
-            文档类型
-            <select v-model="uploadDocumentType" class="ui-input modal-control">
-              <option v-for="option in documentTypeOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
-            </select>
+          <label v-if="editingDocumentId" class="modal-checkbox">
+            <input v-model="editDocumentEnabled" type="checkbox" />
+            启用文档
           </label>
           <label class="modal-label">
+            处理模式
+            <select v-model="uploadProcessMode" class="ui-input modal-control">
+              <option value="chunk_strategy">按切块策略入库</option>
+              <option value="data_channel">按数据通道入库</option>
+            </select>
+          </label>
+          <label v-if="uploadProcessMode === 'data_channel'" class="modal-label">
+            数据通道
+            <select v-model="uploadPipelineId" class="ui-input modal-control">
+              <option :value="null">自动选择默认通道</option>
+              <option v-for="pipeline in ingestionPipelines" :key="pipeline.id" :value="pipeline.id">
+                {{ pipeline.name }}
+              </option>
+            </select>
+          </label>
+          <label v-if="uploadProcessMode === 'chunk_strategy'" class="modal-label">
             分块策略
             <select v-model="uploadChunkStrategy" class="ui-input modal-control">
               <option v-for="option in chunkStrategyOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
             </select>
             <span>{{ uploadChunkSummary }}</span>
           </label>
-          <div class="modal-field-grid">
+          <div v-if="uploadProcessMode === 'chunk_strategy' && uploadShowChunkSizeControls" class="modal-field-grid">
             <label class="modal-label">
               块大小
               <input v-model.number="uploadChunkSize" class="ui-input modal-control" min="200" max="1000" type="number" />
@@ -2429,21 +2929,132 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
               <input v-model.number="uploadChunkOverlap" class="ui-input modal-control" min="0" type="number" />
             </label>
           </div>
-          <label v-if="uploadShowRecursiveSeparatorControls" class="modal-label">
+          <div v-if="uploadProcessMode === 'chunk_strategy' && uploadChunkStrategy === 'structure_aware'" class="modal-field-grid">
+            <label class="modal-label">
+              结构最大字符数
+              <input v-model.number="uploadStructureMaxChars" class="ui-input modal-control" min="200" type="number" />
+            </label>
+            <label class="modal-label">
+              结构最小字符数
+              <input v-model.number="uploadStructureMinChars" class="ui-input modal-control" min="50" type="number" />
+            </label>
+          </div>
+          <label v-if="uploadProcessMode === 'chunk_strategy' && uploadShowRecursiveSeparatorControls" class="modal-label">
             递归分隔符
             <textarea v-model="uploadRecursiveSeparatorsText" class="ui-input" rows="4"></textarea>
             <span>{{ uploadRecursiveSeparatorSummary }}</span>
           </label>
-          <p v-if="uploadAutoStrategyRecommendation || uploadShowSemanticNotice" class="modal-hint">
+          <p v-if="uploadProcessMode === 'chunk_strategy' && (uploadAutoStrategyRecommendation || uploadShowSemanticNotice)" class="modal-hint">
             {{ uploadAutoStrategyRecommendation }}
             <span v-if="uploadShowSemanticNotice">语义分块会调用 Embedding 计算相邻段落语义相似度。</span>
+          </p>
+          <p v-if="uploadProcessMode === 'data_channel'" class="modal-hint">
+            文档将按选定数据通道的节点配置执行解析、清洗、切块和向量化。
           </p>
         </div>
         <footer class="modal-actions">
           <button class="ghost-btn" type="button" @click="closeAdminModal">取消</button>
-          <button class="primary-btn" type="button" :disabled="uploadLoading || !selectedUploadFile" @click="void uploadSelectedDocumentFromModal()">
-            {{ uploadLoading ? "上传中..." : "上传" }}
+          <button class="primary-btn" type="button" :disabled="uploadLoading || (!editingDocumentId && !selectedUploadFile) || (!!editingDocumentId && !editDocumentTitle.trim())" @click="void uploadSelectedDocumentFromModal()">
+            {{ editingDocumentId ? "保存" : (uploadLoading ? "上传中..." : "上传") }}
           </button>
+        </footer>
+      </section>
+
+      <section v-else-if="activeAdminModal === 'pipelineTask'" class="admin-modal admin-modal-wide" aria-label="新建通道任务">
+        <header class="modal-head">
+          <div>
+            <h2>新建通道任务</h2>
+            <p>支持 Local File / URL / Feishu / S3 来源，Local File 会直接上传文件。</p>
+          </div>
+          <button class="modal-close" type="button" aria-label="关闭" @click="closeAdminModal">×</button>
+        </header>
+        <div class="modal-form single">
+          <label class="modal-label">
+            流水线
+            <select v-model="newPipelineTaskPipelineId" class="ui-input modal-control">
+              <option v-for="pipeline in ingestionPipelines" :key="pipeline.id" :value="pipeline.id">
+                {{ pipeline.name }}
+              </option>
+            </select>
+          </label>
+          <div class="modal-field-grid">
+            <label class="modal-label">
+              来源类型
+              <select v-model="newPipelineTaskSourceType" class="ui-input modal-control">
+                <option value="local_file">Local File</option>
+                <option value="url" disabled>URL</option>
+                <option value="feishu" disabled>Feishu</option>
+                <option value="s3" disabled>S3</option>
+              </select>
+            </label>
+            <label class="modal-label">
+              本地文件
+              <input ref="newPipelineTaskFileInput" :accept="uploadAccept" class="ui-input modal-file" type="file" @change="onPipelineTaskFileSelected" />
+            </label>
+          </div>
+          <label class="modal-label">
+            任务元数据（JSON，可选）
+            <textarea v-model="newPipelineTaskMetadataText" class="ui-input" rows="5" placeholder='{"source":"manual"}'></textarea>
+          </label>
+        </div>
+        <footer class="modal-actions">
+          <button class="ghost-btn" type="button" @click="closeAdminModal">取消</button>
+          <button
+            class="primary-btn"
+            type="button"
+            :disabled="uploadLoading || !newPipelineTaskPipelineId || !newPipelineTaskFile || !pipelineTaskMetadataValid()"
+            @click="void createPipelineTaskFromModal()"
+          >
+            {{ uploadLoading ? "创建中..." : "创建任务" }}
+          </button>
+        </footer>
+      </section>
+
+      <section v-else-if="activeAdminModal === 'documentEdit'" class="admin-modal" aria-label="修改文档">
+        <header class="modal-head">
+          <div>
+            <h2>修改文档</h2>
+            <p>更新文档标题与启用状态。</p>
+          </div>
+          <button class="modal-close" type="button" aria-label="关闭" @click="closeAdminModal">×</button>
+        </header>
+        <div class="modal-form single">
+          <label class="modal-label">
+            文档标题
+            <input v-model="editDocumentTitle" class="ui-input modal-control" type="text" placeholder="请输入文档标题" />
+          </label>
+          <label class="modal-checkbox">
+            <input v-model="editDocumentEnabled" type="checkbox" />
+            启用文档
+          </label>
+        </div>
+        <footer class="modal-actions">
+          <button class="ghost-btn" type="button" @click="closeAdminModal">取消</button>
+          <button class="primary-btn" type="button" :disabled="!editDocumentTitle.trim()" @click="void saveDocumentEditFromModal()">保存</button>
+        </footer>
+      </section>
+
+      <section v-else-if="activeAdminModal === 'chunkEdit'" class="admin-modal admin-modal-tall" aria-label="修改分块">
+        <header class="modal-head">
+          <div>
+            <h2>修改分块</h2>
+            <p>更新分块内容与启用状态。</p>
+          </div>
+          <button class="modal-close" type="button" aria-label="关闭" @click="closeAdminModal">×</button>
+        </header>
+        <div class="modal-form single">
+          <label class="modal-label">
+            分块内容
+            <textarea v-model="editChunkContent" class="ui-input" rows="8" placeholder="请输入分块内容"></textarea>
+          </label>
+          <label class="modal-checkbox">
+            <input v-model="editChunkEnabled" type="checkbox" />
+            启用分块
+          </label>
+        </div>
+        <footer class="modal-actions">
+          <button class="ghost-btn" type="button" @click="closeAdminModal">取消</button>
+          <button class="primary-btn" type="button" :disabled="!editChunkContent.trim()" @click="void saveChunkEditFromModal()">保存</button>
         </footer>
       </section>
 
@@ -2575,8 +3186,8 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
       <section v-else-if="activeAdminModal === 'user'" class="admin-modal" aria-label="新增用户">
         <header class="modal-head">
           <div>
-            <h2>新增用户</h2>
-            <p>配置账号基本信息。</p>
+            <h2>{{ editingUserId ? "修改用户" : "新增用户" }}</h2>
+            <p>{{ editingUserId ? "更新用户名称、角色和头像信息。" : "配置账号基本信息。" }}</p>
           </div>
           <button class="modal-close" type="button" aria-label="关闭" @click="closeAdminModal">×</button>
         </header>
@@ -2585,7 +3196,7 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
             用户名
             <input v-model="newAdminUsername" class="ui-input modal-control" type="text" placeholder="请输入用户名" />
           </label>
-          <label class="modal-label">
+          <label v-if="!editingUserId" class="modal-label">
             密码
             <input v-model="newAdminPassword" class="ui-input modal-control" type="password" placeholder="设置初始密码" />
           </label>
@@ -2604,7 +3215,14 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
         </div>
         <footer class="modal-actions">
           <button class="ghost-btn" type="button" @click="closeAdminModal">取消</button>
-          <button class="primary-btn" type="button" :disabled="!newAdminUsername.trim() || !newAdminPassword.trim()" @click="void createAdminUserFromInput()">创建</button>
+          <button
+            class="primary-btn"
+            type="button"
+            :disabled="!newAdminUsername.trim() || (!editingUserId && !newAdminPassword.trim())"
+            @click="void createAdminUserFromInput()"
+          >
+            {{ editingUserId ? "保存" : "创建" }}
+          </button>
         </footer>
       </section>
 
@@ -2654,7 +3272,7 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
   width: 100%;
   min-width: 0;
   min-height: 100vh;
-  grid-template-columns: 320px minmax(0, 1fr);
+  grid-template-columns: 250px minmax(0, 1fr);
   background: var(--admin-bg);
   color: var(--admin-ink);
   overflow: hidden;
@@ -2662,14 +3280,14 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
 }
 
 .admin-layout.collapsed {
-  grid-template-columns: 88px minmax(0, 1fr);
+  grid-template-columns: 72px minmax(0, 1fr);
 }
 
 .admin-sidebar {
   position: sticky;
   top: 0;
   height: 100vh;
-  padding: 30px 20px;
+  padding: 28px 14px;
   background: linear-gradient(180deg, #1b2132 0%, #222b3f 100%);
   color: #e8eefc;
   overflow: hidden;
@@ -2677,14 +3295,14 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
 }
 
 .admin-layout.collapsed .admin-sidebar {
-  padding-inline: 14px;
+  padding-inline: 12px;
 }
 
 .admin-brand {
   display: flex;
-  gap: 14px;
+  gap: 12px;
   align-items: center;
-  margin-bottom: 30px;
+  margin-bottom: 26px;
 }
 
 .brand-copy,
@@ -2706,32 +3324,32 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
 
 .brand-icon {
   display: grid;
-  width: 50px;
-  height: 50px;
+  width: 40px;
+  height: 40px;
   place-items: center;
-  border-radius: 14px;
+  border-radius: 12px;
   background: var(--admin-primary);
   font-weight: 800;
 }
 
 .admin-brand h2 {
   margin: 0;
-  font-size: 18px;
+  font-size: 16px;
 }
 
 .admin-brand span,
 .nav-section-title {
   color: #aeb8cc;
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .nav-section-title {
-  margin: 24px 10px 10px;
+  margin: 22px 10px 9px;
   font-weight: 700;
 }
 
 .settings-title {
-  margin-top: 34px;
+  margin-top: 30px;
 }
 
 .nav-item,
@@ -2739,14 +3357,14 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
   display: flex;
   width: 100%;
   align-items: center;
-  gap: 12px;
+  gap: 11px;
   border: 0;
   border-radius: 10px;
-  padding: 13px 14px;
+  padding: 10px 11px;
   background: transparent;
   color: #d7def0;
   cursor: pointer;
-  font-size: 16px;
+  font-size: 14px;
   text-align: left;
 }
 
@@ -2755,18 +3373,67 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
   color: #ffffff;
 }
 
-.nav-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 999px;
-  border: 2px solid currentColor;
+.nav-icon {
+  display: inline-flex;
+  width: 18px;
+  min-width: 18px;
+  align-items: center;
+  justify-content: center;
+  color: currentColor;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.nav-chevron {
+  margin-left: auto;
+  color: #aeb8cc;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.nav-sub-items {
+  display: grid;
+  gap: 6px;
+  margin: 4px 0 8px 28px;
+}
+
+.nav-sub-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 9px;
+  border: 0;
+  border-radius: 9px;
+  padding: 8px 10px;
+  background: transparent;
+  color: #b8c3d9;
+  cursor: pointer;
+  font-size: 13px;
+  text-align: left;
+}
+
+.nav-sub-item.active {
+  background: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+}
+
+.admin-layout.collapsed .nav-sub-items {
+  margin-left: 0;
+}
+
+.admin-layout.collapsed .nav-sub-item span:last-child {
+  display: none;
+}
+
+.admin-layout.collapsed .nav-chevron {
+  display: none;
 }
 
 .collapse-btn {
   position: absolute;
   bottom: 20px;
-  left: 20px;
-  width: calc(100% - 40px);
+  left: 14px;
+  width: calc(100% - 28px);
   justify-content: center;
   border: 1px solid rgba(255, 255, 255, 0.12);
   color: #b7c1d6;
@@ -2789,8 +3456,8 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 80px;
-  padding: 0 40px;
+  height: 64px;
+  padding: 0 28px;
   background: rgba(255, 255, 255, 0.86);
   border-bottom: 1px solid var(--admin-border);
   backdrop-filter: blur(12px);
@@ -2800,8 +3467,8 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
   display: flex;
   align-items: center;
   gap: 12px;
-  width: min(520px, 45vw);
-  padding: 12px 14px;
+  width: min(380px, 36vw);
+  padding: 8px 11px;
   border: 1px solid var(--admin-border);
   border-radius: 10px;
   background: white;
@@ -2812,7 +3479,7 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
   min-width: 0;
   border: 0;
   outline: 0;
-  font-size: 15px;
+  font-size: 14px;
 }
 
 kbd {
@@ -2830,14 +3497,22 @@ kbd {
   display: flex;
   align-items: center;
   gap: 10px;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
+}
+
+.toolbar-input {
+  width: min(240px, 32vw);
+}
+
+.toolbar-select {
+  width: 150px;
 }
 
 .user-pill {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 14px;
+  padding: 7px 12px;
   border: 1px solid var(--admin-border);
   border-radius: 999px;
   background: white;
@@ -2845,8 +3520,8 @@ kbd {
 
 .avatar {
   display: grid;
-  width: 32px;
-  height: 32px;
+  width: 30px;
+  height: 30px;
   place-items: center;
   border-radius: 999px;
   background: #fff0c2;
@@ -2855,26 +3530,26 @@ kbd {
 }
 
 .admin-content {
-  padding: 42px 40px 64px;
+  padding: 28px 28px 44px;
 }
 
 .breadcrumb {
   color: #52627c;
   font-size: 14px;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
 }
 
 .page-head {
   display: flex;
   justify-content: space-between;
-  gap: 24px;
+  gap: 20px;
   align-items: flex-start;
-  margin-bottom: 28px;
+  margin-bottom: 20px;
 }
 
 .page-head h1 {
   margin: 0;
-  font-size: 32px;
+  font-size: 28px;
   line-height: 1.1;
 }
 
@@ -2889,20 +3564,20 @@ kbd {
 .metric-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 20px;
-  margin-bottom: 32px;
+  gap: 16px;
+  margin-bottom: 20px;
 }
 
 .admin-grid-two,
 .settings-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 20px;
+  gap: 16px;
 }
 
 .trace-list {
   display: grid;
-  gap: 18px;
+  gap: 14px;
 }
 
 .metric-card,
@@ -2910,13 +3585,13 @@ kbd {
 .form-panel,
 .task-card {
   border: 1px solid var(--admin-border);
-  border-radius: 16px;
+  border-radius: 12px;
   background: var(--admin-card);
-  box-shadow: 0 10px 30px rgba(34, 43, 63, 0.06);
+  box-shadow: 0 8px 24px rgba(34, 43, 63, 0.05);
 }
 
 .metric-card {
-  padding: 24px;
+  padding: 18px;
 }
 
 .metric-card span {
@@ -2926,7 +3601,7 @@ kbd {
 .metric-card strong {
   display: block;
   margin-top: 8px;
-  font-size: 32px;
+  font-size: 26px;
 }
 
 .table-card {
@@ -2935,15 +3610,15 @@ kbd {
 
 .table-scroll {
   width: 100%;
-  overflow-x: auto;
+  overflow: visible;
 }
 
 .table-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 20px;
-  padding: 26px 30px;
+  gap: 16px;
+  padding: 20px 24px;
   border-bottom: 1px solid var(--admin-border);
 }
 
@@ -2951,23 +3626,27 @@ kbd {
 .placeholder-card h2,
 .task-card h2 {
   margin: 0;
-  font-size: 20px;
+  font-size: 18px;
 }
 
 .data-table {
   width: 100%;
   border-collapse: collapse;
-  table-layout: auto;
+  table-layout: fixed;
+  font-size: 12px;
+  line-height: 1.42;
 }
 
 .data-table th,
 .data-table td {
-  padding: 18px 24px;
+  padding: 10px 8px;
   border-bottom: 1px solid #e9eef6;
   color: #40506b;
   text-align: left;
-  vertical-align: middle;
-  white-space: nowrap;
+  vertical-align: top;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .data-table th {
@@ -2976,27 +3655,279 @@ kbd {
   font-weight: 700;
 }
 
-.kb-table {
-  min-width: 1180px;
+.table-actions-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+  min-width: 0;
 }
 
-.document-table {
-  min-width: 1280px;
+.data-table .row-actions {
+  display: table-cell;
+  white-space: nowrap;
 }
 
-.chunk-table {
-  min-width: 1320px;
+.data-table .row-actions button + button {
+  margin-left: 5px;
 }
 
-.pipeline-table {
-  min-width: 980px;
+.data-table button,
+.data-table .badge,
+.data-table .status-pill {
+  white-space: nowrap;
+  word-break: keep-all;
+  overflow-wrap: normal;
 }
 
-.intent-table,
-.mapping-table,
-.sample-table,
-.trace-table {
-  min-width: 1100px;
+.data-table .compact {
+  min-height: 28px;
+  padding: 0 7px;
+  font-size: 12px;
+}
+
+.kb-table th:nth-child(1),
+.kb-table td:nth-child(1) {
+  width: 14%;
+}
+
+.kb-table th:nth-child(2),
+.kb-table td:nth-child(2) {
+  width: 15%;
+}
+
+.kb-table th:nth-child(3),
+.kb-table td:nth-child(3) {
+  width: 11%;
+}
+
+.kb-table th:nth-child(4),
+.kb-table td:nth-child(4) {
+  width: 6%;
+}
+
+.kb-table th:nth-child(5),
+.kb-table td:nth-child(5) {
+  width: 8%;
+}
+
+.kb-table th:nth-child(6),
+.kb-table td:nth-child(6),
+.kb-table th:nth-child(7),
+.kb-table td:nth-child(7) {
+  width: 13%;
+}
+
+.kb-table th:nth-child(8),
+.kb-table td:nth-child(8) {
+  width: 20%;
+}
+
+.kb-table td:nth-child(1),
+.kb-table td:nth-child(2) {
+  line-height: 1.45;
+}
+
+.kb-table td:nth-child(1) .link-btn {
+  display: inline;
+  white-space: normal;
+  word-break: keep-all;
+  overflow-wrap: normal;
+}
+
+.kb-table td:nth-child(2) {
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+.document-table th:nth-child(1),
+.document-table td:nth-child(1) {
+  width: 16%;
+}
+
+.document-table th:nth-child(2),
+.document-table td:nth-child(2) {
+  width: 7%;
+}
+
+.document-table th:nth-child(3),
+.document-table td:nth-child(3),
+.document-table th:nth-child(4),
+.document-table td:nth-child(4) {
+  width: 8%;
+}
+
+.document-table th:nth-child(5),
+.document-table td:nth-child(5),
+.document-table th:nth-child(6),
+.document-table td:nth-child(6) {
+  width: 6%;
+}
+
+.document-table th:nth-child(7),
+.document-table td:nth-child(7),
+.document-table th:nth-child(8),
+.document-table td:nth-child(8) {
+  width: 7%;
+}
+
+.document-table th:nth-child(9),
+.document-table td:nth-child(9) {
+  width: 12%;
+}
+
+.document-table th:nth-child(10),
+.document-table td:nth-child(10) {
+  width: 23%;
+}
+
+.pipeline-table th:nth-child(1),
+.pipeline-table td:nth-child(1) {
+  width: 18%;
+}
+
+.pipeline-table th:nth-child(2),
+.pipeline-table td:nth-child(2) {
+  width: 30%;
+}
+
+.pipeline-table th:nth-child(3),
+.pipeline-table td:nth-child(3),
+.pipeline-table th:nth-child(5),
+.pipeline-table td:nth-child(5) {
+  width: 7%;
+}
+
+.pipeline-table th:nth-child(4),
+.pipeline-table td:nth-child(4) {
+  width: 10%;
+}
+
+.pipeline-table th:nth-child(6),
+.pipeline-table td:nth-child(6) {
+  width: 15%;
+}
+
+.pipeline-table th:nth-child(7),
+.pipeline-table td:nth-child(7) {
+  width: 13%;
+}
+
+.pipeline-task-table th:nth-child(1),
+.pipeline-task-table td:nth-child(1) {
+  width: 12%;
+}
+
+.pipeline-task-table th:nth-child(2),
+.pipeline-task-table td:nth-child(2) {
+  width: 18%;
+}
+
+.pipeline-task-table th:nth-child(3),
+.pipeline-task-table td:nth-child(3),
+.pipeline-task-table th:nth-child(4),
+.pipeline-task-table td:nth-child(4) {
+  width: 10%;
+}
+
+.pipeline-task-table th:nth-child(5),
+.pipeline-task-table td:nth-child(5) {
+  width: 12%;
+}
+
+.pipeline-task-table th:nth-child(6),
+.pipeline-task-table td:nth-child(6) {
+  width: 10%;
+}
+
+.pipeline-task-table th:nth-child(7),
+.pipeline-task-table td:nth-child(7) {
+  width: 28%;
+}
+
+.pipeline-task-table tbody tr {
+  cursor: default;
+}
+
+.user-table th:nth-child(1),
+.user-table td:nth-child(1) {
+  width: 24%;
+}
+
+.user-table th:nth-child(2),
+.user-table td:nth-child(2) {
+  width: 10%;
+}
+
+.user-table th:nth-child(3),
+.user-table td:nth-child(3),
+.user-table th:nth-child(4),
+.user-table td:nth-child(4) {
+  width: 19%;
+}
+
+.user-table th:nth-child(5),
+.user-table td:nth-child(5) {
+  width: 28%;
+}
+
+.trace-table th:nth-child(1),
+.trace-table td:nth-child(1) {
+  width: 12%;
+}
+
+.trace-table th:nth-child(2),
+.trace-table td:nth-child(2) {
+  width: 15%;
+}
+
+.trace-table th:nth-child(3),
+.trace-table td:nth-child(3) {
+  width: 32%;
+}
+
+.trace-table th:nth-child(4),
+.trace-table td:nth-child(4) {
+  width: 9%;
+}
+
+.trace-table th:nth-child(5),
+.trace-table td:nth-child(5) {
+  width: 7%;
+}
+
+.trace-table th:nth-child(6),
+.trace-table td:nth-child(6) {
+  width: 7%;
+}
+
+.trace-table th:nth-child(7),
+.trace-table td:nth-child(7) {
+  width: 9%;
+}
+
+.trace-table th:nth-child(8),
+.trace-table td:nth-child(8) {
+  width: 9%;
+}
+
+.table-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 18px 14px;
+  color: #667085;
+  font-size: 13px;
+  border-top: 1px solid #e9eef6;
+}
+
+.table-pagination > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .pipeline-table tbody tr {
@@ -3007,21 +3938,16 @@ kbd {
   background: #f8fbff;
 }
 
-.user-table {
-  min-width: 860px;
-}
-
 .wide-cell {
-  min-width: 320px;
   max-width: 560px;
-  white-space: normal !important;
+  white-space: normal;
   word-break: break-word;
+  overflow-wrap: anywhere;
   line-height: 1.6;
 }
 
 .select-col {
   width: 56px;
-  min-width: 56px;
   text-align: center !important;
 }
 
@@ -3029,16 +3955,63 @@ kbd {
   vertical-align: top;
 }
 
+.chunk-table th:nth-child(1),
+.chunk-table td:nth-child(1) {
+  width: 4%;
+}
+
+.chunk-table th:nth-child(2),
+.chunk-table td:nth-child(2) {
+  width: 5%;
+}
+
 .chunk-table th:nth-child(3),
 .chunk-table td:nth-child(3) {
-  min-width: 420px;
-  white-space: normal;
+  width: 25%;
+}
+
+.chunk-table th:nth-child(4),
+.chunk-table td:nth-child(4) {
+  width: 7%;
+}
+
+.chunk-table th:nth-child(5),
+.chunk-table td:nth-child(5) {
+  width: 6%;
+}
+
+.chunk-table th:nth-child(6),
+.chunk-table td:nth-child(6) {
+  width: 9%;
 }
 
 .chunk-table th:nth-child(7),
 .chunk-table td:nth-child(7) {
-  min-width: 220px;
+  width: 18%;
+}
+
+.chunk-table th:nth-child(8),
+.chunk-table td:nth-child(8) {
+  width: 12%;
+}
+
+.chunk-table th:nth-child(9),
+.chunk-table td:nth-child(9) {
+  width: 14%;
+}
+
+.chunk-table th:nth-child(3),
+.chunk-table td:nth-child(3) {
   white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.chunk-table th:nth-child(7),
+.chunk-table td:nth-child(7) {
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .chunk-content {
@@ -3050,23 +4023,40 @@ kbd {
 }
 
 .empty-cell {
-  padding: 44px !important;
+  padding: 32px !important;
   color: var(--admin-muted);
   text-align: center !important;
+}
+
+.document-preview-box {
+  max-height: min(62vh, 620px);
+  overflow: auto;
+  border: 1px solid #dce5f2;
+  border-radius: 12px;
+  background: #f8fbff;
+}
+
+.document-preview-box pre {
+  margin: 0;
+  padding: 16px;
+  color: #26364f;
+  font: 14px/1.7 Consolas, "Courier New", monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .form-panel {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 16px;
+  gap: 14px;
   align-items: end;
-  padding: 22px;
-  margin-bottom: 24px;
+  padding: 18px;
+  margin-bottom: 20px;
 }
 
 .form-panel label {
   display: grid;
-  gap: 8px;
+  gap: 6px;
   color: #4a5a75;
   font-weight: 700;
 }
@@ -3082,15 +4072,15 @@ kbd {
 
 .profile-textarea {
   width: 100%;
-  min-height: 240px;
-  margin-top: 18px;
-  padding: 14px;
+  min-height: 210px;
+  margin-top: 14px;
+  padding: 12px;
   line-height: 1.7;
   resize: vertical;
 }
 
 .section-gap {
-  margin-top: 22px;
+  margin-top: 18px;
 }
 
 .muted-line {
@@ -3103,16 +4093,16 @@ kbd {
 
 .intent-tree-box {
   display: grid;
-  gap: 12px;
-  margin-top: 18px;
+  gap: 10px;
+  margin-top: 14px;
 }
 
 .intent-node {
   display: grid;
   gap: 4px;
   border: 1px solid #dbe4f0;
-  border-radius: 14px;
-  padding: 14px 16px;
+  border-radius: 12px;
+  padding: 12px 14px;
   background: #fbfdff;
 }
 
@@ -3127,23 +4117,23 @@ kbd {
 }
 
 .child-node {
-  margin-left: 24px;
+  margin-left: 20px;
 }
 
 .inline-form {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 12px;
-  margin-top: 18px;
+  gap: 10px;
+  margin-top: 14px;
 }
 
 .mapping-form {
-  padding: 0 30px 24px;
+  padding: 0 24px 18px;
 }
 
 .user-create-form {
   grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr) 140px auto;
-  padding: 24px 30px;
+  padding: 18px 24px;
   margin-top: 0;
   border-bottom: 1px solid var(--admin-border);
 }
@@ -3158,10 +4148,10 @@ kbd {
 }
 
 .segmented-tabs button {
-  min-height: 40px;
+  min-height: 34px;
   border: 0;
   border-radius: 9px;
-  padding: 0 18px;
+  padding: 0 14px;
   background: transparent;
   color: #52627c;
   cursor: pointer;
@@ -3178,8 +4168,8 @@ kbd {
 .tag-list,
 .node-list {
   display: grid;
-  gap: 10px;
-  margin-top: 18px;
+  gap: 8px;
+  margin-top: 14px;
 }
 
 .tag-list {
@@ -3191,14 +4181,14 @@ kbd {
 .tag-chip {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   max-width: 100%;
   border: 1px solid #dbe4f0;
   border-radius: 999px;
-  padding: 8px 12px;
+  padding: 6px 10px;
   background: #f8fafc;
   color: #334155;
-  font-size: 14px;
+  font-size: 13px;
 }
 
 .tag-chip button {
@@ -3208,10 +4198,10 @@ kbd {
 
 .node-item {
   display: grid;
-  gap: 8px;
+  gap: 6px;
   border: 1px solid #e5edf7;
-  border-radius: 14px;
-  padding: 14px;
+  border-radius: 12px;
+  padding: 12px;
   background: #fbfdff;
 }
 
@@ -3225,13 +4215,13 @@ kbd {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
+  gap: 14px;
 }
 
 .trace-detail-head h1 {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
 }
 
 .trace-summary-strip {
@@ -3239,13 +4229,13 @@ kbd {
   grid-template-columns: repeat(5, minmax(0, 1fr));
   overflow: hidden;
   border: 1px solid var(--admin-border);
-  border-radius: 16px;
-  margin-bottom: 22px;
+  border-radius: 12px;
+  margin-bottom: 18px;
   background: white;
 }
 
 .trace-summary-strip article {
-  padding: 18px 22px;
+  padding: 14px 18px;
   border-right: 1px solid var(--admin-border);
 }
 
@@ -3262,13 +4252,13 @@ kbd {
   display: block;
   margin-top: 6px;
   color: #172033;
-  font-size: 26px;
+  font-size: 22px;
 }
 
 .trace-detail-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 360px;
-  gap: 20px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
 }
 
 .trace-timeline-card {
@@ -3276,13 +4266,13 @@ kbd {
 }
 
 .trace-timeline {
-  padding: 22px 26px 28px;
+  padding: 18px 22px 22px;
 }
 
 .trace-axis {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  margin-left: 300px;
+  margin-left: 260px;
   margin-bottom: 10px;
   color: #8a99b4;
   font-size: 12px;
@@ -3290,10 +4280,10 @@ kbd {
 
 .trace-node-row {
   display: grid;
-  grid-template-columns: 280px minmax(260px, 1fr) 150px;
+  grid-template-columns: 240px minmax(220px, 1fr) 128px;
   align-items: center;
-  gap: 18px;
-  padding: 15px 0;
+  gap: 14px;
+  padding: 12px 0;
   border-top: 1px solid #eef3fa;
 }
 
@@ -3331,7 +4321,7 @@ kbd {
 
 .trace-bar-track {
   position: relative;
-  height: 28px;
+  height: 24px;
   border-radius: 8px;
   background: linear-gradient(90deg, #f5f8fc 0%, #f5f8fc 24%, #e6edf7 24%, #e6edf7 25%, #f5f8fc 25%, #f5f8fc 49%, #e6edf7 49%, #e6edf7 50%, #f5f8fc 50%, #f5f8fc 74%, #e6edf7 74%, #e6edf7 75%, #f5f8fc 75%);
   overflow: hidden;
@@ -3339,8 +4329,8 @@ kbd {
 
 .trace-bar {
   position: absolute;
-  top: 6px;
-  height: 16px;
+  top: 5px;
+  height: 14px;
   min-width: 6px;
   border-radius: 999px;
   background: linear-gradient(90deg, #20c997, #38d9a9);
@@ -3363,18 +4353,18 @@ kbd {
 
 .trace-message-list {
   display: grid;
-  gap: 12px;
-  padding: 24px 30px 30px;
+  gap: 10px;
+  padding: 18px 24px 24px;
 }
 
 .trace-message-item {
   display: grid;
-  grid-template-columns: 96px minmax(0, 1fr);
-  gap: 14px;
+  grid-template-columns: 84px minmax(0, 1fr);
+  gap: 12px;
   align-items: start;
   border: 1px solid #e8eef7;
-  border-radius: 14px;
-  padding: 14px;
+  border-radius: 12px;
+  padding: 12px;
   background: #fbfdff;
 }
 
@@ -3409,25 +4399,25 @@ kbd {
 }
 
 .ui-input {
-  min-height: 48px;
+  min-height: 42px;
   border: 1px solid var(--admin-border);
   border-radius: 10px;
-  padding: 0 14px;
+  padding: 0 12px;
   background: white;
   color: var(--admin-ink);
   font: inherit;
 }
 
 textarea.ui-input {
-  padding-top: 12px;
+  padding-top: 10px;
 }
 
 .primary-btn,
 .ghost-btn,
 .danger-btn {
-  min-height: 48px;
+  min-height: 42px;
   border-radius: 10px;
-  padding: 0 20px;
+  padding: 0 16px;
   border: 1px solid transparent;
   cursor: pointer;
   font: inherit;
@@ -3456,9 +4446,9 @@ textarea.ui-input {
 }
 
 .compact {
-  min-height: 40px;
-  padding: 0 14px;
-  font-size: 14px;
+  min-height: 34px;
+  padding: 0 12px;
+  font-size: 13px;
 }
 
 button:disabled {
@@ -3485,8 +4475,8 @@ button:disabled {
   display: inline-flex;
   align-items: center;
   border-radius: 999px;
-  padding: 5px 12px;
-  font-size: 13px;
+  padding: 4px 10px;
+  font-size: 12px;
   font-weight: 700;
 }
 
@@ -3520,7 +4510,7 @@ button:disabled {
 .notice-card {
   border: 1px solid #dbeafe;
   border-radius: 12px;
-  padding: 14px 18px;
+  padding: 12px 16px;
   background: #eff6ff;
   color: #1d4ed8;
 }
@@ -4063,8 +5053,10 @@ button:disabled {
 
 .table-actions-cell {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 5px;
+  min-width: 0;
 }
 
 .modal-checkbox {

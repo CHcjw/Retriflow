@@ -7,6 +7,7 @@ from core.config import get_settings
 from modules.mcp.models import McpExecutionResult, McpRouteDecision, McpToolCallResult
 from modules.mcp.parameter_extractor import RetriFlowMcpParameterExtractor
 from modules.mcp.registry import RetriFlowMcpRegistry
+from modules.rag.trace import RetriFlowTraceService
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,7 @@ class RetriFlowMcpService:
         self.settings = get_settings()
         self.registry = RetriFlowMcpRegistry()
         self.parameter_extractor = RetriFlowMcpParameterExtractor()
+        self.trace_service = RetriFlowTraceService()
 
     def route_question(self, question: str) -> McpRouteDecision:
         matched = self._match_tools(question)
@@ -170,22 +172,37 @@ class RetriFlowMcpService:
             )
 
         arguments: dict[str, object] = {}
-        try:
-            tool_definition = executor.get_definition()
-            arguments = self.parameter_extractor.extract(
-                question=question,
-                tool_definition=tool_definition,
-            )
-            result = executor.execute(arguments)
-            if not isinstance(result, McpToolCallResult):
-                raise TypeError("executor returned an invalid MCP result")
-            return result
-        except Exception as exc:
-            return self._build_error_result(
-                tool_id=tool_id,
-                arguments=arguments,
-                exc=exc,
-            )
+        tool_definition = executor.get_definition()
+        with self.trace_service.span(
+            name=f"mcp.tool.{tool_id}",
+            node_type="MCP_TOOL",
+            input_summary=question[:120],
+            metadata={
+                "tool_id": tool_definition.tool_id,
+                "server_name": tool_definition.server_name,
+                "transport": tool_definition.transport,
+                "schema_version": tool_definition.schema_version,
+            },
+        ) as span:
+            try:
+                arguments = self.parameter_extractor.extract(
+                    question=question,
+                    tool_definition=tool_definition,
+                )
+                result = executor.execute(arguments)
+                if not isinstance(result, McpToolCallResult):
+                    raise TypeError("executor returned an invalid MCP result")
+                span.finish_success(
+                    output_summary=f"is_error={result.is_error}; chars={len(result.content or '')}"
+                )
+                return result
+            except Exception as exc:
+                span.finish_error(exc)
+                return self._build_error_result(
+                    tool_id=tool_id,
+                    arguments=arguments,
+                    exc=exc,
+                )
 
     def _build_error_result(
         self,

@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 from api.deps.auth import AdminUser
 from modules.ingestion import RetriFlowIngestionService
@@ -29,8 +29,8 @@ def create_pipeline(request: IngestionPipelineCreateRequest, user: AdminUser) ->
 
 
 @router.get("/tasks", response_model=IngestionTaskListResponse)
-def list_tasks(user: AdminUser) -> IngestionTaskListResponse:
-    return _service().list_tasks()
+def list_tasks(user: AdminUser, document_id: int | None = Query(default=None)) -> IngestionTaskListResponse:
+    return _service().list_tasks(document_id=document_id)
 
 
 @router.get("/tasks/{task_id}/nodes", response_model=IngestionTaskNodeListResponse)

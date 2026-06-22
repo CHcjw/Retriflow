@@ -12,6 +12,7 @@ class McpToolDefinition:
     keywords: list[str] = field(default_factory=list)
     server_name: str = "builtin"
     transport: str = "builtin"
+    schema_version: str = "json_schema"
 
 
 @dataclass

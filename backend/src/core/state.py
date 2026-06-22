@@ -184,20 +184,32 @@ def _initialize_sqlite_database() -> None:
                 username text not null unique,
                 password_hash text not null,
                 role text not null default 'user',
+                avatar_url text not null default '',
                 created_at text not null default current_timestamp
             )
             """
         )
+        _ensure_sqlite_column(connection, "users", "avatar_url", "text not null default ''")
         connection.execute(
             """
             create table if not exists knowledge_bases (
                 id text primary key,
                 name text not null,
                 product text not null,
-                document_count integer not null default 0
+                document_count integer not null default 0,
+                embedding_model text not null default 'Qwen/Qwen3-Embedding-8B',
+                collection_name text not null default '',
+                owner text not null default 'admin',
+                created_at text not null default current_timestamp,
+                updated_at text not null default current_timestamp
             )
             """
         )
+        _ensure_sqlite_column(connection, "knowledge_bases", "embedding_model", "text not null default 'Qwen/Qwen3-Embedding-8B'")
+        _ensure_sqlite_column(connection, "knowledge_bases", "collection_name", "text not null default ''")
+        _ensure_sqlite_column(connection, "knowledge_bases", "owner", "text not null default 'admin'")
+        _ensure_sqlite_column(connection, "knowledge_bases", "created_at", "text not null default current_timestamp")
+        _ensure_sqlite_column(connection, "knowledge_bases", "updated_at", "text not null default current_timestamp")
         connection.execute(
             """
             create table if not exists knowledge_base_route_profiles (
@@ -217,6 +229,7 @@ def _initialize_sqlite_database() -> None:
                 knowledge_base_id text not null,
                 title text not null,
                 source_type text not null,
+                source_uri text not null default '',
                 content text not null,
                 status text not null default 'indexed',
                 vector_index_status text not null default 'pending',
@@ -230,6 +243,7 @@ def _initialize_sqlite_database() -> None:
         _ensure_sqlite_column(connection, "knowledge_documents", "vector_index_status", "text not null default 'pending'")
         _ensure_sqlite_column(connection, "knowledge_documents", "vector_chunk_count", "integer not null default 0")
         _ensure_sqlite_column(connection, "knowledge_documents", "vector_indexed_at", "text")
+        _ensure_sqlite_column(connection, "knowledge_documents", "source_uri", "text not null default ''")
         connection.execute(
             """
             create table if not exists knowledge_chunks (
@@ -323,16 +337,24 @@ def _initialize_sqlite_database() -> None:
             create table if not exists ingestion_task_nodes (
                 id integer primary key autoincrement,
                 task_id integer not null,
+                node_id text not null default '',
                 node_type text not null,
                 node_order integer not null,
                 success integer not null,
+                status text not null default 'success',
                 message text not null default '',
+                error_message text not null default '',
+                output_json text not null default '{}',
                 duration_ms integer not null default 0,
                 created_at text not null default current_timestamp,
                 foreign key (task_id) references ingestion_tasks (id)
             )
             """
         )
+        _ensure_sqlite_column(connection, "ingestion_task_nodes", "node_id", "text not null default ''")
+        _ensure_sqlite_column(connection, "ingestion_task_nodes", "status", "text not null default 'success'")
+        _ensure_sqlite_column(connection, "ingestion_task_nodes", "error_message", "text not null default ''")
+        _ensure_sqlite_column(connection, "ingestion_task_nodes", "output_json", "text not null default '{}'")
         connection.execute(
             """
             create table if not exists admin_intent_nodes (
@@ -374,6 +396,28 @@ def _initialize_sqlite_database() -> None:
         )
         connection.execute(
             """
+            create table if not exists model_health (
+                capability text not null,
+                provider_name text not null,
+                model text not null,
+                state text not null default 'healthy',
+                failure_count integer not null default 0,
+                success_count integer not null default 0,
+                opened_at real,
+                last_success_at real,
+                last_failure_at real,
+                last_error text not null default '',
+                last_success_duration_ms integer,
+                last_first_packet_ms integer,
+                half_open_in_flight integer not null default 0,
+                updated_at text not null default current_timestamp,
+                primary key (capability, provider_name, model)
+            )
+            """
+        )
+        _ensure_sqlite_column(connection, "model_health", "half_open_in_flight", "integer not null default 0")
+        connection.execute(
+            """
             create table if not exists conversation_messages (
                 id integer primary key autoincrement,
                 session_id text not null,
@@ -385,6 +429,41 @@ def _initialize_sqlite_database() -> None:
             """
         )
         _ensure_sqlite_column(connection, "conversation_messages", "duration_ms", "integer not null default 0")
+        connection.execute(
+            """
+            create table if not exists message_feedback (
+                id integer primary key autoincrement,
+                message_id integer not null,
+                session_id text not null,
+                user_id text not null,
+                vote integer not null,
+                reason text not null default '',
+                comment text not null default '',
+                created_at text not null default current_timestamp,
+                updated_at text not null default current_timestamp
+            )
+            """
+        )
+        connection.execute(
+            """
+            create table if not exists rag_trace_nodes (
+                id text primary key,
+                session_id text not null,
+                task_id text not null default '',
+                parent_id text not null default '',
+                name text not null,
+                node_type text not null default 'METHOD',
+                status text not null default 'running',
+                input_summary text not null default '',
+                output_summary text not null default '',
+                error_message text not null default '',
+                metadata_json text not null default '{}',
+                started_at text not null default current_timestamp,
+                finished_at text,
+                duration_ms integer not null default 0
+            )
+            """
+        )
         connection.execute(
             """
             create table if not exists conversation_memory_summaries (
@@ -426,6 +505,10 @@ def _initialize_sqlite_database() -> None:
         )
         connection.execute("create index if not exists idx_admin_intent_nodes_parent on admin_intent_nodes (parent_id, sort_order)")
         connection.execute("create index if not exists idx_admin_keyword_mappings_keyword on admin_keyword_mappings (raw_keyword, enabled)")
+        connection.execute("create index if not exists idx_model_health_state on model_health (state, provider_name)")
+        connection.execute("create index if not exists idx_rag_trace_nodes_session on rag_trace_nodes (session_id, started_at)")
+        connection.execute("create index if not exists idx_rag_trace_nodes_parent on rag_trace_nodes (parent_id)")
+        connection.execute("create unique index if not exists idx_message_feedback_user_message on message_feedback (message_id, user_id)")
         _seed_demo_data(connection)
         connection.commit()
 
@@ -466,20 +549,32 @@ def _initialize_postgres_database() -> None:
                     username text not null unique,
                     password_hash text not null,
                     role text not null default 'user',
+                    avatar_url text not null default '',
                     created_at timestamptz not null default now()
                 )
                 """
             )
+            _ensure_postgres_column(cursor, "users", "avatar_url", "text not null default ''")
             cursor.execute(
                 """
                 create table if not exists knowledge_bases (
                     id text primary key,
                     name text not null,
                     product text not null,
-                    document_count integer not null default 0
+                    document_count integer not null default 0,
+                    embedding_model text not null default 'Qwen/Qwen3-Embedding-8B',
+                    collection_name text not null default '',
+                    owner text not null default 'admin',
+                    created_at timestamptz not null default now(),
+                    updated_at timestamptz not null default now()
                 )
                 """
             )
+            cursor.execute("alter table knowledge_bases add column if not exists embedding_model text not null default 'Qwen/Qwen3-Embedding-8B'")
+            cursor.execute("alter table knowledge_bases add column if not exists collection_name text not null default ''")
+            cursor.execute("alter table knowledge_bases add column if not exists owner text not null default 'admin'")
+            cursor.execute("alter table knowledge_bases add column if not exists created_at timestamptz not null default now()")
+            cursor.execute("alter table knowledge_bases add column if not exists updated_at timestamptz not null default now()")
             cursor.execute(
                 """
                 create table if not exists knowledge_base_route_profiles (
@@ -498,6 +593,7 @@ def _initialize_postgres_database() -> None:
                     knowledge_base_id text not null references knowledge_bases(id) on delete cascade,
                     title text not null,
                     source_type text not null,
+                    source_uri text not null default '',
                     content text not null,
                     status text not null default 'indexed',
                     vector_index_status text not null default 'pending',
@@ -524,6 +620,12 @@ def _initialize_postgres_database() -> None:
                 "knowledge_documents",
                 "vector_indexed_at",
                 "timestamptz",
+            )
+            _ensure_postgres_column(
+                cursor,
+                "knowledge_documents",
+                "source_uri",
+                "text not null default ''",
             )
             cursor.execute(
                 """
@@ -631,15 +733,23 @@ def _initialize_postgres_database() -> None:
                 create table if not exists ingestion_task_nodes (
                     id bigint generated by default as identity primary key,
                     task_id bigint not null references ingestion_tasks(id) on delete cascade,
+                    node_id text not null default '',
                     node_type text not null,
                     node_order integer not null,
                     success integer not null,
+                    status text not null default 'success',
                     message text not null default '',
+                    error_message text not null default '',
+                    output_json jsonb not null default '{}'::jsonb,
                     duration_ms integer not null default 0,
                     created_at timestamptz not null default now()
                 )
                 """
             )
+            _ensure_postgres_column(cursor, "ingestion_task_nodes", "node_id", "text not null default ''")
+            _ensure_postgres_column(cursor, "ingestion_task_nodes", "status", "text not null default 'success'")
+            _ensure_postgres_column(cursor, "ingestion_task_nodes", "error_message", "text not null default ''")
+            _ensure_postgres_column(cursor, "ingestion_task_nodes", "output_json", "jsonb not null default '{}'::jsonb")
             cursor.execute(
                 """
                 create table if not exists admin_intent_nodes (
@@ -681,6 +791,28 @@ def _initialize_postgres_database() -> None:
             )
             cursor.execute(
                 """
+                create table if not exists model_health (
+                    capability text not null,
+                    provider_name text not null,
+                    model text not null,
+                    state text not null default 'healthy',
+                    failure_count integer not null default 0,
+                    success_count integer not null default 0,
+                    opened_at double precision,
+                    last_success_at double precision,
+                    last_failure_at double precision,
+                    last_error text not null default '',
+                    last_success_duration_ms integer,
+                    last_first_packet_ms integer,
+                    half_open_in_flight integer not null default 0,
+                    updated_at timestamptz not null default now(),
+                    primary key (capability, provider_name, model)
+                )
+                """
+            )
+            _ensure_postgres_column(cursor, "model_health", "half_open_in_flight", "integer not null default 0")
+            cursor.execute(
+                """
                 create table if not exists conversation_messages (
                     id bigint generated by default as identity primary key,
                     session_id text not null references sessions(id) on delete cascade,
@@ -692,6 +824,41 @@ def _initialize_postgres_database() -> None:
                 """
             )
             _ensure_postgres_column(cursor, "conversation_messages", "duration_ms", "integer not null default 0")
+            cursor.execute(
+                """
+                create table if not exists message_feedback (
+                    id bigint generated by default as identity primary key,
+                    message_id bigint not null references conversation_messages(id) on delete cascade,
+                    session_id text not null references sessions(id) on delete cascade,
+                    user_id text not null references users(id) on delete cascade,
+                    vote integer not null,
+                    reason text not null default '',
+                    comment text not null default '',
+                    created_at timestamptz not null default now(),
+                    updated_at timestamptz not null default now()
+                )
+                """
+            )
+            cursor.execute(
+                """
+                create table if not exists rag_trace_nodes (
+                    id text primary key,
+                    session_id text not null,
+                    task_id text not null default '',
+                    parent_id text not null default '',
+                    name text not null,
+                    node_type text not null default 'METHOD',
+                    status text not null default 'running',
+                    input_summary text not null default '',
+                    output_summary text not null default '',
+                    error_message text not null default '',
+                    metadata_json jsonb not null default '{}'::jsonb,
+                    started_at timestamptz not null default now(),
+                    finished_at timestamptz,
+                    duration_ms integer not null default 0
+                )
+                """
+            )
             cursor.execute(
                 """
                 create table if not exists conversation_memory_summaries (
@@ -739,7 +906,11 @@ def _initialize_postgres_database() -> None:
             cursor.execute("create index if not exists idx_ingestion_task_nodes_task on ingestion_task_nodes (task_id, node_order)")
             cursor.execute("create index if not exists idx_admin_intent_nodes_parent on admin_intent_nodes (parent_id, sort_order)")
             cursor.execute("create index if not exists idx_admin_keyword_mappings_keyword on admin_keyword_mappings (raw_keyword, enabled)")
+            cursor.execute("create index if not exists idx_model_health_state on model_health (state, provider_name)")
             cursor.execute("create index if not exists idx_conversation_messages_session on conversation_messages (session_id, id)")
+            cursor.execute("create index if not exists idx_rag_trace_nodes_session on rag_trace_nodes (session_id, started_at)")
+            cursor.execute("create index if not exists idx_rag_trace_nodes_parent on rag_trace_nodes (parent_id)")
+            cursor.execute("create unique index if not exists idx_message_feedback_user_message on message_feedback (message_id, user_id)")
             cursor.execute("create index if not exists idx_conversation_memory_summaries_session on conversation_memory_summaries (session_id, id desc)")
             cursor.execute("create index if not exists idx_conversation_mid_memories_session on conversation_mid_memories (session_id, id desc)")
             cursor.execute("create index if not exists idx_conversation_long_memories_owner on conversation_long_memories (owner_type, owner_id, id desc)")
@@ -779,10 +950,10 @@ def _seed_demo_data(connection: DatabaseConnection) -> None:
     if knowledge_count == 0:
         connection.execute(
             """
-            insert into knowledge_bases (id, name, product, document_count)
-            values (?, ?, ?, ?)
+            insert into knowledge_bases (id, name, product, document_count, embedding_model, collection_name, owner)
+            values (?, ?, ?, ?, ?, ?, ?)
             """,
-            ("kb-demo-1", "RetriFlow product knowledge base", "RetriFlow", 1),
+            ("kb-demo-1", "RetriFlow product knowledge base", "RetriFlow", 1, "Qwen/Qwen3-Embedding-8B", "kbdemo1", "admin"),
         )
     route_profile_count = connection.execute("select count(*) from knowledge_base_route_profiles").fetchone()[0]
     if route_profile_count == 0:
@@ -874,14 +1045,25 @@ def _seed_demo_data(connection: DatabaseConnection) -> None:
         ).fetchone()[0]
         connection.executemany(
             """
-            insert into ingestion_task_nodes (task_id, node_type, node_order, success, message, duration_ms)
-            values (?, ?, ?, ?, ?, ?)
+            insert into ingestion_task_nodes (
+                task_id,
+                node_id,
+                node_type,
+                node_order,
+                success,
+                status,
+                message,
+                error_message,
+                output_json,
+                duration_ms
+            )
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
-                (task_id, "normalize", 1, 1, "Normalized source text and preserved paragraph boundaries.", 1),
-                (task_id, "segment", 2, 1, "Derived 1 semantic segments from source text.", 1),
-                (task_id, "chunk", 3, 1, "Generated 1 chunks with overlap-aware chunking.", 1),
-                (task_id, "index", 4, 1, "Indexed chunks into the local retrieval store.", 1),
+                (task_id, "normalize", "normalize", 1, 1, "success", "Normalized source text and preserved paragraph boundaries.", "", "{}", 1),
+                (task_id, "segment", "segment", 2, 1, "success", "Derived 1 semantic segments from source text.", "", '{"segmentCount":1}', 1),
+                (task_id, "chunk", "chunk", 3, 1, "success", "Generated 1 chunks with overlap-aware chunking.", "", '{"chunkCount":1}', 1),
+                (task_id, "index", "index", 4, 1, "success", "Indexed chunks into the local retrieval store.", "", '{"settings":{"store":"local"},"chunkCount":1}', 1),
             ],
         )
 

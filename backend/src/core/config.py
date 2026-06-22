@@ -30,6 +30,8 @@ class Settings(BaseModel):
     retrieval_final_top_k: int = 5
     default_route_model: str = "qwen3-max"
     sample_knowledge_dir: str = "backend/sample_data/knowledge"
+    storage_backend: str = "local"
+    storage_local_dir: str = "backend/data/uploads"
     langsmith_tracing: bool = False
     langsmith_project: str = "retriflow"
     llm_provider: str = "auto"
@@ -44,6 +46,8 @@ class Settings(BaseModel):
     llm_api_key: str = ""
     llm_base_url: str = ""
     llm_request_timeout_seconds: int = 30
+    model_health_failure_threshold: int = 3
+    model_health_open_cooldown_seconds: int = 60
     bailian_api_key: str = ""
     dashscope_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     aihubmix_api_key: str = ""
@@ -70,8 +74,27 @@ class Settings(BaseModel):
     mcp_max_tool_candidates: int = 3
     mcp_fail_fast: bool = False
     mcp_parallel_max_workers: int = 3
+    chat_queue_enabled: bool = False
+    chat_queue_backend: str = "memory"
+    chat_queue_redis_url: str = "redis://127.0.0.1:6379/0"
+    chat_queue_redis_key_prefix: str = "retriflow:chat"
+    chat_queue_max_concurrent: int = 4
+    chat_queue_max_wait_seconds: float = 30.0
+    chat_queue_lease_seconds: int = 120
+    chat_queue_poll_interval_ms: int = 100
+    stream_task_cancel_redis_url: str = "redis://127.0.0.1:6379/0"
+    stream_task_cancel_key_prefix: str = "retriflow:stream:cancel"
+    stream_task_cancel_ttl_seconds: int = 1800
     route_use_llm: bool = False
     route_confidence_threshold: float = 0.45
+    intent_tree_cache_enabled: bool = True
+    intent_tree_cache_redis_url: str = "redis://127.0.0.1:6379/0"
+    intent_tree_cache_key: str = "retriflow:intent:tree"
+    intent_tree_cache_ttl_days: int = 7
+    query_term_mapping_cache_enabled: bool = False
+    query_term_mapping_cache_redis_url: str = "redis://127.0.0.1:6379/0"
+    query_term_mapping_cache_key: str = "retriflow:query-term:mappings"
+    query_term_mapping_cache_ttl_days: int = 7
     auth_enabled: bool = True
     auth_secret_key: str = "retriflow-dev-secret-key"
     auth_access_token_ttl_hours: int = 72
@@ -148,6 +171,8 @@ def get_settings() -> Settings:
         retrieval_final_top_k=int(resolve("RETRIFLOW_RETRIEVAL_FINAL_TOP_K", "5")),
         default_route_model=resolve("RETRIFLOW_DEFAULT_ROUTE_MODEL", "qwen3-max"),
         sample_knowledge_dir=resolve("RETRIFLOW_SAMPLE_KNOWLEDGE_DIR", "backend/sample_data/knowledge"),
+        storage_backend=resolve("RETRIFLOW_STORAGE_BACKEND", "local"),
+        storage_local_dir=resolve("RETRIFLOW_STORAGE_LOCAL_DIR", "backend/data/uploads"),
         langsmith_tracing=resolve("LANGSMITH_TRACING", "false").lower() == "true",
         langsmith_project=resolve("LANGSMITH_PROJECT", "retriflow"),
         llm_provider=resolve("RETRIFLOW_LLM_PROVIDER", "auto"),
@@ -162,6 +187,8 @@ def get_settings() -> Settings:
         llm_api_key=resolve("RETRIFLOW_LLM_API_KEY", ""),
         llm_base_url=resolve("RETRIFLOW_LLM_BASE_URL", ""),
         llm_request_timeout_seconds=int(resolve("RETRIFLOW_LLM_REQUEST_TIMEOUT_SECONDS", "30")),
+        model_health_failure_threshold=int(resolve("RETRIFLOW_MODEL_HEALTH_FAILURE_THRESHOLD", "3")),
+        model_health_open_cooldown_seconds=int(resolve("RETRIFLOW_MODEL_HEALTH_OPEN_COOLDOWN_SECONDS", "60")),
         bailian_api_key=resolve("BAILIAN_API_KEY", ""),
         dashscope_base_url=resolve("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
         aihubmix_api_key=resolve("AIHUBMIX_API_KEY", ""),
@@ -188,8 +215,27 @@ def get_settings() -> Settings:
         mcp_max_tool_candidates=int(resolve("RETRIFLOW_MCP_MAX_TOOL_CANDIDATES", "3")),
         mcp_fail_fast=resolve("RETRIFLOW_MCP_FAIL_FAST", "false").lower() == "true",
         mcp_parallel_max_workers=int(resolve("RETRIFLOW_MCP_PARALLEL_MAX_WORKERS", "3")),
+        chat_queue_enabled=resolve("RETRIFLOW_CHAT_QUEUE_ENABLED", "false").lower() == "true",
+        chat_queue_backend=resolve("RETRIFLOW_CHAT_QUEUE_BACKEND", "memory"),
+        chat_queue_redis_url=resolve("RETRIFLOW_CHAT_QUEUE_REDIS_URL", "redis://127.0.0.1:6379/0"),
+        chat_queue_redis_key_prefix=resolve("RETRIFLOW_CHAT_QUEUE_REDIS_KEY_PREFIX", "retriflow:chat"),
+        chat_queue_max_concurrent=int(resolve("RETRIFLOW_CHAT_QUEUE_MAX_CONCURRENT", "4")),
+        chat_queue_max_wait_seconds=float(resolve("RETRIFLOW_CHAT_QUEUE_MAX_WAIT_SECONDS", "30")),
+        chat_queue_lease_seconds=int(resolve("RETRIFLOW_CHAT_QUEUE_LEASE_SECONDS", "120")),
+        chat_queue_poll_interval_ms=int(resolve("RETRIFLOW_CHAT_QUEUE_POLL_INTERVAL_MS", "100")),
+        stream_task_cancel_redis_url=resolve("RETRIFLOW_STREAM_TASK_CANCEL_REDIS_URL", "redis://127.0.0.1:6379/0"),
+        stream_task_cancel_key_prefix=resolve("RETRIFLOW_STREAM_TASK_CANCEL_KEY_PREFIX", "retriflow:stream:cancel"),
+        stream_task_cancel_ttl_seconds=int(resolve("RETRIFLOW_STREAM_TASK_CANCEL_TTL_SECONDS", "1800")),
         route_use_llm=resolve("RETRIFLOW_ROUTE_USE_LLM", "false").lower() == "true",
         route_confidence_threshold=float(resolve("RETRIFLOW_ROUTE_CONFIDENCE_THRESHOLD", "0.45")),
+        intent_tree_cache_enabled=resolve("RETRIFLOW_INTENT_TREE_CACHE_ENABLED", "true").lower() == "true",
+        intent_tree_cache_redis_url=resolve("RETRIFLOW_INTENT_TREE_CACHE_REDIS_URL", "redis://127.0.0.1:6379/0"),
+        intent_tree_cache_key=resolve("RETRIFLOW_INTENT_TREE_CACHE_KEY", "retriflow:intent:tree"),
+        intent_tree_cache_ttl_days=int(resolve("RETRIFLOW_INTENT_TREE_CACHE_TTL_DAYS", "7")),
+        query_term_mapping_cache_enabled=resolve("RETRIFLOW_QUERY_TERM_MAPPING_CACHE_ENABLED", "false").lower() == "true",
+        query_term_mapping_cache_redis_url=resolve("RETRIFLOW_QUERY_TERM_MAPPING_CACHE_REDIS_URL", "redis://127.0.0.1:6379/0"),
+        query_term_mapping_cache_key=resolve("RETRIFLOW_QUERY_TERM_MAPPING_CACHE_KEY", "retriflow:query-term:mappings"),
+        query_term_mapping_cache_ttl_days=int(resolve("RETRIFLOW_QUERY_TERM_MAPPING_CACHE_TTL_DAYS", "7")),
         auth_enabled=resolve("RETRIFLOW_AUTH_ENABLED", "true").lower() == "true",
         auth_secret_key=resolve("RETRIFLOW_AUTH_SECRET_KEY", "retriflow-dev-secret-key"),
         auth_access_token_ttl_hours=int(resolve("RETRIFLOW_AUTH_ACCESS_TOKEN_TTL_HOURS", "72")),

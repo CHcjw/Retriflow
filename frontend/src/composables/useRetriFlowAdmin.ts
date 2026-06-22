@@ -1,20 +1,25 @@
 import { computed, onMounted, ref, shallowRef, watch } from "vue";
 
 import {
+  clearAdminIntentTreeCache,
+  changeAdminUserPassword,
   createAdminIntentNode,
   createAdminKeywordMapping,
   createKnowledgeBase,
   createAdminUser,
   createIngestionPipeline,
   createKnowledgeDocument,
+  deleteAdminUser,
   deleteAdminIntentNode,
   deleteAdminKeywordMapping,
   deleteKnowledgeBase,
   deleteKnowledgeDocument,
   fetchAdminDashboard,
   fetchAdminIntentNodes,
+  fetchAdminIntentTreeCacheStatus,
   fetchAdminKeywordMappings,
   fetchAdminTraceDetail,
+  fetchAdminTraceNodes,
   fetchAdminSettings,
   fetchAdminTraces,
   fetchAdminUsers,
@@ -26,8 +31,14 @@ import {
   fetchKnowledgeDocuments,
   fetchMeta,
   reindexKnowledgeDocument,
+  updateKnowledgeBase,
+  updateKnowledgeDocument,
+  updateKnowledgeChunk,
+  updateAdminUser,
   updateAdminUserRole,
   type AdminUserCreateRequest,
+  type AdminUserPasswordChangeRequest,
+  type AdminUserUpdateRequest,
   type IngestionPipelineCreateRequest,
   uploadKnowledgeDocument,
   fetchRouteProfile,
@@ -40,9 +51,11 @@ import {
 } from "../services/api";
 import { useAuthStore } from "../stores/auth";
 
-const DEFAULT_CHUNK_SIZE = 600;
-const DEFAULT_CHUNK_OVERLAP = 120;
-const DEFAULT_RECURSIVE_SEPARATOR_TEXT = ["\\n\\n", "\\n", "。", "！", "？", ". ", "! ", "? ", "[space]"].join("\n");
+const DEFAULT_CHUNK_SIZE = 512;
+const DEFAULT_CHUNK_OVERLAP = 128;
+const DEFAULT_STRUCTURE_MAX_CHARS = 128;
+const DEFAULT_STRUCTURE_MIN_CHARS = 600;
+const DEFAULT_RECURSIVE_SEPARATOR_TEXT = ["\\n\\n", "\\n", "。", "；", "，", ". ", "! ", "? ", "[space]"].join("\n");
 
 const documentTypeOptions = [
   { value: "manual", label: "普通文本" },
@@ -56,8 +69,8 @@ const documentTypeOptions = [
 ] as const;
 
 const chunkStrategyOptions = [
-  { value: "auto", label: "自动策略" },
-  { value: "fixed", label: "固定大小分块" },
+  { value: "structure_aware", label: "结构感知分块" },
+  { value: "fixed_size", label: "固定大小分块" },
   { value: "overlap", label: "重叠分块" },
   { value: "recursive", label: "递归分块" },
   { value: "semantic_embedding", label: "Embedding 语义分块" },
@@ -65,17 +78,19 @@ const chunkStrategyOptions = [
 ] as const;
 
 const autoStrategyRecommendations: Record<string, string> = {
-  manual: "普通文本默认推荐递归分块，优先按段落和句子边界切分。",
-  knowledge_base: "知识库文档默认推荐递归分块，兼顾章节结构和上下文连续性。",
-  faq: "FAQ 默认推荐递归分块，便于保留问题与答案的成对关系。",
-  contract: "合同 / 法律文本默认推荐 Embedding 语义分块，更适合按条款语义聚合。",
-  log: "日志默认推荐固定大小分块，便于稳定切片和时序检索。",
-  html: "HTML 页面默认推荐递归分块，优先保留标题层级和段落结构。",
-  ocr: "OCR 文本默认推荐重叠分块，用重叠窗口缓解识别噪声造成的断句问题。",
-  mixed_knowledge: "混合企业知识默认推荐递归 + 语义混合分块，先按结构粗切，再做语义细切。"
+  manual: "普通文本推荐递归分块，优先按段落和句子边界切分。",
+  knowledge_base: "知识库文档推荐结构感知分块，兼顾标题、段落和上下文连续性。",
+  faq: "FAQ 推荐递归分块，便于保留问题与答案的成对关系。",
+  contract: "合同 / 法律文本推荐 Embedding 语义分块，更适合按条款语义聚合。",
+  log: "日志推荐固定大小分块，便于稳定切片和时序检索。",
+  html: "HTML 页面推荐结构感知分块，优先保留标题层级和段落结构。",
+  ocr: "OCR 文本推荐重叠分块，用重叠窗口缓解识别噪声造成的断句问题。",
+  mixed_knowledge: "混合企业知识推荐递归 + 语义混合分块，先按结构粗切，再做语义细切。"
 };
-
 function normalizeChunkSettings(chunkSize: number, chunkOverlap: number) {
+  if (chunkSize === -1) {
+    return { chunkSize: -1, chunkOverlap: 0 };
+  }
   const safeChunkSize = Number.isFinite(chunkSize)
     ? Math.max(200, Math.min(1000, Math.floor(chunkSize)))
     : DEFAULT_CHUNK_SIZE;
@@ -88,6 +103,40 @@ function normalizeChunkSettings(chunkSize: number, chunkOverlap: number) {
   return {
     chunkSize: safeChunkSize,
     chunkOverlap: safeChunkOverlap
+  };
+}
+function buildChunkConfig(
+  strategy: string,
+  chunkSize: number,
+  chunkOverlap: number,
+  recursiveSeparatorsText: string,
+  structureMaxChars = DEFAULT_STRUCTURE_MAX_CHARS,
+  structureMinChars = DEFAULT_STRUCTURE_MIN_CHARS
+) {
+  if (strategy === "fixed_size") {
+    return {
+      chunkSize,
+      overlapSize: chunkSize === -1 ? 0 : chunkOverlap
+    };
+  }
+  if (strategy === "structure_aware") {
+    return {
+      targetChars: chunkSize,
+      overlapChars: chunkOverlap,
+      maxChars: structureMaxChars,
+      minChars: structureMinChars
+    };
+  }
+  if (["recursive", "hybrid_recursive_semantic"].includes(strategy)) {
+    return {
+      chunk_size: chunkSize,
+      chunk_overlap: chunkOverlap,
+      recursive_separators: parseRecursiveSeparatorsText(recursiveSeparatorsText)
+    };
+  }
+  return {
+    chunk_size: chunkSize,
+    chunk_overlap: chunkOverlap
   };
 }
 
@@ -139,8 +188,17 @@ function createChunkingPresentation(
     return separators.length > 0 ? `${separators.length} 个分隔符` : "使用默认分隔符";
   });
   const chunkSummary = computed(
-    () =>
-      `chunk size ${chunkSize.value} / overlap ${chunkOverlap.value}，建议 overlap 约为 chunk size 的 10% - 25%。`
+    () => {
+      if (strategy.value === "structure_aware") {
+        return `target ${chunkSize.value} / overlap ${chunkOverlap.value}，优先按标题、段落和代码块边界打包。`;
+      }
+      if (strategy.value === "fixed_size") {
+        return chunkSize.value === -1
+          ? "不切分，整篇文档作为一个分块。"
+          : `chunkSize ${chunkSize.value} / overlapSize ${chunkOverlap.value}，按字符窗口稳定切片。`;
+      }
+      return `chunk size ${chunkSize.value} / overlap ${chunkOverlap.value}，建议 overlap 约为 chunk size 的 10% - 25%。`;
+    }
   );
 
   return {
@@ -173,14 +231,21 @@ export function useRetriFlowAdmin() {
   const chunks = ref<Awaited<ReturnType<typeof fetchKnowledgeChunks>>["items"]>([]);
   const ingestionPipelines = ref<Awaited<ReturnType<typeof fetchIngestionPipelines>>["items"]>([]);
   const ingestionTasks = ref<Awaited<ReturnType<typeof fetchIngestionTasks>>["items"]>([]);
+  const selectedDocumentTask = shallowRef<Awaited<ReturnType<typeof fetchIngestionTasks>>["items"][number] | null>(null);
   const ingestionTaskNodes = ref<Awaited<ReturnType<typeof fetchIngestionTaskNodes>>["items"]>([]);
   const adminUsers = ref<Awaited<ReturnType<typeof fetchAdminUsers>>["items"]>([]);
   const adminDashboard = ref<Awaited<ReturnType<typeof fetchAdminDashboard>> | null>(null);
   const dashboardRange = shallowRef("24h");
   const adminIntentNodes = ref<Awaited<ReturnType<typeof fetchAdminIntentNodes>>["items"]>([]);
+  const adminIntentTreeCacheStatus = ref<Awaited<ReturnType<typeof fetchAdminIntentTreeCacheStatus>> | null>(null);
   const adminKeywordMappings = ref<Awaited<ReturnType<typeof fetchAdminKeywordMappings>>["items"]>([]);
   const adminTraces = ref<Awaited<ReturnType<typeof fetchAdminTraces>>["items"]>([]);
+  const adminTraceTotal = shallowRef(0);
+  const adminTracePage = shallowRef(1);
+  const adminTracePageSize = shallowRef(10);
+  const adminTraceId = shallowRef("");
   const selectedAdminTrace = ref<Awaited<ReturnType<typeof fetchAdminTraceDetail>> | null>(null);
+  const selectedAdminTraceNodes = ref<Awaited<ReturnType<typeof fetchAdminTraceNodes>>["items"]>([]);
   const adminSettings = ref<Awaited<ReturnType<typeof fetchAdminSettings>>["items"]>([]);
 
   const documentTitle = shallowRef("");
@@ -192,11 +257,23 @@ export function useRetriFlowAdmin() {
   const recursiveSeparatorsText = shallowRef(DEFAULT_RECURSIVE_SEPARATOR_TEXT);
 
   const uploadFileName = shallowRef("");
-  const uploadDocumentType = shallowRef("knowledge_base");
-  const uploadChunkStrategy = shallowRef("auto");
+  const uploadProcessMode = shallowRef<"chunk_strategy" | "data_channel">("chunk_strategy");
+  const uploadPipelineId = shallowRef<number | null>(null);
+  const uploadChunkStrategy = shallowRef("structure_aware");
   const uploadChunkSize = shallowRef(DEFAULT_CHUNK_SIZE);
-  const uploadChunkOverlap = shallowRef(DEFAULT_CHUNK_OVERLAP);
+  const uploadChunkOverlap = shallowRef(0);
+  const uploadStructureMaxChars = shallowRef(DEFAULT_STRUCTURE_MAX_CHARS);
+  const uploadStructureMinChars = shallowRef(DEFAULT_STRUCTURE_MIN_CHARS);
   const uploadRecursiveSeparatorsText = shallowRef(DEFAULT_RECURSIVE_SEPARATOR_TEXT);
+
+  const documentProcessMode = shallowRef<"chunk_strategy" | "data_channel">("chunk_strategy");
+  const documentPipelineId = shallowRef<number | null>(null);
+  const documentChunkStrategy = shallowRef("structure_aware");
+  const documentChunkSize = shallowRef(DEFAULT_CHUNK_SIZE);
+  const documentChunkOverlap = shallowRef(0);
+  const documentStructureMaxChars = shallowRef(DEFAULT_STRUCTURE_MAX_CHARS);
+  const documentStructureMinChars = shallowRef(DEFAULT_STRUCTURE_MIN_CHARS);
+  const documentRecursiveSeparatorsText = shallowRef(DEFAULT_RECURSIVE_SEPARATOR_TEXT);
 
   const isAdmin = computed(() => authStore.isAdmin);
   const canManageKnowledge = computed(() => isAdmin.value);
@@ -221,8 +298,8 @@ export function useRetriFlowAdmin() {
         documentContent.value.trim()
     )
   );
-  const relatedTask = computed(() =>
-    ingestionTasks.value.find((item) => item.document_id === selectedDocumentId.value) ?? null
+  const relatedTask = computed(
+    () => selectedDocumentTask.value ?? ingestionTasks.value.find((item) => item.document_id === selectedDocumentId.value) ?? null
   );
   const canReindexDocument = computed(() =>
     Boolean(
@@ -242,7 +319,7 @@ export function useRetriFlowAdmin() {
   );
   const uploadPresentation = createChunkingPresentation(
     uploadChunkStrategy,
-    uploadDocumentType,
+    shallowRef("knowledge_base"),
     uploadChunkSize,
     uploadChunkOverlap,
     uploadRecursiveSeparatorsText
@@ -269,6 +346,46 @@ export function useRetriFlowAdmin() {
     } finally {
       taskNodeLoading.value = false;
     }
+  };
+
+  const loadSelectedDocumentTask = async (documentId: number | null) => {
+    if (!canViewIngestion.value || documentId === null) {
+      selectedDocumentTask.value = null;
+      ingestionTaskNodes.value = [];
+      return;
+    }
+
+    try {
+      const taskData = await fetchIngestionTasks({ documentId });
+      selectedDocumentTask.value = taskData.items[0] ?? null;
+      await loadTaskNodes(selectedDocumentTask.value?.id ?? null);
+    } catch (err) {
+      selectedDocumentTask.value = null;
+      ingestionTaskNodes.value = [];
+      error.value = err instanceof Error ? err.message : "加载文档入库任务失败";
+    }
+  };
+
+  const loadAdminTraces = async (page = adminTracePage.value) => {
+    if (!isAdmin.value) {
+      adminTraces.value = [];
+      adminTraceTotal.value = 0;
+      return;
+    }
+
+    const traceData = await fetchAdminTraces({
+      page,
+      pageSize: adminTracePageSize.value,
+      traceId: adminTraceId.value
+    });
+    adminTraces.value = traceData.items;
+    adminTraceTotal.value = traceData.total;
+    adminTracePage.value = traceData.page;
+    adminTracePageSize.value = traceData.page_size;
+  };
+
+  const searchAdminTraces = async () => {
+    await loadAdminTraces(1);
   };
 
   const createPipeline = async (payload: IngestionPipelineCreateRequest) => {
@@ -342,6 +459,7 @@ export function useRetriFlowAdmin() {
           userData,
           dashboardData,
           intentNodeData,
+          intentTreeCacheData,
           keywordMappingData,
           traceData,
           settingData
@@ -351,8 +469,13 @@ export function useRetriFlowAdmin() {
           fetchAdminUsers(),
           fetchAdminDashboard(dashboardRange.value),
           fetchAdminIntentNodes(),
+          fetchAdminIntentTreeCacheStatus(),
           fetchAdminKeywordMappings(),
-          fetchAdminTraces(),
+          fetchAdminTraces({
+            page: adminTracePage.value,
+            pageSize: adminTracePageSize.value,
+            traceId: adminTraceId.value
+          }),
           fetchAdminSettings()
         ]);
         ingestionPipelines.value = pipelineData.items;
@@ -360,8 +483,12 @@ export function useRetriFlowAdmin() {
         adminUsers.value = userData.items;
         adminDashboard.value = dashboardData;
         adminIntentNodes.value = intentNodeData.items;
+        adminIntentTreeCacheStatus.value = intentTreeCacheData;
         adminKeywordMappings.value = keywordMappingData.items;
         adminTraces.value = traceData.items;
+        adminTraceTotal.value = traceData.total;
+        adminTracePage.value = traceData.page;
+        adminTracePageSize.value = traceData.page_size;
         adminSettings.value = settingData.items;
       } else {
         ingestionPipelines.value = [];
@@ -369,8 +496,10 @@ export function useRetriFlowAdmin() {
         adminUsers.value = [];
         adminDashboard.value = null;
         adminIntentNodes.value = [];
+        adminIntentTreeCacheStatus.value = null;
         adminKeywordMappings.value = [];
         adminTraces.value = [];
+        adminTraceTotal.value = 0;
         adminSettings.value = [];
       }
 
@@ -393,16 +522,42 @@ export function useRetriFlowAdmin() {
     }
   };
 
-  const addKnowledgeBase = async (name?: string) => {
+  const addKnowledgeBase = async (
+    payload?: string | { name: string; embeddingModel: string; collectionName: string }
+  ) => {
     if (!canManageKnowledge.value) {
       denyManagementAction();
       return;
     }
 
-    const created = await createKnowledgeBase(name?.trim() || `RetriFlow 知识库 ${knowledgeBases.value.length + 1}`);
+    const created =
+      typeof payload === "object"
+        ? await createKnowledgeBase(payload)
+        : await createKnowledgeBase(payload?.trim() || `RetriFlow 知识库 ${knowledgeBases.value.length + 1}`);
     selectedKnowledgeBaseId.value = created.id;
     infoMessage.value = "知识库已创建。";
     await load();
+  };
+
+  const saveKnowledgeBase = async (
+    knowledgeBaseId: string,
+    payload: { name: string; embeddingModel: string; collectionName: string }
+  ) => {
+    if (!canManageKnowledge.value) {
+      denyManagementAction();
+      return null;
+    }
+    error.value = "";
+    infoMessage.value = "";
+    try {
+      const updated = await updateKnowledgeBase(knowledgeBaseId, payload);
+      knowledgeBases.value = knowledgeBases.value.map((item) => (item.id === updated.id ? updated : item));
+      infoMessage.value = "知识库已更新。";
+      return updated;
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : "更新知识库失败";
+      return null;
+    }
   };
 
   const removeKnowledgeBase = async (knowledgeBaseId: string) => {
@@ -502,11 +657,21 @@ export function useRetriFlowAdmin() {
 
     try {
       const created = await uploadKnowledgeDocument(selectedKnowledgeBaseId.value, file, {
-        documentType: uploadDocumentType.value,
+        processMode: uploadProcessMode.value,
+        pipelineId: uploadProcessMode.value === "data_channel" ? uploadPipelineId.value ?? undefined : undefined,
+        documentType: "knowledge_base",
         chunkStrategy: uploadChunkStrategy.value,
         chunkSize: uploadChunkSize.value,
         chunkOverlap: uploadChunkOverlap.value,
-        recursiveSeparators: parseRecursiveSeparatorsText(uploadRecursiveSeparatorsText.value)
+        recursiveSeparators: parseRecursiveSeparatorsText(uploadRecursiveSeparatorsText.value),
+        chunkConfig: buildChunkConfig(
+          uploadChunkStrategy.value,
+          uploadChunkSize.value,
+          uploadChunkOverlap.value,
+          uploadRecursiveSeparatorsText.value,
+          uploadStructureMaxChars.value,
+          uploadStructureMinChars.value
+        )
       });
       infoMessage.value = "上传文档已完成入库。";
       await refreshKnowledgeData(created.id);
@@ -514,6 +679,66 @@ export function useRetriFlowAdmin() {
       error.value = err instanceof Error ? err.message : "上传文档失败";
     } finally {
       uploadLoading.value = false;
+    }
+  };
+
+  const saveDocument = async (documentId: number, payload: { title?: string; enabled?: boolean }) => {
+    if (!canManageKnowledge.value) {
+      denyManagementAction();
+      return null;
+    }
+    if (!selectedKnowledgeBaseId.value) {
+      return null;
+    }
+    error.value = "";
+    infoMessage.value = "";
+    try {
+      const updated = await updateKnowledgeDocument(selectedKnowledgeBaseId.value, documentId, payload);
+      documents.value = documents.value.map((item) => (item.id === updated.id ? updated : item));
+      if (payload.enabled !== undefined && selectedDocumentId.value === documentId) {
+        await loadChunks(selectedKnowledgeBaseId.value, documentId);
+      }
+      infoMessage.value = "文档已更新。";
+      return updated;
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : "更新文档失败";
+      return null;
+    }
+  };
+
+  const syncDocumentEditorDefaults = (strategy: string, options?: { chunkSize?: number; chunkOverlap?: number }) => {
+    documentProcessMode.value = "chunk_strategy";
+    documentChunkStrategy.value = strategy || "structure_aware";
+    if (documentChunkStrategy.value === "structure_aware") {
+      documentChunkSize.value = options?.chunkSize ?? DEFAULT_CHUNK_SIZE;
+      documentChunkOverlap.value = options?.chunkOverlap ?? 0;
+      documentStructureMaxChars.value = DEFAULT_STRUCTURE_MAX_CHARS;
+      documentStructureMinChars.value = DEFAULT_STRUCTURE_MIN_CHARS;
+    } else {
+      documentChunkSize.value = options?.chunkSize ?? DEFAULT_CHUNK_SIZE;
+      documentChunkOverlap.value = options?.chunkOverlap ?? DEFAULT_CHUNK_OVERLAP;
+    }
+    documentRecursiveSeparatorsText.value = DEFAULT_RECURSIVE_SEPARATOR_TEXT;
+  };
+
+  const saveChunk = async (chunkId: number, payload: { content?: string; enabled?: boolean }) => {
+    if (!canManageKnowledge.value) {
+      denyManagementAction();
+      return null;
+    }
+    if (!selectedKnowledgeBaseId.value || selectedDocumentId.value === null) {
+      return null;
+    }
+    error.value = "";
+    infoMessage.value = "";
+    try {
+      const updated = await updateKnowledgeChunk(selectedKnowledgeBaseId.value, selectedDocumentId.value, chunkId, payload);
+      chunks.value = chunks.value.map((item) => (item.id === updated.id ? updated : item));
+      infoMessage.value = "分块已更新。";
+      return updated;
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : "更新分块失败";
+      return null;
     }
   };
 
@@ -543,6 +768,54 @@ export function useRetriFlowAdmin() {
       await refreshKnowledgeData(reindexed.id);
     } catch (err) {
       error.value = err instanceof Error ? err.message : "重建索引失败";
+    } finally {
+      reindexLoading.value = false;
+    }
+  };
+
+  const reindexDocumentWithOptions = async (payload: {
+    processMode?: "chunk_strategy" | "data_channel";
+    pipelineId?: number;
+    chunkStrategy: string;
+    chunkSize: number;
+    chunkOverlap: number;
+    recursiveSeparatorsText: string;
+    structureMaxChars?: number;
+    structureMinChars?: number;
+  }) => {
+    if (!canManageKnowledge.value) {
+      denyManagementAction();
+      return null;
+    }
+    if (!selectedKnowledgeBaseId.value || selectedDocumentId.value === null) {
+      return null;
+    }
+    reindexLoading.value = true;
+    error.value = "";
+    infoMessage.value = "";
+    try {
+      const reindexed = await reindexKnowledgeDocument(selectedKnowledgeBaseId.value, selectedDocumentId.value, {
+        documentType: "knowledge_base",
+        processMode: payload.processMode ?? "chunk_strategy",
+        pipelineId: payload.pipelineId,
+        chunkStrategy: payload.chunkStrategy,
+        chunkSize: payload.chunkSize,
+        chunkOverlap: payload.chunkOverlap,
+        recursiveSeparators: parseRecursiveSeparatorsText(payload.recursiveSeparatorsText),
+        chunkConfig: buildChunkConfig(
+          payload.chunkStrategy,
+          payload.chunkSize,
+          payload.chunkOverlap,
+          payload.recursiveSeparatorsText,
+          payload.structureMaxChars,
+          payload.structureMinChars
+        )
+      });
+      await refreshKnowledgeData(reindexed.id);
+      return reindexed;
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : "重建索引失败";
+      return null;
     } finally {
       reindexLoading.value = false;
     }
@@ -589,6 +862,34 @@ export function useRetriFlowAdmin() {
     const normalized = normalizeChunkSettings(uploadChunkSize.value, value);
     if (normalized.chunkOverlap !== uploadChunkOverlap.value) {
       uploadChunkOverlap.value = normalized.chunkOverlap;
+    }
+  });
+
+  watch(uploadChunkStrategy, (strategy) => {
+    if (strategy === "structure_aware") {
+      uploadChunkSize.value = DEFAULT_CHUNK_SIZE;
+      uploadChunkOverlap.value = 0;
+      uploadStructureMaxChars.value = DEFAULT_STRUCTURE_MAX_CHARS;
+      uploadStructureMinChars.value = DEFAULT_STRUCTURE_MIN_CHARS;
+      return;
+    }
+    if (strategy === "fixed_size") {
+      uploadChunkSize.value = DEFAULT_CHUNK_SIZE;
+      uploadChunkOverlap.value = DEFAULT_CHUNK_OVERLAP;
+    }
+  });
+
+  watch(documentChunkStrategy, (strategy) => {
+    if (strategy === "structure_aware") {
+      documentChunkSize.value = DEFAULT_CHUNK_SIZE;
+      documentChunkOverlap.value = 0;
+      documentStructureMaxChars.value = DEFAULT_STRUCTURE_MAX_CHARS;
+      documentStructureMinChars.value = DEFAULT_STRUCTURE_MIN_CHARS;
+      return;
+    }
+    if (strategy === "fixed_size") {
+      documentChunkSize.value = DEFAULT_CHUNK_SIZE;
+      documentChunkOverlap.value = DEFAULT_CHUNK_OVERLAP;
     }
   });
 
@@ -671,6 +972,53 @@ export function useRetriFlowAdmin() {
     infoMessage.value = "用户角色已更新。";
   };
 
+  const saveUser = async (userId: string, payload: AdminUserUpdateRequest) => {
+    if (!isAdmin.value) {
+      denyManagementAction();
+      return;
+    }
+    error.value = "";
+    infoMessage.value = "";
+    try {
+      const updated = await updateAdminUser(userId, payload);
+      adminUsers.value = adminUsers.value.map((item) => (item.id === userId ? updated : item));
+      infoMessage.value = "用户已更新。";
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : "更新用户失败";
+    }
+  };
+
+  const removeUser = async (userId: string) => {
+    if (!isAdmin.value) {
+      denyManagementAction();
+      return;
+    }
+    error.value = "";
+    infoMessage.value = "";
+    try {
+      await deleteAdminUser(userId);
+      adminUsers.value = adminUsers.value.filter((item) => item.id !== userId);
+      infoMessage.value = "用户已删除。";
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : "删除用户失败";
+    }
+  };
+
+  const changeOwnPassword = async (payload: AdminUserPasswordChangeRequest) => {
+    if (!isAdmin.value) {
+      denyManagementAction();
+      return;
+    }
+    error.value = "";
+    infoMessage.value = "";
+    try {
+      await changeAdminUserPassword(payload);
+      infoMessage.value = "密码已更新。";
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : "修改密码失败";
+    }
+  };
+
   const createUser = async (payload: AdminUserCreateRequest) => {
     if (!isAdmin.value) {
       denyManagementAction();
@@ -700,6 +1048,39 @@ export function useRetriFlowAdmin() {
     }
   };
 
+  const loadIntentTreeCacheStatus = async () => {
+    if (!isAdmin.value) {
+      adminIntentTreeCacheStatus.value = null;
+      return;
+    }
+    try {
+      adminIntentTreeCacheStatus.value = await fetchAdminIntentTreeCacheStatus();
+    } catch (err) {
+      adminIntentTreeCacheStatus.value = null;
+      error.value = err instanceof Error ? err.message : "load intent tree cache status failed";
+    }
+  };
+
+  const clearIntentTreeCache = async () => {
+    if (!isAdmin.value) {
+      denyManagementAction();
+      return;
+    }
+    if (
+      !adminIntentTreeCacheStatus.value?.enabled ||
+      !adminIntentTreeCacheStatus.value.available ||
+      !adminIntentTreeCacheStatus.value.exists
+    ) {
+      return;
+    }
+    try {
+      adminIntentTreeCacheStatus.value = await clearAdminIntentTreeCache();
+      infoMessage.value = "意图树缓存已清理。";
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : "清理意图树缓存失败";
+    }
+  };
+
   const createIntentNode = async (payload: AdminIntentNodeUpsertRequest) => {
     if (!isAdmin.value) {
       denyManagementAction();
@@ -710,6 +1091,7 @@ export function useRetriFlowAdmin() {
     try {
       const created = await createAdminIntentNode(payload);
       adminIntentNodes.value = [...adminIntentNodes.value, created];
+      await loadIntentTreeCacheStatus();
       infoMessage.value = "意图节点已创建。";
       return created;
     } catch (err) {
@@ -728,6 +1110,7 @@ export function useRetriFlowAdmin() {
     try {
       const updated = await updateAdminIntentNode(nodeId, payload);
       adminIntentNodes.value = adminIntentNodes.value.map((item) => (item.id === nodeId ? updated : item));
+      await loadIntentTreeCacheStatus();
       infoMessage.value = "意图节点已更新。";
       return updated;
     } catch (err) {
@@ -743,6 +1126,7 @@ export function useRetriFlowAdmin() {
     }
     await deleteAdminIntentNode(nodeId);
     adminIntentNodes.value = adminIntentNodes.value.filter((item) => item.id !== nodeId);
+    await loadIntentTreeCacheStatus();
     infoMessage.value = "意图节点已删除。";
   };
 
@@ -795,11 +1179,17 @@ export function useRetriFlowAdmin() {
   const loadTraceDetail = async (sessionId: string) => {
     if (!isAdmin.value || !sessionId) {
       selectedAdminTrace.value = null;
+      selectedAdminTraceNodes.value = [];
       return;
     }
     error.value = "";
     try {
-      selectedAdminTrace.value = await fetchAdminTraceDetail(sessionId);
+      const [detailData, nodeData] = await Promise.all([
+        fetchAdminTraceDetail(sessionId),
+        fetchAdminTraceNodes(sessionId)
+      ]);
+      selectedAdminTrace.value = detailData;
+      selectedAdminTraceNodes.value = nodeData.items;
     } catch (err) {
       error.value = err instanceof Error ? err.message : "加载链路详情失败";
     }
@@ -807,6 +1197,7 @@ export function useRetriFlowAdmin() {
 
   const clearTraceDetail = () => {
     selectedAdminTrace.value = null;
+    selectedAdminTraceNodes.value = [];
   };
 
   watch(
@@ -822,8 +1213,7 @@ export function useRetriFlowAdmin() {
     [selectedKnowledgeBaseId, selectedDocumentId, canViewIngestion],
     ([knowledgeBaseId, documentId]) => {
       void loadChunks(knowledgeBaseId, documentId);
-      const task = ingestionTasks.value.find((item) => item.document_id === documentId) ?? null;
-      void loadTaskNodes(task?.id ?? null);
+      void loadSelectedDocumentTask(documentId);
     },
     { immediate: true }
   );
@@ -851,14 +1241,21 @@ export function useRetriFlowAdmin() {
     chunks,
     ingestionPipelines,
     ingestionTasks,
+    selectedDocumentTask,
     ingestionTaskNodes,
     adminUsers,
     adminDashboard,
     dashboardRange,
     adminIntentNodes,
+    adminIntentTreeCacheStatus,
     adminKeywordMappings,
     adminTraces,
+    adminTraceTotal,
+    adminTracePage,
+    adminTracePageSize,
+    adminTraceId,
     selectedAdminTrace,
+    selectedAdminTraceNodes,
     adminSettings,
     relatedTask,
     isAdmin,
@@ -873,11 +1270,22 @@ export function useRetriFlowAdmin() {
     chunkOverlap,
     recursiveSeparatorsText,
     uploadFileName,
-    uploadDocumentType,
+    uploadProcessMode,
+    uploadPipelineId,
     uploadChunkStrategy,
     uploadChunkSize,
     uploadChunkOverlap,
+    uploadStructureMaxChars,
+    uploadStructureMinChars,
     uploadRecursiveSeparatorsText,
+    documentProcessMode,
+    documentPipelineId,
+    documentChunkStrategy,
+    documentChunkSize,
+    documentChunkOverlap,
+    documentStructureMaxChars,
+    documentStructureMinChars,
+    documentRecursiveSeparatorsText,
     documentTypeOptions,
     chunkStrategyOptions,
     manualChunkSummary: manualPresentation.chunkSummary,
@@ -895,17 +1303,25 @@ export function useRetriFlowAdmin() {
     canCreateDocument,
     canReindexDocument,
     addKnowledgeBase,
+    saveKnowledgeBase,
     removeKnowledgeBase,
     selectKnowledgeBase,
     selectDocument,
     removeDocument,
     loadDocuments,
+    loadAdminTraces,
+    searchAdminTraces,
     loadChunks,
     createPipeline,
     refreshKnowledgeData,
     addDocument,
     uploadDocument,
+    saveDocument,
+    saveChunk,
+    syncDocumentEditorDefaults,
+    reindexDocumentWithOptions,
     reindexDocument,
+    loadSelectedDocumentTask,
     loadTaskNodes,
     routeProfileLoading,
     routeProfile,
@@ -915,8 +1331,13 @@ export function useRetriFlowAdmin() {
     addSampleQuestion,
     removeSampleQuestion,
     changeUserRole,
+    saveUser,
+    removeUser,
+    changeOwnPassword,
     createUser,
     loadDashboard,
+    loadIntentTreeCacheStatus,
+    clearIntentTreeCache,
     createIntentNode,
     updateIntentNode,
     removeIntentNode,

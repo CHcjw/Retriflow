@@ -45,8 +45,10 @@ class ChatWorkflowMetadata(BaseModel):
     retrieval_channels: list[str]
     retrieval_count: int
     retrieval_stage_counts: dict[str, int] = Field(default_factory=dict)
+    retrieval_stage_metrics: dict[str, dict[str, object]] = Field(default_factory=dict)
     rewritten_queries: list[str] = Field(default_factory=list)
     rewrite_query_count: int = 0
+    pipeline_stages: list[str] = Field(default_factory=list)
     route_mode: str = "global"
     mcp_tool_count: int = 0
     deep_thinking: bool = False
@@ -54,7 +56,23 @@ class ChatWorkflowMetadata(BaseModel):
 
 class ChatMessageWithSourcesResponse(BaseModel):
     session_id: str
+    assistant_message_id: int | None = None
     assistant_message: str
     sources: list[ChatSourceItem]
     workflow: ChatWorkflowMetadata
     mcp_calls: list[ChatMcpCallItem] = Field(default_factory=list)
+
+
+class MessageFeedbackRequest(BaseModel):
+    vote: int
+    reason: str = ""
+    comment: str = ""
+
+
+class MessageFeedbackResponse(BaseModel):
+    message_id: int
+    session_id: str
+    vote: int
+    reason: str = ""
+    comment: str = ""
+    updated_at: str = ""

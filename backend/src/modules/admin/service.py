@@ -7,8 +7,14 @@ from fastapi import HTTPException, status
 
 from core.config import get_settings
 from core.state import get_connection
+from infra.llm import RetriFlowLLMService
+from infra.llm.health import ModelHealthSnapshot
+from infra.llm.health import get_model_health_service
 from modules.auth import RetriFlowAuthService
+from modules.knowledge.intent_cache import IntentTreeCacheManager
 from modules.rag.postprocess import RetriFlowAnswerPostprocessor
+from modules.rag.term_mapping import QueryTermMappingCacheManager
+from modules.rag.trace import RetriFlowTraceService
 from schemas.admin import (
     AdminDashboardAiPerformance,
     AdminDashboardMetricCard,
@@ -20,21 +26,33 @@ from schemas.admin import (
     AdminIntentNodeCreateRequest,
     AdminIntentNodeItem,
     AdminIntentNodeListResponse,
+    AdminIntentTreeCacheStatusResponse,
     AdminIntentNodeUpdateRequest,
     AdminKeywordMappingCreateRequest,
     AdminKeywordMappingItem,
     AdminKeywordMappingListResponse,
     AdminKeywordMappingUpdateRequest,
+    AdminMessageFeedbackItem,
+    AdminMessageFeedbackListResponse,
+    AdminModelHealthItem,
+    AdminModelHealthListResponse,
+    AdminModelHealthProbeRequest,
     AdminSettingItem,
     AdminSettingListResponse,
     AdminTraceDetailResponse,
     AdminTraceListResponse,
+    AdminTraceMemoryDiagnosticsResponse,
+    AdminTraceNodeItem,
+    AdminTraceNodeListResponse,
     AdminTraceMessageItem,
     AdminTraceSessionItem,
     AdminUserCreateRequest,
     AdminUserItem,
     AdminUserListResponse,
+    AdminUserPasswordChangeRequest,
+    AdminUserUpdateRequest,
 )
+from modules.memory import RetriFlowConversationMemoryService
 from schemas.auth import AuthRegisterRequest
 
 
@@ -241,37 +259,127 @@ class RetriFlowAdminService:
             AuthRegisterRequest(username=request.username, password=request.password, role=normalized_role)
         )
         with get_connection() as connection:
+            if request.avatar_url.strip():
+                connection.execute(
+                    "update users set avatar_url = ? where id = ?",
+                    (request.avatar_url.strip(), created.id),
+                )
+                connection.commit()
             row = connection.execute(
-                "select id, username, role, created_at from users where id = ?",
+                "select id, username, role, avatar_url, created_at from users where id = ?",
                 (created.id,),
             ).fetchone()
         return self._to_user(row)
 
-    def list_users(self) -> AdminUserListResponse:
+    def list_users(self, *, query: str = "", page: int = 1, page_size: int = 20) -> AdminUserListResponse:
+        normalized_query = query.strip().lower()
+        safe_page = max(1, page)
+        safe_page_size = min(max(1, page_size), 100)
+        offset = (safe_page - 1) * safe_page_size
+        where_clause = ""
+        params: list[object] = []
+        if normalized_query:
+            where_clause = "where lower(username) like ? or lower(role) like ?"
+            pattern = f"%{normalized_query}%"
+            params.extend([pattern, pattern])
         with get_connection() as connection:
+            total = int(
+                connection.execute(
+                    f"select count(*) from users {where_clause}",
+                    params,
+                ).fetchone()[0]
+            )
             rows = connection.execute(
-                """
-                select id, username, role, created_at
+                f"""
+                select id, username, role, avatar_url, created_at
                 from users
+                {where_clause}
                 order by created_at desc, username
-                """
+                limit ? offset ?
+                """,
+                [*params, safe_page_size, offset],
             ).fetchall()
-        return AdminUserListResponse(items=[self._to_user(row) for row in rows])
+        return AdminUserListResponse(
+            items=[self._to_user(row) for row in rows],
+            total=total,
+            page=safe_page,
+            page_size=safe_page_size,
+        )
 
     def update_user_role(self, user_id: str, role: str) -> AdminUserItem:
-        normalized_role = role.strip().lower()
-        if normalized_role not in {"admin", "user"}:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="role must be admin or user")
+        return self.update_user(user_id, AdminUserUpdateRequest(role=role))
+
+    def update_user(self, user_id: str, request: AdminUserUpdateRequest) -> AdminUserItem:
+        values = request.model_dump(exclude_unset=True)
+        updates: list[str] = []
+        params: list[object] = []
+        if "username" in values and values["username"] is not None:
+            username = str(values["username"]).strip()
+            if len(username) < 3:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="username too short")
+            updates.append("username = ?")
+            params.append(username)
+        if "role" in values and values["role"] is not None:
+            normalized_role = str(values["role"]).strip().lower() or "user"
+            if normalized_role not in {"admin", "user"}:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="role must be admin or user")
+            updates.append("role = ?")
+            params.append(normalized_role)
+        if "avatar_url" in values and values["avatar_url"] is not None:
+            updates.append("avatar_url = ?")
+            params.append(str(values["avatar_url"]).strip())
+
         with get_connection() as connection:
             if connection.execute("select id from users where id = ?", (user_id,)).fetchone() is None:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="user not found")
-            connection.execute("update users set role = ? where id = ?", (normalized_role, user_id))
-            connection.commit()
+            if updates:
+                try:
+                    connection.execute(
+                        f"update users set {', '.join(updates)} where id = ?",
+                        [*params, user_id],
+                    )
+                    connection.commit()
+                except Exception as exc:
+                    connection.rollback()
+                    if "unique" in str(exc).lower():
+                        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="username already exists") from exc
+                    raise
             updated = connection.execute(
-                "select id, username, role, created_at from users where id = ?",
+                "select id, username, role, avatar_url, created_at from users where id = ?",
                 (user_id,),
             ).fetchone()
         return self._to_user(updated)
+
+    def delete_user(self, user_id: str, *, current_user_id: str) -> None:
+        if user_id == current_user_id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="cannot delete current user")
+        with get_connection() as connection:
+            if connection.execute("select id from users where id = ?", (user_id,)).fetchone() is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="user not found")
+            connection.execute("delete from users where id = ?", (user_id,))
+            connection.execute("update sessions set owner_id = '' where owner_id = ?", (user_id,))
+            connection.commit()
+
+    def change_user_password(self, user_id: str, request: AdminUserPasswordChangeRequest) -> None:
+        old_password = request.old_password.strip()
+        new_password = request.new_password.strip()
+        if len(new_password) < 8:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="password too short")
+        auth_service = RetriFlowAuthService()
+        with get_connection() as connection:
+            row = connection.execute(
+                "select password_hash from users where id = ?",
+                (user_id,),
+            ).fetchone()
+            if row is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="user not found")
+            if not auth_service._verify_password(old_password, str(row["password_hash"])):
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="old password is incorrect")
+            connection.execute(
+                "update users set password_hash = ? where id = ?",
+                (auth_service._hash_password(new_password), user_id),
+            )
+            connection.commit()
 
     def list_intent_nodes(self) -> AdminIntentNodeListResponse:
         with get_connection() as connection:
@@ -283,6 +391,14 @@ class RetriFlowAdminService:
                 """
             ).fetchall()
         return AdminIntentNodeListResponse(items=[self._to_intent_node(row) for row in rows])
+
+    def get_intent_tree_cache_status(self) -> AdminIntentTreeCacheStatusResponse:
+        return AdminIntentTreeCacheStatusResponse(**IntentTreeCacheManager().get_cache_status())
+
+    def clear_intent_tree_cache(self) -> AdminIntentTreeCacheStatusResponse:
+        cache_manager = IntentTreeCacheManager()
+        cache_manager.clear_intent_tree_cache()
+        return AdminIntentTreeCacheStatusResponse(**cache_manager.get_cache_status())
 
     def create_intent_node(self, request: AdminIntentNodeCreateRequest) -> AdminIntentNodeItem:
         node_id = f"intent-{uuid.uuid4().hex[:12]}"
@@ -324,6 +440,7 @@ class RetriFlowAdminService:
                     raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="intent code already exists") from exc
                 raise
             row = self._get_intent_node_row(connection, node_id)
+        IntentTreeCacheManager().clear_intent_tree_cache()
         return self._to_intent_node(row)
 
     def update_intent_node(self, node_id: str, request: AdminIntentNodeUpdateRequest) -> AdminIntentNodeItem:
@@ -356,6 +473,7 @@ class RetriFlowAdminService:
                         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="intent code already exists") from exc
                     raise
             row = self._get_intent_node_row(connection, node_id)
+        IntentTreeCacheManager().clear_intent_tree_cache()
         return self._to_intent_node(row)
 
     def delete_intent_node(self, node_id: str) -> None:
@@ -365,6 +483,7 @@ class RetriFlowAdminService:
             connection.execute("delete from admin_intent_nodes where id = ?", (node_id,))
             connection.execute("update admin_intent_nodes set parent_id = ? where parent_id = ?", ("ROOT", node_id))
             connection.commit()
+        IntentTreeCacheManager().clear_intent_tree_cache()
 
     def list_keyword_mappings(self) -> AdminKeywordMappingListResponse:
         with get_connection() as connection:
@@ -402,6 +521,7 @@ class RetriFlowAdminService:
             )
             connection.commit()
             row = self._get_keyword_mapping_row(connection, mapping_id)
+        QueryTermMappingCacheManager().clear_cache()
         return self._to_keyword_mapping(row)
 
     def update_keyword_mapping(self, mapping_id: str, request: AdminKeywordMappingUpdateRequest) -> AdminKeywordMappingItem:
@@ -426,6 +546,7 @@ class RetriFlowAdminService:
                 )
                 connection.commit()
             row = self._get_keyword_mapping_row(connection, mapping_id)
+        QueryTermMappingCacheManager().clear_cache()
         return self._to_keyword_mapping(row)
 
     def delete_keyword_mapping(self, mapping_id: str) -> None:
@@ -434,13 +555,144 @@ class RetriFlowAdminService:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="keyword mapping not found")
             connection.execute("delete from admin_keyword_mappings where id = ?", (mapping_id,))
             connection.commit()
+        QueryTermMappingCacheManager().clear_cache()
 
-    def list_traces(self) -> AdminTraceListResponse:
+    def list_message_feedback(self) -> AdminMessageFeedbackListResponse:
         with get_connection() as connection:
-            session_rows = connection.execute(
+            rows = connection.execute(
                 """
                 select
+                    mf.id,
+                    mf.message_id,
+                    mf.session_id,
+                    mf.user_id,
+                    coalesce(u.username, '') as username,
+                    mf.vote,
+                    mf.reason,
+                    mf.comment,
+                    cm.content as message_content,
+                    mf.created_at,
+                    mf.updated_at
+                from message_feedback mf
+                left join users u on u.id = mf.user_id
+                left join conversation_messages cm on cm.id = mf.message_id
+                order by mf.updated_at desc, mf.id desc
+                limit 200
+                """
+            ).fetchall()
+        return AdminMessageFeedbackListResponse(
+            items=[
+                AdminMessageFeedbackItem(
+                    id=int(row["id"]),
+                    message_id=int(row["message_id"]),
+                    session_id=str(row["session_id"]),
+                    user_id=str(row["user_id"]),
+                    username=str(row["username"] or ""),
+                    vote=int(row["vote"]),
+                    reason=str(row["reason"] or ""),
+                    comment=str(row["comment"] or ""),
+                    message_preview=self._preview(str(row["message_content"] or ""), limit=180),
+                    created_at=self._serialize_timestamp(row["created_at"]),
+                    updated_at=self._serialize_timestamp(row["updated_at"]),
+                )
+                for row in rows
+            ]
+        )
+
+    def list_traces(
+        self,
+        *,
+        query: str = "",
+        trace_id: str = "",
+        task_id: str = "",
+        user_query: str = "",
+        status_filter: str = "",
+        started_from: str = "",
+        started_to: str = "",
+        page: int = 1,
+        page_size: int = 20,
+    ) -> AdminTraceListResponse:
+        safe_page = max(1, int(page or 1))
+        safe_page_size = max(1, min(100, int(page_size or 20)))
+        offset = (safe_page - 1) * safe_page_size
+
+        where_clauses: list[str] = []
+        params: list[object] = []
+
+        normalized_query = query.strip().lower()
+        if normalized_query:
+            where_clauses.append(
+                "(lower(s.id) like ? or lower(coalesce(s.title, '')) like ? or lower(coalesce(rt.id, '')) like ?)"
+            )
+            like_query = f"%{normalized_query}%"
+            params.extend([like_query, like_query, like_query])
+
+        normalized_trace_id = trace_id.strip()
+        if normalized_trace_id:
+            where_clauses.append("rt.id = ?")
+            params.append(normalized_trace_id)
+
+        normalized_task_id = task_id.strip()
+        if normalized_task_id:
+            where_clauses.append("rt.task_id = ?")
+            params.append(normalized_task_id)
+
+        normalized_user_query = user_query.strip().lower()
+        if normalized_user_query:
+            where_clauses.append(
+                "(lower(coalesce(u.username, '')) like ? or lower(coalesce(s.owner_id, '')) like ?)"
+            )
+            like_user = f"%{normalized_user_query}%"
+            params.extend([like_user, like_user])
+
+        normalized_status = status_filter.strip().lower()
+        if normalized_status in {"success", "error", "running", "cancelled"}:
+            where_clauses.append("lower(coalesce(rt.status, '')) = ?")
+            params.append(normalized_status)
+        elif normalized_status == "empty":
+            where_clauses.append("coalesce(s.message_count, 0) = 0")
+
+        normalized_started_from = started_from.strip()
+        if normalized_started_from:
+            where_clauses.append("rt.started_at >= ?")
+            params.append(normalized_started_from)
+
+        normalized_started_to = started_to.strip()
+        if normalized_started_to:
+            where_clauses.append("rt.started_at <= ?")
+            params.append(normalized_started_to)
+
+        where_sql = f"where {' and '.join(where_clauses)}" if where_clauses else ""
+        trace_join_sql = """
+                left join rag_trace_nodes rt on rt.id = (
+                    select latest_rt.id
+                    from rag_trace_nodes latest_rt
+                    where latest_rt.session_id = s.id
+                      and coalesce(latest_rt.parent_id, '') = ''
+                    order by latest_rt.started_at desc, latest_rt.id desc
+                    limit 1
+                )
+        """
+
+        with get_connection() as connection:
+            total_row = connection.execute(
+                f"""
+                select count(*) as total
+                from sessions s
+                left join users u on u.id = s.owner_id
+                {trace_join_sql}
+                {where_sql}
+                """,
+                tuple(params),
+            ).fetchone()
+            session_rows = connection.execute(
+                f"""
+                select
                     s.id,
+                    coalesce(rt.id, '') as trace_id,
+                    coalesce(rt.task_id, '') as task_id,
+                    coalesce(rt.status, '') as trace_status,
+                    rt.started_at as trace_started_at,
                     s.title,
                     s.owner_id,
                     coalesce(u.username, '') as owner_username,
@@ -448,10 +700,15 @@ class RetriFlowAdminService:
                     max(cm.created_at) as latest_message_at
                 from sessions s
                 left join users u on u.id = s.owner_id
+                {trace_join_sql}
                 left join conversation_messages cm on cm.session_id = s.id
-                group by s.id, s.title, s.owner_id, u.username, s.message_count
-                order by max(cm.created_at) desc nulls last, s.id desc
+                {where_sql}
+                group by s.id, rt.id, rt.task_id, rt.status, rt.started_at, s.title, s.owner_id, u.username, s.message_count
+                order by coalesce(rt.started_at, max(cm.created_at)) desc nulls last, s.id desc
+                limit ? offset ?
                 """
+                ,
+                tuple([*params, safe_page_size, offset]),
             ).fetchall()
             items: list[AdminTraceSessionItem] = []
             for session_row in session_rows:
@@ -468,16 +725,29 @@ class RetriFlowAdminService:
                 items.append(
                     AdminTraceSessionItem(
                         id=session_row["id"],
+                        trace_id=str(session_row.get("trace_id", "") or ""),
+                        task_id=str(session_row.get("task_id", "") or ""),
+                        status=str(session_row.get("trace_status", "") or self._legacy_session_trace_status(session_row)),
                         title=session_row["title"],
                         owner_id=str(session_row.get("owner_id", "") or ""),
                         owner_username=str(session_row.get("owner_username", "") or ""),
                         message_count=int(session_row["message_count"] or 0),
+                        started_at=self._serialize_timestamp(session_row.get("trace_started_at")),
                         latest_message_at=self._serialize_timestamp(session_row.get("latest_message_at")),
                         duration_ms=self._session_duration_ms(connection, session_row["id"]),
                         latest_messages=[self._to_trace_message(row) for row in reversed(message_rows)],
                     )
                 )
-        return AdminTraceListResponse(items=items)
+        return AdminTraceListResponse(
+            items=items,
+            total=int(total_row["total"] if total_row is not None else len(items)),
+            page=safe_page,
+            page_size=safe_page_size,
+        )
+
+    @staticmethod
+    def _legacy_session_trace_status(row) -> str:
+        return "success" if int(row["message_count"] or 0) > 0 else "empty"
 
     def get_trace_detail(self, session_id: str) -> AdminTraceDetailResponse:
         with get_connection() as connection:
@@ -523,6 +793,58 @@ class RetriFlowAdminService:
             messages=messages,
         )
 
+    def get_trace_memory_diagnostics(self, session_id: str) -> AdminTraceMemoryDiagnosticsResponse:
+        with get_connection() as connection:
+            row = connection.execute(
+                "select id from sessions where id = ?",
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
+
+        memory_service = RetriFlowConversationMemoryService()
+        layered = memory_service.load_layered_memory(session_id=session_id)
+        prompt_messages = memory_service.load_prompt_messages(session_id=session_id)
+        summary = layered.short_term.summary
+        summary_preview = summary.content[:240] if summary is not None else ""
+        return AdminTraceMemoryDiagnosticsResponse(
+            session_id=session_id,
+            has_summary=summary is not None,
+            summary_preview=summary_preview,
+            recent_message_count=len(layered.short_term.recent_messages),
+            mid_term_count=len(layered.mid_term),
+            long_term_count=len(layered.long_term),
+            prompt_message_count=len(prompt_messages),
+        )
+
+    def get_trace_nodes(self, session_id: str) -> AdminTraceNodeListResponse:
+        with get_connection() as connection:
+            row = connection.execute(
+                "select id from sessions where id = ?",
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
+
+        nodes = RetriFlowTraceService().list_nodes(session_id)
+        return AdminTraceNodeListResponse(items=[AdminTraceNodeItem(**node) for node in nodes])
+
+    def list_model_health(self) -> AdminModelHealthListResponse:
+        health_service = get_model_health_service()
+        health_service.hydrate_from_persistence()
+        snapshots = health_service.list_snapshots()
+        return AdminModelHealthListResponse(
+            items=[self._to_model_health_item(snapshot) for snapshot in snapshots]
+        )
+
+    def probe_model_health(self, request: AdminModelHealthProbeRequest) -> AdminModelHealthItem:
+        snapshot = RetriFlowLLMService().probe_model_health(
+            capability=request.capability.strip() or "chat",
+            provider_name=request.provider_name.strip() or None,
+            model=request.model.strip() or None,
+        )
+        return self._to_model_health_item(snapshot)
+
     def list_settings(self) -> AdminSettingListResponse:
         settings = get_settings()
         raw_items = [
@@ -554,6 +876,14 @@ class RetriFlowAdminService:
             ("tika_ocr_service_endpoint", settings.tika_ocr_service_endpoint, "本地服务"),
             ("langsmith_tracing", settings.langsmith_tracing, "观测"),
             ("langsmith_project", settings.langsmith_project, "观测"),
+            ("chat_queue_enabled", settings.chat_queue_enabled, "rate_limit"),
+            ("chat_queue_backend", settings.chat_queue_backend, "rate_limit"),
+            ("chat_queue_redis_url", settings.chat_queue_redis_url, "rate_limit"),
+            ("chat_queue_redis_key_prefix", settings.chat_queue_redis_key_prefix, "rate_limit"),
+            ("chat_queue_max_concurrent", settings.chat_queue_max_concurrent, "rate_limit"),
+            ("chat_queue_max_wait_seconds", settings.chat_queue_max_wait_seconds, "rate_limit"),
+            ("chat_queue_lease_seconds", settings.chat_queue_lease_seconds, "rate_limit"),
+            ("chat_queue_poll_interval_ms", settings.chat_queue_poll_interval_ms, "rate_limit"),
             ("auth_enabled", settings.auth_enabled, "认证"),
             ("auth_access_token_ttl_hours", settings.auth_access_token_ttl_hours, "认证"),
         ]
@@ -567,19 +897,42 @@ class RetriFlowAdminService:
             id=str(row["id"]),
             username=str(row["username"]),
             role=str(row["role"]),
+            avatar_url=str(row["avatar_url"] or ""),
             created_at=RetriFlowAdminService._serialize_timestamp(row["created_at"]),
         )
 
     @staticmethod
+    def _preview(content: str, *, limit: int = 160) -> str:
+        return content if len(content) <= limit else f"{content[:limit]}..."
+
+    @staticmethod
     def _to_trace_message(row, preview_limit: int = 160) -> AdminTraceMessageItem:
         content = str(row["content"])
-        preview = content if len(content) <= preview_limit else f"{content[:preview_limit]}..."
+        preview = RetriFlowAdminService._preview(content, limit=preview_limit)
         return AdminTraceMessageItem(
             id=int(row["id"]),
             role=str(row["role"]),
             content_preview=preview,
             created_at=RetriFlowAdminService._serialize_timestamp(row["created_at"]),
             duration_ms=int(row.get("duration_ms", 0) or 0),
+        )
+
+    @staticmethod
+    def _to_model_health_item(snapshot: ModelHealthSnapshot) -> AdminModelHealthItem:
+        return AdminModelHealthItem(
+            capability=snapshot.capability,
+            provider_name=snapshot.provider_name,
+            model=snapshot.model,
+            state=snapshot.state,
+            failure_count=snapshot.failure_count,
+            success_count=snapshot.success_count,
+            opened_at=snapshot.opened_at,
+            last_success_at=snapshot.last_success_at,
+            last_failure_at=snapshot.last_failure_at,
+            last_error=snapshot.last_error,
+            last_success_duration_ms=snapshot.last_success_duration_ms,
+            last_first_packet_ms=snapshot.last_first_packet_ms,
+            half_open_in_flight=snapshot.half_open_in_flight,
         )
 
     @staticmethod

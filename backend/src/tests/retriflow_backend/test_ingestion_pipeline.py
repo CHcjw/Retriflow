@@ -61,6 +61,38 @@ class RetriFlowIngestionPipelineTests(unittest.TestCase):
         self.assertGreaterEqual(len(result.chunk_documents), 2)
         self.assertTrue(all(document.metadata["strategy"] == "fixed" for document in result.chunk_documents))
 
+    def test_fixed_size_alias_uses_ragent_config_names(self) -> None:
+        from modules.ingestion import RetriFlowIngestionPipeline
+
+        pipeline = RetriFlowIngestionPipeline(
+            strategy="fixed_size",
+            chunk_config={"chunkSize": 16, "overlapSize": 4},
+        )
+        result = pipeline.run("0123456789abcdefghijklmnopqrstuvwxyz")
+
+        self.assertGreaterEqual(len(result.chunk_documents), 2)
+        self.assertTrue(all(document.metadata["strategy"] == "fixed" for document in result.chunk_documents))
+        self.assertEqual(result.chunk_documents[1].metadata["start_index"], 12)
+
+    def test_structure_aware_strategy_preserves_markdown_boundaries(self) -> None:
+        from modules.ingestion import RetriFlowIngestionPipeline
+
+        pipeline = RetriFlowIngestionPipeline(
+            strategy="structure_aware",
+            chunk_config={"targetChars": 80, "overlapChars": 0, "maxChars": 120, "minChars": 40},
+        )
+        result = pipeline.run(
+            "# Heading A\n\n"
+            "Paragraph A explains the first section with enough text to form a chunk.\n\n"
+            "```python\nprint('kept together')\n```\n\n"
+            "# Heading B\n\n"
+            "Paragraph B explains the second section with enough text to form another chunk."
+        )
+
+        self.assertGreaterEqual(len(result.chunk_documents), 2)
+        self.assertTrue(all(document.metadata["strategy"] == "structure_aware" for document in result.chunk_documents))
+        self.assertTrue(any("```python\nprint('kept together')\n```" in document.page_content for document in result.chunk_documents))
+
     def test_recursive_strategy_respects_custom_separator_order(self) -> None:
         from modules.ingestion import RetriFlowIngestionPipeline
 
@@ -134,6 +166,259 @@ class RetriFlowIngestionPipelineTests(unittest.TestCase):
         self.assertGreaterEqual(len(result.chunk_documents), 2)
         self.assertTrue(all(document.metadata["strategy"] == "hybrid_recursive_semantic" for document in result.chunk_documents))
         self.assertTrue(all("parent_segment_index" in document.metadata for document in result.chunk_documents))
+
+    def test_stored_pipeline_nodes_drive_chunking_configuration(self) -> None:
+        from schemas.knowledge import IngestionPipelineNodeConfig
+        from modules.ingestion import RetriFlowIngestionPipeline
+
+        nodes = [
+            IngestionPipelineNodeConfig(
+                node_id="parser",
+                node_type="parser",
+                next_node_id="cleaner",
+                config={"preserve_structure": True},
+            ),
+            IngestionPipelineNodeConfig(
+                node_id="cleaner",
+                node_type="cleaner",
+                next_node_id="chunker",
+                config={"normalize_whitespace": True},
+            ),
+            IngestionPipelineNodeConfig(
+                node_id="chunker",
+                node_type="chunker",
+                next_node_id="embedder",
+                config={"strategy": "fixed_size", "chunkSize": 12, "overlapSize": 3},
+            ),
+            IngestionPipelineNodeConfig(
+                node_id="embedder",
+                node_type="embedder",
+                next_node_id="indexer",
+                config={"provider": "ollama", "model": "qwen3-embedding:8b"},
+            ),
+            IngestionPipelineNodeConfig(
+                node_id="indexer",
+                node_type="indexer",
+                config={"store": "pgvector"},
+            ),
+        ]
+
+        pipeline = RetriFlowIngestionPipeline.from_pipeline_nodes(nodes)
+        result = pipeline.run("0123456789abcdefghijklmnopqrstuvwxyz")
+
+        self.assertGreaterEqual(len(result.chunk_documents), 3)
+        self.assertEqual(result.chunk_documents[0].metadata["strategy"], "fixed")
+        self.assertEqual(result.chunk_documents[1].metadata["start_index"], 9)
+        self.assertEqual(
+            [node.node_type for node in result.node_results],
+            ["parser", "cleaner", "chunker", "embedder", "indexer"],
+        )
+        self.assertTrue(any("qwen3-embedding:8b" in node.message for node in result.node_results))
+
+    def test_pipeline_node_results_include_ragent_runtime_fields_and_output(self) -> None:
+        from schemas.knowledge import IngestionPipelineNodeConfig
+        from modules.ingestion import RetriFlowIngestionPipeline
+
+        nodes = [
+            IngestionPipelineNodeConfig(
+                node_id="parse",
+                node_type="parser",
+                next_node_id="chunk",
+                config={"engine": "plain-text"},
+            ),
+            IngestionPipelineNodeConfig(
+                node_id="chunk",
+                node_type="chunker",
+                next_node_id="index",
+                config={"strategy": "fixed_size", "chunkSize": 16, "overlapSize": 4},
+            ),
+            IngestionPipelineNodeConfig(
+                node_id="index",
+                node_type="indexer",
+                config={"store": "pgvector"},
+            ),
+        ]
+
+        pipeline = RetriFlowIngestionPipeline.from_pipeline_nodes(nodes)
+        result = pipeline.run("0123456789abcdefghijklmnopqrstuvwxyz")
+
+        chunk_node = next(node for node in result.node_results if node.node_id == "chunk")
+        index_node = next(node for node in result.node_results if node.node_id == "index")
+
+        self.assertEqual(chunk_node.status, "success")
+        self.assertEqual(chunk_node.error_message, "")
+        self.assertEqual(chunk_node.output["chunkCount"], len(result.chunks))
+        self.assertEqual(index_node.output["settings"], {"store": "pgvector"})
+        self.assertEqual(index_node.output["chunkCount"], len(result.chunks))
+
+    def test_pipeline_node_condition_false_records_skipped_status(self) -> None:
+        from schemas.knowledge import IngestionPipelineNodeConfig
+        from modules.ingestion import RetriFlowIngestionPipeline
+
+        nodes = [
+            IngestionPipelineNodeConfig(
+                node_id="parse",
+                node_type="parser",
+                next_node_id="chunk",
+                config={"engine": "plain-text"},
+            ),
+            IngestionPipelineNodeConfig(
+                node_id="chunk",
+                node_type="chunker",
+                condition='{"field":"document_type","operator":"eq","value":"contract"}',
+                config={"strategy": "fixed_size", "chunkSize": 16, "overlapSize": 4},
+            ),
+        ]
+
+        pipeline = RetriFlowIngestionPipeline.from_pipeline_nodes(nodes)
+        result = pipeline.run("0123456789abcdefghijklmnopqrstuvwxyz", document_type="manual")
+
+        chunk_node = next(node for node in result.node_results if node.node_id == "chunk")
+        self.assertTrue(chunk_node.success)
+        self.assertEqual(chunk_node.status, "skipped")
+        self.assertTrue(chunk_node.message.startswith("Skipped:"))
+
+    def test_pipeline_node_condition_reads_nested_metadata_fields(self) -> None:
+        from schemas.knowledge import IngestionPipelineNodeConfig
+        from modules.ingestion import RetriFlowIngestionPipeline
+
+        nodes = [
+            IngestionPipelineNodeConfig(
+                node_id="parse",
+                node_type="parser",
+                next_node_id="enhance",
+                config={"engine": "plain-text"},
+            ),
+            IngestionPipelineNodeConfig(
+                node_id="enhance",
+                node_type="enhancer",
+                condition='{"field":"metadata.department","operator":"eq","value":"finance"}',
+                config={"extract_keywords": True},
+            ),
+        ]
+
+        pipeline = RetriFlowIngestionPipeline.from_pipeline_nodes(nodes)
+        result = pipeline.run(
+            "Quarterly revenue policy.",
+            metadata={
+                "department": "finance",
+                "keywords": ["revenue", "policy"],
+                "questions": ["What is the policy?"],
+                "enhancedText": "Quarterly revenue policy with generated metadata.",
+            },
+        )
+
+        enhance_node = next(node for node in result.node_results if node.node_id == "enhance")
+        self.assertEqual(enhance_node.status, "success")
+        self.assertEqual(enhance_node.output["keywords"], ["revenue", "policy"])
+        self.assertEqual(enhance_node.output["questions"], ["What is the policy?"])
+        self.assertEqual(enhance_node.output["enhancedText"], "Quarterly revenue policy with generated metadata.")
+
+    def test_pipeline_node_output_matches_ragent_fetcher_parser_shape(self) -> None:
+        from schemas.knowledge import IngestionPipelineNodeConfig
+        from modules.ingestion import RetriFlowIngestionPipeline
+
+        nodes = [
+            IngestionPipelineNodeConfig(
+                node_id="fetch",
+                node_type="fetcher",
+                next_node_id="parse",
+                config={"source": "upload"},
+            ),
+            IngestionPipelineNodeConfig(
+                node_id="parse",
+                node_type="parser",
+                config={"engine": "tika"},
+            ),
+        ]
+
+        pipeline = RetriFlowIngestionPipeline.from_pipeline_nodes(nodes)
+        result = pipeline.run(
+            "Uploaded document body.",
+            metadata={
+                "source_type": "upload",
+                "source_location": "documents/report.md",
+                "file_name": "report.md",
+                "mime_type": "text/markdown",
+                "rawBytesLength": 23,
+                "rawBytesBase64": "VXBsb2FkZWQgZG9jdW1lbnQgYm9keS4=",
+                "document": {"title": "report"},
+            },
+        )
+
+        fetch_node = next(node for node in result.node_results if node.node_id == "fetch")
+        parse_node = next(node for node in result.node_results if node.node_id == "parse")
+
+        self.assertEqual(fetch_node.output["source"]["type"], "upload")
+        self.assertEqual(fetch_node.output["source"]["location"], "documents/report.md")
+        self.assertEqual(fetch_node.output["source"]["fileName"], "report.md")
+        self.assertEqual(fetch_node.output["mimeType"], "text/markdown")
+        self.assertEqual(fetch_node.output["rawBytesLength"], 23)
+        self.assertEqual(parse_node.output["mimeType"], "text/markdown")
+        self.assertEqual(parse_node.output["rawText"], "Uploaded document body.")
+        self.assertEqual(parse_node.output["document"], {"title": "report"})
+
+    def test_pipeline_executes_only_start_node_chain(self) -> None:
+        from schemas.knowledge import IngestionPipelineNodeConfig
+        from modules.ingestion import RetriFlowIngestionPipeline
+
+        nodes = [
+            IngestionPipelineNodeConfig(
+                node_id="parse",
+                node_type="parser",
+                next_node_id="chunk",
+            ),
+            IngestionPipelineNodeConfig(
+                node_id="chunk",
+                node_type="chunker",
+                config={"strategy": "fixed_size", "chunkSize": 16, "overlapSize": 4},
+            ),
+            IngestionPipelineNodeConfig(
+                node_id="orphan",
+                node_type="indexer",
+                config={"store": "pgvector"},
+            ),
+        ]
+
+        pipeline = RetriFlowIngestionPipeline.from_pipeline_nodes(nodes)
+        result = pipeline.run("0123456789abcdefghijklmnopqrstuvwxyz")
+
+        self.assertEqual([node.node_id for node in result.node_results], ["parse", "chunk"])
+
+    def test_pipeline_rejects_missing_next_node(self) -> None:
+        from schemas.knowledge import IngestionPipelineNodeConfig
+        from modules.ingestion import RetriFlowIngestionPipeline
+
+        nodes = [
+            IngestionPipelineNodeConfig(
+                node_id="parse",
+                node_type="parser",
+                next_node_id="missing",
+            )
+        ]
+
+        with self.assertRaisesRegex(ValueError, "missing next node"):
+            RetriFlowIngestionPipeline.from_pipeline_nodes(nodes)
+
+    def test_pipeline_rejects_cycle(self) -> None:
+        from schemas.knowledge import IngestionPipelineNodeConfig
+        from modules.ingestion import RetriFlowIngestionPipeline
+
+        nodes = [
+            IngestionPipelineNodeConfig(
+                node_id="parse",
+                node_type="parser",
+                next_node_id="chunk",
+            ),
+            IngestionPipelineNodeConfig(
+                node_id="chunk",
+                node_type="chunker",
+                next_node_id="parse",
+            ),
+        ]
+
+        with self.assertRaisesRegex(ValueError, "cycle"):
+            RetriFlowIngestionPipeline.from_pipeline_nodes(nodes)
 
     def test_postprocessing_merges_tiny_chunks_and_preserves_flags(self) -> None:
         from modules.ingestion import RetriFlowIngestionPipeline

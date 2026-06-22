@@ -1,7 +1,9 @@
 import os
 import sys
+import tempfile
 import time
 import unittest
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 
@@ -88,6 +90,44 @@ class RetriFlowMcpServiceTests(unittest.TestCase):
         self.assertEqual(result.calls[0].tool_id, "sales_query")
         self.assertIn("华东", result.calls[0].content)
         self.assertIn("Tool: sales_query", result.context)
+
+    def test_execute_question_persists_tool_level_trace_node(self) -> None:
+        temp_dir = tempfile.TemporaryDirectory()
+        db_path = Path(temp_dir.name) / f"retriflow-{uuid.uuid4().hex}.db"
+        os.environ["RETRIFLOW_DATABASE_BACKEND"] = "sqlite"
+        os.environ["RETRIFLOW_DB_PATH"] = str(db_path)
+        os.environ["RETRIFLOW_DATABASE_DSN"] = ""
+        os.environ["RETRIFLOW_PGVECTOR_DSN"] = ""
+
+        from core.config import get_settings
+        from core.state import initialize_database
+        from modules.mcp.service import RetriFlowMcpService
+        from modules.rag.trace import RetriFlowTraceService
+
+        get_settings.cache_clear()
+        initialize_database()
+        trace_service = RetriFlowTraceService()
+        session_id = "mcp-trace-session"
+
+        try:
+            with trace_service.start_root(session_id=session_id, task_id="chat", name="chat.run"):
+                result = RetriFlowMcpService().execute_question("北京今天天气如何？")
+
+            self.assertEqual(result.route.mode, "mcp")
+            nodes = trace_service.list_nodes(session_id)
+            tool_node = next(node for node in nodes if node["name"] == "mcp.tool.weather_query")
+            self.assertEqual(tool_node["status"], "success")
+            self.assertEqual(tool_node["metadata"]["tool_id"], "weather_query")
+            self.assertEqual(tool_node["metadata"]["server_name"], "builtin")
+            self.assertEqual(tool_node["metadata"]["transport"], "builtin")
+            self.assertEqual(tool_node["metadata"]["schema_version"], "json_schema")
+        finally:
+            os.environ.pop("RETRIFLOW_DATABASE_BACKEND", None)
+            os.environ.pop("RETRIFLOW_DB_PATH", None)
+            os.environ.pop("RETRIFLOW_DATABASE_DSN", None)
+            os.environ.pop("RETRIFLOW_PGVECTOR_DSN", None)
+            get_settings.cache_clear()
+            temp_dir.cleanup()
 
     def test_execute_question_supports_multiple_builtin_tools(self) -> None:
         from modules.mcp.service import RetriFlowMcpService

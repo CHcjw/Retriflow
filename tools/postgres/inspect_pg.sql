@@ -29,6 +29,7 @@ WHERE table_schema = current_schema()
       'sessions',
       'users',
       'conversation_messages',
+      'rag_trace_nodes',
       'knowledge_bases',
       'knowledge_base_route_profiles',
       'knowledge_documents',
@@ -37,6 +38,7 @@ WHERE table_schema = current_schema()
       'knowledge_document_table_cells',
       'admin_intent_nodes',
       'admin_keyword_mappings',
+      'model_health',
       'ingestion_pipelines',
       'ingestion_tasks',
       'ingestion_task_nodes',
@@ -57,6 +59,8 @@ SELECT 'users', COUNT(*) FROM users
 UNION ALL
 SELECT 'conversation_messages', COUNT(*) FROM conversation_messages
 UNION ALL
+SELECT 'rag_trace_nodes', COUNT(*) FROM rag_trace_nodes
+UNION ALL
 SELECT 'knowledge_bases', COUNT(*) FROM knowledge_bases
 UNION ALL
 SELECT 'knowledge_base_route_profiles', COUNT(*) FROM knowledge_base_route_profiles
@@ -72,6 +76,8 @@ UNION ALL
 SELECT 'admin_intent_nodes', COUNT(*) FROM admin_intent_nodes
 UNION ALL
 SELECT 'admin_keyword_mappings', COUNT(*) FROM admin_keyword_mappings
+UNION ALL
+SELECT 'model_health', COUNT(*) FROM model_health
 UNION ALL
 SELECT 'ingestion_pipelines', COUNT(*) FROM ingestion_pipelines
 UNION ALL
@@ -107,6 +113,20 @@ SELECT
 FROM users
 ORDER BY created_at DESC, id DESC
 LIMIT 20;
+
+SELECT
+    session_id,
+    task_id,
+    parent_id,
+    name,
+    node_type,
+    status,
+    duration_ms,
+    started_at,
+    finished_at
+FROM rag_trace_nodes
+ORDER BY started_at DESC
+LIMIT 50;
 
 SELECT
     knowledge_base_id,
@@ -181,6 +201,22 @@ SELECT
     updated_at
 FROM admin_keyword_mappings
 ORDER BY priority DESC, raw_keyword ASC
+LIMIT 50;
+
+SELECT
+    capability,
+    provider_name,
+    model,
+    state,
+    failure_count,
+    success_count,
+    half_open_in_flight,
+    last_success_duration_ms,
+    last_first_packet_ms,
+    last_error,
+    updated_at
+FROM model_health
+ORDER BY updated_at DESC, capability, provider_name, model
 LIMIT 50;
 
 SELECT

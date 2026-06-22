@@ -3,7 +3,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from math import log
-from typing import Protocol
+import time
+from typing import Callable, Protocol
 
 from core.state import get_connection
 
@@ -20,8 +21,41 @@ class RetrievedChunkRecord:
     source_updated_at: str = ""
 
 
+@dataclass
+class SearchContext:
+    original_question: str
+    rewritten_question: str = ""
+    queries: list[str] | None = None
+    knowledge_base_ids: list[str] | None = None
+    top_k: int = 80
+    metadata: dict[str, object] | None = None
+
+    @property
+    def main_question(self) -> str:
+        return self.rewritten_question or self.original_question
+
+    @property
+    def effective_queries(self) -> list[str]:
+        queries = [item.strip() for item in (self.queries or [self.main_question]) if item.strip()]
+        return queries or [self.original_question]
+
+
+@dataclass
+class SearchChannelResult:
+    channel_name: str
+    records: list[RetrievedChunkRecord]
+    latency_ms: int = 0
+    metadata: dict[str, object] | None = None
+
+
 class RetrievalChannel(Protocol):
     name: str
+
+    def is_enabled(self, context: SearchContext) -> bool:
+        ...
+
+    def search(self, context: SearchContext) -> SearchChannelResult:
+        ...
 
     def retrieve(
         self,
@@ -74,6 +108,28 @@ def load_chunk_rows(knowledge_base_ids: list[str] | None = None):
 
 class BM25SearchChannel:
     name = "bm25"
+
+    def is_enabled(self, context: SearchContext) -> bool:
+        _ = context
+        return True
+
+    def search(self, context: SearchContext) -> SearchChannelResult:
+        started_at = time.perf_counter()
+        records: list[RetrievedChunkRecord] = []
+        for query in context.effective_queries:
+            records.extend(
+                self.retrieve(
+                    query,
+                    knowledge_base_ids=context.knowledge_base_ids,
+                    top_k=context.top_k,
+                )
+            )
+        return SearchChannelResult(
+            channel_name=self.name,
+            records=records,
+            latency_ms=max(0, int((time.perf_counter() - started_at) * 1000)),
+            metadata={"query_count": len(context.effective_queries)},
+        )
 
     def retrieve(
         self,
@@ -135,6 +191,53 @@ class BM25SearchChannel:
 
         scored_records.sort(key=lambda item: (-item.score, item.chunk_id))
         return scored_records[:top_k]
+
+
+class VectorSearchChannel:
+    name = "semantic"
+
+    def __init__(self, vector_store_factory: Callable[[], object]) -> None:
+        self.vector_store_factory = vector_store_factory
+
+    def is_enabled(self, context: SearchContext) -> bool:
+        _ = context
+        return True
+
+    def search(self, context: SearchContext) -> SearchChannelResult:
+        started_at = time.perf_counter()
+        records: list[RetrievedChunkRecord] = []
+        for query in context.effective_queries:
+            records.extend(
+                self.retrieve(
+                    query,
+                    knowledge_base_ids=context.knowledge_base_ids,
+                    top_k=context.top_k,
+                )
+            )
+        return SearchChannelResult(
+            channel_name=self.name,
+            records=records,
+            latency_ms=max(0, int((time.perf_counter() - started_at) * 1000)),
+            metadata={"query_count": len(context.effective_queries)},
+        )
+
+    def retrieve(
+        self,
+        question: str,
+        knowledge_base_ids: list[str] | None = None,
+        top_k: int = 80,
+    ) -> list[RetrievedChunkRecord]:
+        vector_store = self.vector_store_factory()
+        if knowledge_base_ids:
+            try:
+                return vector_store.similarity_search(
+                    question,
+                    k=top_k,
+                    knowledge_base_ids=knowledge_base_ids,
+                )
+            except TypeError:
+                return vector_store.similarity_search(question, k=top_k)
+        return vector_store.similarity_search(question, k=top_k)
 
 
 class KeywordSearchChannel:

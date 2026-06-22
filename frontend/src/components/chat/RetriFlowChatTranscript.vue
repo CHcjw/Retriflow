@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed, shallowRef } from "vue";
 
 import type { ChatMessage } from "../../composables/useRetriFlowChat";
@@ -13,6 +13,10 @@ const props = defineProps<{
   loading: boolean;
   messages: ChatMessage[];
   statusText: string;
+}>();
+
+const emit = defineEmits<{
+  feedback: [message: ChatMessage, vote: 1 | -1];
 }>();
 
 const defaultVisibleSourceCount = 3;
@@ -49,8 +53,8 @@ function normalizeMessage(value: string): string {
     .replace(/\r\n/g, "\n")
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\u00a0/g, " ")
-    .replace(/([。！？；：:]\s*)([-*+]\s+\*\*?)/g, "$1\n\n$2")
-    .replace(/([。！？；：:]\s*)([-*+]\s+)/g, "$1\n\n$2")
+    .replace(/([。！？；，]\s*)([-*+]\s+\*\*?)/g, "$1\n\n$2")
+    .replace(/([。！？；，]\s*)([-*+]\s+)/g, "$1\n\n$2")
     .replace(/(\[[0-9]+\]\s*)([-*+]\s+)/g, "$1\n\n$2")
     .replace(/([^\n])\s+(#{1,6}\s+)/g, "$1\n\n$2")
     .replace(/([^\n])\s+(\d+\.\s+)/g, "$1\n\n$2")
@@ -282,7 +286,7 @@ function formatArguments(argumentsValue: Record<string, unknown>): string {
 }
 
 function formatSourceLabel(source: ChatSourceItem): string {
-  return `知识库 ${source.knowledge_base_id} · 文档 ${source.document_id} · Chunk ${source.chunk_id}`;
+  return `知识库 ${source.knowledge_base_id} / 文档 ${source.document_id} / Chunk ${source.chunk_id}`;
 }
 
 function isSourceExpanded(source: ChatSourceItem): boolean {
@@ -298,6 +302,10 @@ function openSourceLink(source: ChatSourceItem) {
     return;
   }
   window.open(source.source_link, "_blank", "noopener,noreferrer");
+}
+
+function canRateMessage(message: ChatMessage): boolean {
+  return message.role === "assistant" && message.state === "complete" && Boolean(message.backendId);
 }
 
 function buildSourcePreview(content: string): string {
@@ -328,6 +336,30 @@ function buildSourcePreview(content: string): string {
         <div class="prose-message" v-html="renderMessageHtml(message.content)"></div>
         <div v-if="message.state === 'streaming'" class="streaming-caret"></div>
         <div v-if="message.state === 'error'" class="error-badge">回复失败</div>
+        <div v-if="canRateMessage(message)" class="message-feedback">
+          <button
+            class="feedback-button"
+            :class="{ active: message.feedbackVote === 1 }"
+            :disabled="message.feedbackState === 'saving'"
+            type="button"
+            title="有帮助"
+            @click="emit('feedback', message, 1)"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 10v11" /><path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h3.28a2 2 0 0 0 1.7-.94L13 2a3.13 3.13 0 0 1 2 3.88Z" /></svg>
+          </button>
+          <button
+            class="feedback-button"
+            :class="{ active: message.feedbackVote === -1 }"
+            :disabled="message.feedbackState === 'saving'"
+            type="button"
+            title="不准确"
+            @click="emit('feedback', message, -1)"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 14V3" /><path d="M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-3.28a2 2 0 0 0-1.7.94L11 22a3.13 3.13 0 0 1-2-3.88Z" /></svg>
+          </button>
+          <span v-if="message.feedbackState === 'saved'" class="feedback-status">已记录</span>
+          <span v-else-if="message.feedbackState === 'error'" class="feedback-status error">失败</span>
+        </div>
       </div>
     </div>
 
@@ -576,6 +608,53 @@ function buildSourcePreview(content: string): string {
   color: var(--danger);
   border-radius: 4px;
   font-size: 12px;
+}
+
+.message-feedback {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.feedback-button {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  background: white;
+  color: var(--text-light);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.feedback-button:hover:not(:disabled),
+.feedback-button.active {
+  background: rgba(49, 94, 251, 0.08);
+  border-color: rgba(49, 94, 251, 0.28);
+  color: var(--primary);
+}
+
+.feedback-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.feedback-button svg {
+  width: 15px;
+  height: 15px;
+}
+
+.feedback-status {
+  font-size: 12px;
+  color: var(--text-light);
+}
+
+.feedback-status.error {
+  color: var(--danger);
 }
 
 .references-panel {

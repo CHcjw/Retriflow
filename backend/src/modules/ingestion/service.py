@@ -1,7 +1,8 @@
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from math import sqrt
+from typing import Any
 
 from fastapi import HTTPException, status
 from langchain_core.documents import Document
@@ -28,6 +29,10 @@ class IngestionPipelineNodeResult:
     success: bool
     message: str
     duration_ms: int
+    node_id: str = ""
+    status: str = "success"
+    error_message: str = ""
+    output: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -38,6 +43,43 @@ class IngestionPipelineResult:
     source_documents: list[Document]
     chunk_documents: list[Document]
     node_results: list[IngestionPipelineNodeResult]
+
+
+@dataclass
+class IngestionRuntimeContext:
+    document_type: str
+    strategy: str
+    segment_count: int
+    chunk_count: int
+    raw_text: str
+    chunks: list[str]
+    metadata: dict[str, Any]
+    mime_type: str | None = None
+    source: dict[str, Any] = field(default_factory=dict)
+    enhanced_text: str | None = None
+    keywords: list[str] = field(default_factory=list)
+    questions: list[str] = field(default_factory=list)
+
+    def to_condition_context(self) -> dict[str, Any]:
+        return {
+            "document_type": self.document_type,
+            "documentType": self.document_type,
+            "strategy": self.strategy,
+            "segment_count": self.segment_count,
+            "segmentCount": self.segment_count,
+            "chunk_count": self.chunk_count,
+            "chunkCount": self.chunk_count,
+            "raw_text": self.raw_text,
+            "rawText": self.raw_text,
+            "mime_type": self.mime_type,
+            "mimeType": self.mime_type,
+            "source": self.source,
+            "enhanced_text": self.enhanced_text,
+            "enhancedText": self.enhanced_text,
+            "keywords": self.keywords,
+            "questions": self.questions,
+            "metadata": self.metadata,
+        }
 
 
 class RetriFlowIngestionPipeline:
@@ -61,15 +103,68 @@ class RetriFlowIngestionPipeline:
         chunk_overlap: int = 10,
         strategy: str = "auto",
         recursive_separators: list[str] | None = None,
+        chunk_config: dict | None = None,
         min_chunk_size: int = 8,
         embedding_service: RetriFlowEmbeddingService | None = None,
+        pipeline_nodes: list[IngestionPipelineNodeConfig] | None = None,
+        embedding_provider: str | None = None,
+        embedding_model: str | None = None,
     ) -> None:
-        self.chunk_size = chunk_size
-        self.chunk_overlap = chunk_overlap
-        self.strategy = strategy
+        self.chunk_config = chunk_config or {}
+        normalized_strategy = "fixed" if strategy == "fixed_size" else strategy
+        self.requested_strategy = strategy
+        self.strategy = normalized_strategy
+        self.chunk_size = self._config_int("chunkSize", self._config_int("chunk_size", chunk_size))
+        self.chunk_overlap = self._config_int("overlapSize", self._config_int("overlapChars", self._config_int("chunk_overlap", chunk_overlap)))
         self.recursive_separators = recursive_separators or list(self.DEFAULT_RECURSIVE_SEPARATORS)
         self.min_chunk_size = min_chunk_size
-        self.embedding_service = embedding_service or RetriFlowEmbeddingService()
+        base_embedding_service = embedding_service or RetriFlowEmbeddingService()
+        if embedding_provider or embedding_model:
+            self.embedding_service = base_embedding_service.with_runtime_defaults(
+                provider_name=embedding_provider,
+                model_name=embedding_model,
+            )
+        else:
+            self.embedding_service = base_embedding_service
+        self.pipeline_nodes = pipeline_nodes or []
+        self.embedding_provider = embedding_provider
+        self.embedding_model = embedding_model
+
+    @classmethod
+    def from_pipeline_nodes(
+        cls,
+        nodes: list[IngestionPipelineNodeConfig],
+        *,
+        fallback_strategy: str = "structure_aware",
+        fallback_chunk_size: int = 512,
+        fallback_chunk_overlap: int = 0,
+        embedding_service: RetriFlowEmbeddingService | None = None,
+    ) -> "RetriFlowIngestionPipeline":
+        cls._validate_pipeline_nodes(nodes)
+        ordered_nodes = cls._order_pipeline_nodes(nodes)
+        chunker_config = cls._first_node_config(ordered_nodes, {"chunker", "splitter"})
+        embedder_config = cls._first_node_config(ordered_nodes, {"embedder", "embedding"})
+        strategy = str(chunker_config.get("strategy") or fallback_strategy)
+        chunk_size = cls._extract_config_int(
+            chunker_config,
+            keys=("chunkSize", "chunk_size", "targetChars", "target_chars"),
+            default=fallback_chunk_size,
+        )
+        chunk_overlap = cls._extract_config_int(
+            chunker_config,
+            keys=("overlapSize", "chunk_overlap", "overlapChars", "overlap_chars"),
+            default=fallback_chunk_overlap,
+        )
+        return cls(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            strategy=strategy,
+            chunk_config=dict(chunker_config),
+            embedding_service=embedding_service,
+            pipeline_nodes=ordered_nodes,
+            embedding_provider=str(embedder_config.get("provider") or "") or None,
+            embedding_model=str(embedder_config.get("model") or "") or None,
+        )
 
     def run(
         self,
@@ -78,15 +173,20 @@ class RetriFlowIngestionPipeline:
         metadata: dict | None = None,
         source_documents: list[Document] | None = None,
     ) -> IngestionPipelineResult:
-        normalized_text = self._normalize_text(content)
         resolved_document_type = (document_type or "manual").strip().lower() or "manual"
         resolved_strategy = self._resolve_strategy(resolved_document_type)
+        normalized_text = (
+            self._normalize_structure_text(content)
+            if resolved_strategy == "structure_aware"
+            else self._normalize_text(content)
+        )
 
         if source_documents is not None:
             normalized_source_documents = self._normalize_source_documents(
                 source_documents=source_documents,
                 document_type=resolved_document_type,
                 metadata=metadata or {},
+                preserve_structure=resolved_strategy == "structure_aware",
             )
             segments = [document.page_content for document in normalized_source_documents]
         else:
@@ -115,37 +215,379 @@ class RetriFlowIngestionPipeline:
             chunks=chunks,
             source_documents=normalized_source_documents,
             chunk_documents=chunk_documents,
-            node_results=[
-                IngestionPipelineNodeResult(
-                    node_type="normalize",
-                    node_order=1,
-                    success=True,
-                    message="Normalized source text and preserved paragraph boundaries.",
-                    duration_ms=1,
-                ),
-                IngestionPipelineNodeResult(
-                    node_type="segment",
-                    node_order=2,
-                    success=True,
-                    message=f"Derived {len(segments)} semantic segments from source text.",
-                    duration_ms=1,
-                ),
-                IngestionPipelineNodeResult(
-                    node_type="chunk",
-                    node_order=3,
-                    success=True,
-                    message=f"Generated {len(chunks)} chunks using {resolved_strategy} strategy.",
-                    duration_ms=1,
-                ),
-                IngestionPipelineNodeResult(
-                    node_type="index",
-                    node_order=4,
-                    success=True,
-                    message="Indexed chunks into the local retrieval store.",
-                    duration_ms=1,
-                ),
-            ],
+            node_results=self._build_node_results(
+                segment_count=len(segments),
+                chunk_count=len(chunks),
+                strategy=resolved_strategy,
+                document_type=resolved_document_type,
+                normalized_text=normalized_text,
+                chunks=chunks,
+                metadata=metadata or {},
+            ),
         )
+
+    def _build_node_results(
+        self,
+        *,
+        segment_count: int,
+        chunk_count: int,
+        strategy: str,
+        document_type: str,
+        normalized_text: str,
+        chunks: list[str],
+        metadata: dict[str, Any] | None = None,
+    ) -> list[IngestionPipelineNodeResult]:
+        if self.pipeline_nodes:
+            results: list[IngestionPipelineNodeResult] = []
+            runtime_context = self._build_runtime_context(
+                document_type=document_type,
+                strategy=strategy,
+                segment_count=segment_count,
+                chunk_count=chunk_count,
+                normalized_text=normalized_text,
+                chunks=chunks,
+                metadata=metadata or {},
+            )
+            condition_context = runtime_context.to_condition_context()
+            for node_order, node in enumerate(self.pipeline_nodes, start=1):
+                condition_passed = self._evaluate_node_condition(node.condition, condition_context)
+                status = "success" if condition_passed else "skipped"
+                message = (
+                    self._pipeline_node_message(
+                        node=node,
+                        segment_count=segment_count,
+                        chunk_count=chunk_count,
+                        strategy=strategy,
+                    )
+                    if condition_passed
+                    else "Skipped: condition not satisfied"
+                )
+                results.append(
+                    IngestionPipelineNodeResult(
+                        node_type=node.node_type,
+                        node_order=node_order,
+                        success=True,
+                        message=message,
+                        duration_ms=1 if condition_passed else 0,
+                        node_id=node.node_id,
+                        status=status,
+                        output=self._pipeline_node_output(
+                            node=node,
+                            context=runtime_context,
+                        ),
+                    )
+                )
+            return results
+
+        return [
+            IngestionPipelineNodeResult(
+                node_type="normalize",
+                node_order=1,
+                success=True,
+                message="Normalized source text and preserved paragraph boundaries.",
+                duration_ms=1,
+                node_id="normalize",
+                output={"rawText": normalized_text, "metadata": metadata or {}},
+            ),
+            IngestionPipelineNodeResult(
+                node_type="segment",
+                node_order=2,
+                success=True,
+                message=f"Derived {segment_count} semantic segments from source text.",
+                duration_ms=1,
+                node_id="segment",
+                output={"segmentCount": segment_count},
+            ),
+            IngestionPipelineNodeResult(
+                node_type="chunk",
+                node_order=3,
+                success=True,
+                message=f"Generated {chunk_count} chunks using {strategy} strategy.",
+                duration_ms=1,
+                node_id="chunk",
+                output={"chunkCount": chunk_count, "chunks": chunks},
+            ),
+            IngestionPipelineNodeResult(
+                node_type="index",
+                node_order=4,
+                success=True,
+                message="Indexed chunks into the local retrieval store.",
+                duration_ms=1,
+                node_id="index",
+                output={"settings": {"store": "local"}, "chunkCount": chunk_count, "chunks": chunks},
+            ),
+        ]
+
+    @staticmethod
+    def _build_runtime_context(
+        *,
+        document_type: str,
+        strategy: str,
+        segment_count: int,
+        chunk_count: int,
+        normalized_text: str,
+        chunks: list[str],
+        metadata: dict[str, Any],
+    ) -> IngestionRuntimeContext:
+        source = {
+            "type": metadata.get("source_type") or metadata.get("sourceType"),
+            "location": metadata.get("source_location") or metadata.get("sourceLocation") or metadata.get("path"),
+            "fileName": metadata.get("file_name") or metadata.get("fileName") or metadata.get("filename"),
+        }
+        source = {key: value for key, value in source.items() if value not in (None, "")}
+        keywords = metadata.get("keywords") if isinstance(metadata.get("keywords"), list) else []
+        questions = metadata.get("questions") if isinstance(metadata.get("questions"), list) else []
+        return IngestionRuntimeContext(
+            document_type=document_type,
+            strategy=strategy,
+            segment_count=segment_count,
+            chunk_count=chunk_count,
+            raw_text=normalized_text,
+            chunks=chunks,
+            metadata=dict(metadata),
+            mime_type=metadata.get("mime_type") or metadata.get("mimeType"),
+            source=source,
+            enhanced_text=metadata.get("enhanced_text") or metadata.get("enhancedText"),
+            keywords=list(keywords),
+            questions=list(questions),
+        )
+
+    def _pipeline_node_message(
+        self,
+        *,
+        node: IngestionPipelineNodeConfig,
+        segment_count: int,
+        chunk_count: int,
+        strategy: str,
+    ) -> str:
+        node_type = node.node_type.strip().lower()
+        if node_type in {"parser", "parse", "fetcher"}:
+            return f"Parsed source content through node {node.node_id}."
+        if node_type in {"cleaner", "extractor", "normalize", "normalizer"}:
+            return f"Prepared {segment_count} source segments through node {node.node_id}."
+        if node_type in {"chunker", "splitter"}:
+            return f"Generated {chunk_count} chunks using {strategy} strategy through node {node.node_id}."
+        if node_type in {"embedder", "embedding"}:
+            model = self.embedding_model or str(node.config.get("model") or "default")
+            provider = self.embedding_provider or str(node.config.get("provider") or "default")
+            return f"Prepared embedding step with {provider}/{model} through node {node.node_id}."
+        if node_type in {"indexer", "index"}:
+            store = str(node.config.get("store") or "local")
+            return f"Prepared index step for {store} through node {node.node_id}."
+        return f"Executed pipeline node {node.node_id}."
+
+    @staticmethod
+    def _pipeline_node_output(
+        *,
+        node: IngestionPipelineNodeConfig,
+        context: IngestionRuntimeContext,
+    ) -> dict[str, Any]:
+        node_type = node.node_type.strip().lower()
+        if node_type in {"fetcher"}:
+            output: dict[str, Any] = {"source": context.source, "mimeType": context.mime_type}
+            raw_bytes_base64 = context.metadata.get("rawBytesBase64")
+            raw_bytes_length = context.metadata.get("rawBytesLength")
+            if raw_bytes_length is not None:
+                output["rawBytesLength"] = raw_bytes_length
+            if raw_bytes_base64 is not None:
+                output["rawBytesBase64"] = raw_bytes_base64
+            return output
+        if node_type in {"parser", "parse"}:
+            return {
+                "mimeType": context.mime_type,
+                "rawText": context.raw_text,
+                "document": context.metadata.get("document"),
+            }
+        if node_type in {"cleaner", "extractor", "normalize", "normalizer"}:
+            return {"segmentCount": context.segment_count, "metadata": context.metadata}
+        if node_type in {"enhancer"}:
+            return {
+                "enhancedText": context.enhanced_text,
+                "keywords": context.keywords,
+                "questions": context.questions,
+                "metadata": context.metadata,
+            }
+        if node_type in {"chunker", "splitter", "enricher"}:
+            return {"chunkCount": len(context.chunks), "chunks": context.chunks}
+        if node_type in {"indexer", "index"}:
+            return {"settings": dict(node.config), "chunkCount": len(context.chunks), "chunks": context.chunks}
+        if node_type in {"embedder", "embedding"}:
+            return {"settings": dict(node.config), "chunkCount": len(context.chunks)}
+        return {
+            "mimeType": context.mime_type,
+            "rawText": context.raw_text,
+            "enhancedText": context.enhanced_text,
+            "keywords": context.keywords,
+            "questions": context.questions,
+            "metadata": context.metadata,
+            "chunks": context.chunks,
+        }
+
+    @classmethod
+    def _evaluate_node_condition(cls, condition: str, context: dict[str, Any]) -> bool:
+        raw_condition = (condition or "").strip()
+        if not raw_condition:
+            return True
+        try:
+            parsed_condition = json.loads(raw_condition)
+        except json.JSONDecodeError:
+            lowered = raw_condition.lower()
+            if lowered in {"true", "false"}:
+                return lowered == "true"
+            return True
+        return cls._evaluate_condition_node(parsed_condition, context)
+
+    @classmethod
+    def _evaluate_condition_node(cls, node: Any, context: dict[str, Any]) -> bool:
+        if node is None:
+            return True
+        if isinstance(node, bool):
+            return node
+        if isinstance(node, str):
+            lowered = node.strip().lower()
+            if lowered in {"true", "false"}:
+                return lowered == "true"
+            return True
+        if not isinstance(node, dict):
+            return True
+        if "all" in node:
+            rules = node.get("all")
+            return all(cls._evaluate_condition_node(item, context) for item in rules) if isinstance(rules, list) else True
+        if "any" in node:
+            rules = node.get("any")
+            return any(cls._evaluate_condition_node(item, context) for item in rules) if isinstance(rules, list) else True
+        if "not" in node:
+            return not cls._evaluate_condition_node(node.get("not"), context)
+        if "field" in node:
+            left = cls._read_context_path(context, str(node.get("field") or ""))
+            right = node.get("value")
+            operator = str(node.get("operator") or "eq").lower()
+            return cls._compare_condition_values(left, right, operator)
+        return True
+
+    @staticmethod
+    def _read_context_path(context: dict[str, Any], path: str) -> Any:
+        if not path:
+            return None
+        if path in context:
+            return context[path]
+        current: Any = context
+        for part in path.split("."):
+            if isinstance(current, dict):
+                current = current.get(part)
+                continue
+            current = getattr(current, part, None)
+            if current is None:
+                return None
+        return current
+
+    @staticmethod
+    def _compare_condition_values(left: Any, right: Any, operator: str) -> bool:
+        normalized_left = left.strip() if isinstance(left, str) else left
+        normalized_right = right.strip() if isinstance(right, str) else right
+        if operator == "ne":
+            return normalized_left != normalized_right
+        if operator == "in":
+            if isinstance(normalized_right, list):
+                return normalized_left in normalized_right
+            if isinstance(normalized_left, list):
+                return normalized_right in normalized_left
+            return normalized_left == normalized_right
+        if operator == "contains":
+            if isinstance(normalized_left, str):
+                return str(normalized_right) in normalized_left
+            if isinstance(normalized_left, list):
+                return normalized_right in normalized_left
+            return False
+        if operator == "exists":
+            return normalized_left is not None
+        if operator == "not_exists":
+            return normalized_left is None
+        if operator in {"gt", "gte", "lt", "lte"}:
+            try:
+                left_number = float(normalized_left)
+                right_number = float(normalized_right)
+            except (TypeError, ValueError):
+                return False
+            if operator == "gt":
+                return left_number > right_number
+            if operator == "gte":
+                return left_number >= right_number
+            if operator == "lt":
+                return left_number < right_number
+            return left_number <= right_number
+        if operator == "regex":
+            if normalized_left is None or normalized_right is None:
+                return False
+            return re.fullmatch(str(normalized_right), str(normalized_left)) is not None
+        return normalized_left == normalized_right
+
+    @staticmethod
+    def _order_pipeline_nodes(nodes: list[IngestionPipelineNodeConfig]) -> list[IngestionPipelineNodeConfig]:
+        if not nodes:
+            return []
+
+        by_id = {node.node_id: node for node in nodes if node.node_id}
+        pointed_to = {node.next_node_id for node in nodes if node.next_node_id}
+        start = next((node for node in nodes if node.node_id not in pointed_to), nodes[0])
+        ordered: list[IngestionPipelineNodeConfig] = []
+        seen: set[str] = set()
+        current: IngestionPipelineNodeConfig | None = start
+        while current is not None and current.node_id not in seen:
+            ordered.append(current)
+            seen.add(current.node_id)
+            current = by_id.get(current.next_node_id)
+        return ordered
+
+    @staticmethod
+    def _validate_pipeline_nodes(nodes: list[IngestionPipelineNodeConfig]) -> None:
+        by_id = {node.node_id: node for node in nodes if node.node_id}
+        for node in nodes:
+            next_node_id = (node.next_node_id or "").strip()
+            if next_node_id and next_node_id not in by_id:
+                raise ValueError(f"pipeline node {node.node_id} references missing next node {next_node_id}")
+
+        visited: set[str] = set()
+        for node_id in by_id:
+            if node_id in visited:
+                continue
+            path: set[str] = set()
+            current = node_id
+            while current:
+                if current in path:
+                    raise ValueError(f"pipeline contains a cycle at node {current}")
+                path.add(current)
+                visited.add(current)
+                node = by_id.get(current)
+                if node is None:
+                    break
+                current = (node.next_node_id or "").strip()
+
+    @staticmethod
+    def _first_node_config(
+        nodes: list[IngestionPipelineNodeConfig],
+        node_types: set[str],
+    ) -> dict:
+        for node in nodes:
+            if node.node_type.strip().lower() in node_types:
+                return dict(node.config)
+        return {}
+
+    @staticmethod
+    def _extract_config_int(
+        config: dict,
+        *,
+        keys: tuple[str, ...],
+        default: int,
+    ) -> int:
+        for key in keys:
+            if key not in config:
+                continue
+            try:
+                return int(config[key])
+            except (TypeError, ValueError):
+                continue
+        return default
 
     def _resolve_strategy(self, document_type: str) -> str:
         if self.strategy != "auto":
@@ -165,6 +607,12 @@ class RetriFlowIngestionPipeline:
             return "\n\n".join(paragraphs)
 
         return " ".join(raw.split())
+
+    @staticmethod
+    def _normalize_structure_text(content: str) -> str:
+        raw = content.replace("\r\n", "\n").replace("\r", "\n")
+        lines = [line.rstrip() for line in raw.split("\n")]
+        return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
 
     @staticmethod
     def _segment_text(content: str) -> list[str]:
@@ -212,11 +660,16 @@ class RetriFlowIngestionPipeline:
         source_documents: list[Document],
         document_type: str,
         metadata: dict,
+        preserve_structure: bool = False,
     ) -> list[Document]:
         normalized_documents: list[Document] = []
         segment_count = len(source_documents) or 1
         for index, source_document in enumerate(source_documents):
-            page_content = cls._normalize_text(source_document.page_content)
+            page_content = (
+                cls._normalize_structure_text(source_document.page_content)
+                if preserve_structure
+                else cls._normalize_text(source_document.page_content)
+            )
             if not page_content:
                 continue
             normalized_metadata = {
@@ -246,7 +699,10 @@ class RetriFlowIngestionPipeline:
         document_type: str,
     ) -> list[Document]:
         if strategy == "fixed":
-            chunk_documents = self._fixed_chunk_documents(source_documents, overlap=0)
+            fixed_overlap = self.chunk_overlap if self.requested_strategy == "fixed_size" or "overlapSize" in self.chunk_config else 0
+            chunk_documents = self._fixed_chunk_documents(source_documents, overlap=fixed_overlap)
+        elif strategy == "structure_aware":
+            chunk_documents = self._structure_aware_chunk_documents(source_documents)
         elif strategy == "overlap":
             chunk_documents = self._fixed_chunk_documents(source_documents, overlap=self.chunk_overlap)
         elif strategy == "semantic_embedding":
@@ -292,6 +748,12 @@ class RetriFlowIngestionPipeline:
 
     def _fixed_chunk_documents(self, source_documents: list[Document], overlap: int) -> list[Document]:
         documents: list[Document] = []
+        if self.chunk_size == -1:
+            return [
+                Document(page_content=document.page_content.strip(), metadata={**dict(document.metadata), "start_index": 0})
+                for document in source_documents
+                if document.page_content.strip()
+            ]
         step = max(1, self.chunk_size - overlap)
         for source_document in source_documents:
             text = source_document.page_content.strip()
@@ -305,6 +767,99 @@ class RetriFlowIngestionPipeline:
                     metadata["start_index"] = start
                     documents.append(Document(page_content=chunk_text, metadata=metadata))
                 start += step
+        return documents
+
+    def _structure_aware_chunk_documents(self, source_documents: list[Document]) -> list[Document]:
+        target_chars = self._config_int("targetChars", 1400)
+        overlap_chars = self._config_int("overlapChars", 0)
+        max_chars = self._config_int("maxChars", 1800)
+        min_chars = self._config_int("minChars", 600)
+        documents: list[Document] = []
+        chunk_index = 0
+
+        for source_document in source_documents:
+            blocks = self._markdown_blocks(source_document.page_content)
+            current_blocks: list[str] = []
+            current_length = 0
+            block_start = 0
+
+            for block_index, block in enumerate(blocks):
+                block_length = len(block)
+                should_flush = (
+                    current_blocks
+                    and current_length >= min_chars
+                    and (current_length + block_length > target_chars or current_length + block_length > max_chars)
+                )
+                if should_flush:
+                    chunk_text = "\n\n".join(current_blocks).strip()
+                    documents.append(
+                        Document(
+                            page_content=chunk_text,
+                            metadata={
+                                **dict(source_document.metadata),
+                                "block_start": block_start,
+                                "block_end": block_index - 1,
+                                "structure_chunk": chunk_index,
+                            },
+                        )
+                    )
+                    chunk_index += 1
+                    current_blocks = self._overlap_tail(current_blocks, overlap_chars)
+                    block_start = max(0, block_index - len(current_blocks))
+                    current_length = len("\n\n".join(current_blocks))
+
+                if block_length > max_chars:
+                    if current_blocks:
+                        chunk_text = "\n\n".join(current_blocks).strip()
+                        documents.append(
+                            Document(
+                                page_content=chunk_text,
+                                metadata={
+                                    **dict(source_document.metadata),
+                                    "block_start": block_start,
+                                    "block_end": block_index - 1,
+                                    "structure_chunk": chunk_index,
+                                },
+                            )
+                        )
+                        chunk_index += 1
+                        current_blocks = []
+                        current_length = 0
+                    fixed_parts = self._split_long_block(block, max_chars=max_chars, overlap_chars=overlap_chars)
+                    for part_index, part in enumerate(fixed_parts):
+                        documents.append(
+                            Document(
+                                page_content=part,
+                                metadata={
+                                    **dict(source_document.metadata),
+                                    "block_start": block_index,
+                                    "block_end": block_index,
+                                    "structure_chunk": chunk_index,
+                                    "long_block_part": part_index,
+                                },
+                            )
+                        )
+                        chunk_index += 1
+                    block_start = block_index + 1
+                    continue
+
+                current_blocks.append(block)
+                current_length = len("\n\n".join(current_blocks))
+
+            if current_blocks:
+                documents.append(
+                    Document(
+                        page_content="\n\n".join(current_blocks).strip(),
+                        metadata={
+                            **dict(source_document.metadata),
+                            "block_start": block_start,
+                            "block_end": len(blocks) - 1,
+                            "structure_chunk": chunk_index,
+                        },
+                    )
+                )
+                chunk_index += 1
+
         return documents
 
     def _semantic_chunk_documents(self, source_documents: list[Document]) -> list[Document]:
@@ -420,7 +975,7 @@ class RetriFlowIngestionPipeline:
                 buffer_document = None
                 continue
 
-            if len(text) > self.chunk_size * 2:
+            if strategy != "structure_aware" and self.chunk_size > 0 and len(text) > self.chunk_size * 2:
                 processed.extend(self._fixed_chunk_documents([candidate], overlap=self.chunk_overlap))
                 continue
 
@@ -468,6 +1023,73 @@ class RetriFlowIngestionPipeline:
             return list(left)
         return [(left_item + right_item) / 2.0 for left_item, right_item in zip(left, right, strict=False)]
 
+    def _config_int(self, key: str, default: int) -> int:
+        value = self.chunk_config.get(key, default)
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _markdown_blocks(content: str) -> list[str]:
+        blocks: list[str] = []
+        current: list[str] = []
+        in_code_fence = False
+
+        for line in content.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+            stripped = line.strip()
+            if stripped.startswith("```"):
+                current.append(line)
+                in_code_fence = not in_code_fence
+                if not in_code_fence:
+                    blocks.append("\n".join(current).strip())
+                    current = []
+                continue
+            if in_code_fence:
+                current.append(line)
+                continue
+            if stripped.startswith("#") and current:
+                blocks.append("\n".join(current).strip())
+                current = [line]
+                continue
+            if not stripped:
+                if current:
+                    blocks.append("\n".join(current).strip())
+                    current = []
+                continue
+            current.append(line)
+
+        if current:
+            blocks.append("\n".join(current).strip())
+        return [block for block in blocks if block]
+
+    @staticmethod
+    def _overlap_tail(blocks: list[str], overlap_chars: int) -> list[str]:
+        if overlap_chars <= 0:
+            return []
+        tail: list[str] = []
+        total = 0
+        for block in reversed(blocks):
+            if total >= overlap_chars:
+                break
+            tail.insert(0, block)
+            total += len(block)
+        return tail
+
+    @staticmethod
+    def _split_long_block(block: str, *, max_chars: int, overlap_chars: int) -> list[str]:
+        if max_chars <= 0:
+            return [block]
+        parts: list[str] = []
+        step = max(1, max_chars - max(0, overlap_chars))
+        start = 0
+        while start < len(block):
+            part = block[start : start + max_chars].strip()
+            if part:
+                parts.append(part)
+            start += step
+        return parts
+
 
 class RetriFlowIngestionService:
     def list_pipelines(self) -> IngestionPipelineListResponse:
@@ -501,15 +1123,26 @@ class RetriFlowIngestionService:
             connection.commit()
         return self._to_pipeline(row)
 
-    def list_tasks(self) -> IngestionTaskListResponse:
+    def list_tasks(self, *, document_id: int | None = None) -> IngestionTaskListResponse:
         with get_connection() as connection:
-            rows = connection.execute(
-                """
-                select id, knowledge_base_id, document_id, source_type, status, chunk_count, message, created_at
-                from ingestion_tasks
-                order by id desc
-                """
-            ).fetchall()
+            if document_id is None:
+                rows = connection.execute(
+                    """
+                    select id, knowledge_base_id, document_id, source_type, status, chunk_count, message, created_at
+                    from ingestion_tasks
+                    order by id desc
+                    """
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """
+                    select id, knowledge_base_id, document_id, source_type, status, chunk_count, message, created_at
+                    from ingestion_tasks
+                    where document_id = ?
+                    order by id desc
+                    """,
+                    (document_id,),
+                ).fetchall()
 
         return IngestionTaskListResponse(items=[self._to_task(row) for row in rows])
 
@@ -524,7 +1157,19 @@ class RetriFlowIngestionService:
 
             rows = connection.execute(
                 """
-                select id, task_id, node_type, node_order, success, message, duration_ms, created_at
+                select
+                    id,
+                    task_id,
+                    node_id,
+                    node_type,
+                    node_order,
+                    success,
+                    status,
+                    message,
+                    error_message,
+                    output_json,
+                    duration_ms,
+                    created_at
                 from ingestion_task_nodes
                 where task_id = ?
                 order by node_order
@@ -581,13 +1226,33 @@ class RetriFlowIngestionService:
         return IngestionTaskNodeItem(
             id=row["id"],
             task_id=row["task_id"],
+            node_id=row["node_id"],
             node_type=row["node_type"],
             node_order=row["node_order"],
             success=bool(row["success"]),
+            status=row["status"],
             message=row["message"],
+            error_message=row["error_message"],
+            output=RetriFlowIngestionService._parse_json_field(row["output_json"], default={}),
             duration_ms=row["duration_ms"],
             created_at=RetriFlowIngestionService._serialize_timestamp(row["created_at"]),
         )
+
+    @staticmethod
+    def _parse_json_field(value, *, default):
+        if value is None:
+            return default
+        if isinstance(value, (dict, list)):
+            return value
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return default
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                return default
+        return default
 
     @staticmethod
     def _serialize_timestamp(value) -> str:

@@ -1,6 +1,24 @@
 from __future__ import annotations
 
-from modules.rag.retrieval.channels import RetrievedChunkRecord
+from typing import Callable, Protocol
+
+from modules.rag.retrieval.channels import RetrievedChunkRecord, SearchChannelResult, SearchContext
+
+
+class SearchResultPostProcessor(Protocol):
+    name: str
+    order: int
+
+    def is_enabled(self, context: SearchContext) -> bool:
+        ...
+
+    def process(
+        self,
+        records: list[RetrievedChunkRecord],
+        channel_results: list[SearchChannelResult],
+        context: SearchContext,
+    ) -> list[RetrievedChunkRecord]:
+        ...
 
 
 def deduplicate_and_rank(records: list[RetrievedChunkRecord], top_k: int = 3) -> list[RetrievedChunkRecord]:
@@ -46,3 +64,76 @@ def reciprocal_rank_fusion(
     ]
     fused_records.sort(key=lambda item: (-item.score, item.chunk_id))
     return fused_records[:top_k]
+
+
+class RrfFusionPostProcessor:
+    name = "hybrid_rrf"
+    order = 10
+
+    def __init__(self, *, top_k: int) -> None:
+        self.top_k = top_k
+
+    def is_enabled(self, context: SearchContext) -> bool:
+        _ = context
+        return True
+
+    def process(
+        self,
+        records: list[RetrievedChunkRecord],
+        channel_results: list[SearchChannelResult],
+        context: SearchContext,
+    ) -> list[RetrievedChunkRecord]:
+        _ = records
+        _ = context
+        return reciprocal_rank_fusion(
+            ranked_lists=[result.records for result in channel_results],
+            top_k=self.top_k,
+        )
+
+
+class RerankPostProcessor:
+    name = "rerank"
+    order = 20
+
+    def __init__(self, *, service_factory: Callable[[], object], limit: int) -> None:
+        self.service_factory = service_factory
+        self.limit = limit
+
+    def is_enabled(self, context: SearchContext) -> bool:
+        _ = context
+        return True
+
+    def process(
+        self,
+        records: list[RetrievedChunkRecord],
+        channel_results: list[SearchChannelResult],
+        context: SearchContext,
+    ) -> list[RetrievedChunkRecord]:
+        _ = channel_results
+        return self.service_factory().rerank(
+            question=context.original_question,
+            records=records,
+            limit=self.limit,
+        )
+
+
+class FinalLimitPostProcessor:
+    name = "final"
+    order = 30
+
+    def __init__(self, *, limit: int) -> None:
+        self.limit = limit
+
+    def is_enabled(self, context: SearchContext) -> bool:
+        _ = context
+        return True
+
+    def process(
+        self,
+        records: list[RetrievedChunkRecord],
+        channel_results: list[SearchChannelResult],
+        context: SearchContext,
+    ) -> list[RetrievedChunkRecord]:
+        _ = channel_results
+        _ = context
+        return records[: self.limit]

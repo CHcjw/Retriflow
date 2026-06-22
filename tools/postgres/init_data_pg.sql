@@ -1,4 +1,4 @@
--- RetriFlow PostgreSQL seed data
+﻿-- RetriFlow PostgreSQL seed data
 -- Usage:
 -- 1. Run tools/postgres/schema_pg.sql first.
 -- 2. Then run this file to insert demo seed data.
@@ -32,8 +32,24 @@ ON CONFLICT (id) DO NOTHING;
 -- Seed Knowledge Base
 -- ============================================
 
-INSERT INTO knowledge_bases (id, name, product, document_count)
-VALUES ('kb-demo-1', 'RetriFlow product knowledge base', 'RetriFlow', 1)
+INSERT INTO knowledge_bases (
+    id,
+    name,
+    product,
+    document_count,
+    embedding_model,
+    collection_name,
+    owner
+)
+VALUES (
+    'kb-demo-1',
+    'RetriFlow product knowledge base',
+    'RetriFlow',
+    1,
+    'Qwen/Qwen3-Embedding-8B',
+    'kbdemo1',
+    'admin'
+)
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO knowledge_base_route_profiles (
@@ -45,7 +61,7 @@ INSERT INTO knowledge_base_route_profiles (
 VALUES (
     'kb-demo-1',
     'RetriFlow product knowledge base migration python vue rag langgraph langchain',
-    '["RetriFlow 是什么？", "RetriFlow 的迁移目标是什么？"]'::jsonb,
+    '["RetriFlow 鏄粈涔堬紵", "RetriFlow 鐨勮縼绉荤洰鏍囨槸浠€涔堬紵"]'::jsonb,
     '["retriflow", "langgraph", "langchain", "migration", "rag"]'::jsonb
 )
 ON CONFLICT (knowledge_base_id) DO NOTHING;
@@ -133,19 +149,23 @@ ON CONFLICT (id) DO NOTHING;
 INSERT INTO ingestion_task_nodes (
     id,
     task_id,
+    node_id,
     node_type,
     node_order,
     success,
+    status,
     message,
+    error_message,
+    output_json,
     duration_ms
 )
 VALUES
-    (1, 1, 'normalize', 1, 1, 'Normalized source text and preserved paragraph boundaries.', 1),
-    (2, 1, 'segment', 2, 1, 'Derived 1 semantic segments from source text.', 1),
-    (3, 1, 'chunk', 3, 1, 'Generated 1 chunks with overlap-aware chunking.', 1),
-    (4, 1, 'index', 4, 1, 'Indexed chunks into the local retrieval store.', 1)
+    (1, 1, 'normalize', 'normalize', 1, 1, 'success', 'Normalized source text and preserved paragraph boundaries.', '', '{}'::jsonb, 1),
+    (2, 1, 'segment', 'segment', 2, 1, 'success', 'Derived 1 semantic segments from source text.', '', '{"segmentCount":1}'::jsonb, 1),
+    (3, 1, 'chunk', 'chunk', 3, 1, 'success', 'Generated 1 chunks with overlap-aware chunking.', '', '{"chunkCount":1}'::jsonb, 1),
+    (4, 1, 'index', 'index', 4, 1, 'success', 'Indexed chunks into the local retrieval store.', '', '{"settings":{"store":"local"},"chunkCount":1}'::jsonb, 1)
 ON CONFLICT (id) DO NOTHING;
-
+`r`n
 -- ============================================
 -- Seed Ingestion Pipeline
 -- ============================================
@@ -195,17 +215,17 @@ INSERT INTO admin_intent_nodes (
 )
 VALUES (
     'intent-demo-retriflow',
-    'RetriFlow 知识检索',
+    'RetriFlow 鐭ヨ瘑妫€绱?,
     'retriflow_knowledge',
     'DOMAIN',
     'KB',
     'ROOT',
     'kb-demo-1',
     'retriflow_chunk_vectors',
-    '用于识别 RetriFlow 项目规划、RAG 流程、迁移目标相关问题。',
-    '["RetriFlow 一期应该先做什么？", "RetriFlow 的迁移目标是什么？"]'::jsonb,
-    '命中 retriflow、rag、langgraph、langchain、迁移 等关键词时优先进入该节点。',
-    '根据 RetriFlow 知识库内容进行回答，必须引用来源。',
+    '鐢ㄤ簬璇嗗埆 RetriFlow 椤圭洰瑙勫垝銆丷AG 娴佺▼銆佽縼绉荤洰鏍囩浉鍏抽棶棰樸€?,
+    '["RetriFlow 涓€鏈熷簲璇ュ厛鍋氫粈涔堬紵", "RetriFlow 鐨勮縼绉荤洰鏍囨槸浠€涔堬紵"]'::jsonb,
+    '鍛戒腑 retriflow銆乺ag銆乴anggraph銆乴angchain銆佽縼绉?绛夊叧閿瘝鏃朵紭鍏堣繘鍏ヨ鑺傜偣銆?,
+    '鏍规嵁 RetriFlow 鐭ヨ瘑搴撳唴瀹硅繘琛屽洖绛旓紝蹇呴』寮曠敤鏉ユ簮銆?,
     5,
     10,
     1
@@ -223,8 +243,8 @@ INSERT INTO admin_keyword_mappings (
     knowledge_base_id
 )
 VALUES
-    ('keyword-demo-rag', 'rag', 'RAG 检索增强生成', 'contains', 20, 1, 'RAG 相关问题归一化', 'kb-demo-1'),
-    ('keyword-demo-retriflow', 'retriflow', 'RetriFlow', 'contains', 30, 1, '项目名称命中', 'kb-demo-1')
+    ('keyword-demo-rag', 'rag', 'RAG 妫€绱㈠寮虹敓鎴?, 'contains', 20, 1, 'RAG 鐩稿叧闂褰掍竴鍖?, 'kb-demo-1'),
+    ('keyword-demo-retriflow', 'retriflow', 'RetriFlow', 'contains', 30, 1, '椤圭洰鍚嶇О鍛戒腑', 'kb-demo-1')
 ON CONFLICT (id) DO NOTHING;
 
 -- ============================================
@@ -237,3 +257,4 @@ SET document_count = (
     FROM knowledge_documents
     WHERE knowledge_documents.knowledge_base_id = knowledge_bases.id
 );
+

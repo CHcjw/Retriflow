@@ -1,6 +1,7 @@
 import { computed, nextTick, ref, shallowRef } from "vue";
 
 import {
+  cancelChatStreamTask,
   createSession,
   deleteSession,
   fetchKnowledgeBases,
@@ -8,6 +9,7 @@ import {
   fetchSessionMessages,
   fetchSessions,
   streamChatMessage,
+  submitMessageFeedback,
   updateSession,
   type ChatMcpCallItem,
   type ChatSourceItem,
@@ -16,9 +18,12 @@ import {
 
 export interface ChatMessage {
   id: string;
+  backendId?: number;
   role: "assistant" | "user";
   content: string;
   state: "complete" | "error" | "stopped" | "streaming";
+  feedbackVote?: 1 | -1;
+  feedbackState?: "idle" | "saving" | "saved" | "error";
 }
 
 type RequestPhase = "idle" | "retrieving" | "stopping" | "streaming";
@@ -27,13 +32,16 @@ type StreamStage = "idle" | "analyzing" | "retrieving" | "organizing" | "answeri
 function buildMessage(
   role: ChatMessage["role"],
   content: string,
-  state: ChatMessage["state"] = "complete"
+  state: ChatMessage["state"] = "complete",
+  backendId?: number
 ): ChatMessage {
   return {
     id: `${role}-${crypto.randomUUID()}`,
+    backendId,
     role,
     content,
-    state
+    state,
+    feedbackState: "idle"
   };
 }
 
@@ -126,6 +134,7 @@ export function useRetriFlowChat() {
   const lastSubmittedQuestion = shallowRef("");
   const lastSubmittedDeepThinking = shallowRef(false);
   const activeStreamController = shallowRef<AbortController | null>(null);
+  const activeStreamTaskId = shallowRef("");
   const sessions = ref<Awaited<ReturnType<typeof fetchSessions>>["items"]>([]);
   const activeSessionId = shallowRef("");
   const messages = ref<ChatMessage[]>([]);
@@ -187,7 +196,7 @@ export function useRetriFlowChat() {
       return;
     }
     const data = await fetchSessionMessages(sessionId);
-    messages.value = data.items.map((item) => buildMessage(item.role, item.content));
+    messages.value = data.items.map((item) => buildMessage(item.role, item.content, "complete", item.id));
   };
 
   const selectSession = async (sessionId: string) => {
@@ -331,6 +340,9 @@ export function useRetriFlowChat() {
         activeSessionId.value,
         trimmedQuestion,
         {
+          onTask: async (payload) => {
+            activeStreamTaskId.value = payload.task_id;
+          },
           onWorkflow: async (workflow) => {
             latestWorkflow.value = workflow;
             if (streamStage.value === "analyzing") {
@@ -350,6 +362,12 @@ export function useRetriFlowChat() {
           onDelta: async (delta) => {
             await renderStreamSegments(delta);
           },
+          onCancel: async () => {
+            assistantMessage.state = "stopped";
+            assistantMessage.content = assistantMessage.content || "已停止生成。";
+            messages.value = [...messages.value];
+            await nextTick();
+          },
           onFinal: async (payload) => {
             if (payload?.mode === "append" && payload.content_delta) {
               await renderStreamSegments(payload.content_delta);
@@ -368,6 +386,11 @@ export function useRetriFlowChat() {
           },
           onDone: async () => {
             assistantMessage.state = "complete";
+            const sessionMessages = await fetchSessionMessages(activeSessionId.value);
+            const latestAssistantMessage = [...sessionMessages.items].reverse().find((item) => item.role === "assistant");
+            if (latestAssistantMessage) {
+              assistantMessage.backendId = latestAssistantMessage.id;
+            }
             messages.value = [...messages.value];
             await nextTick();
             await loadSessions();
@@ -403,6 +426,7 @@ export function useRetriFlowChat() {
       }
     } finally {
       activeStreamController.value = null;
+      activeStreamTaskId.value = "";
       loading.value = false;
       requestPhase.value = "idle";
       if (streamStage.value !== "stopping") {
@@ -417,7 +441,15 @@ export function useRetriFlowChat() {
     }
     requestPhase.value = "stopping";
     streamStage.value = "stopping";
-    activeStreamController.value.abort();
+    const controller = activeStreamController.value;
+    const taskId = activeStreamTaskId.value;
+    if (!taskId) {
+      controller.abort();
+      return;
+    }
+    void cancelChatStreamTask(taskId).finally(() => {
+      controller.abort();
+    });
   };
 
   const retryLastQuestion = async () => {
@@ -425,6 +457,24 @@ export function useRetriFlowChat() {
       return;
     }
     await ask(lastSubmittedQuestion.value, { deepThinking: lastSubmittedDeepThinking.value });
+  };
+
+  const submitFeedback = async (message: ChatMessage, vote: 1 | -1) => {
+    if (message.role !== "assistant" || !message.backendId || message.state !== "complete") {
+      return;
+    }
+    message.feedbackState = "saving";
+    messages.value = [...messages.value];
+    try {
+      await submitMessageFeedback(message.backendId, vote);
+      message.feedbackVote = vote;
+      message.feedbackState = "saved";
+    } catch (error) {
+      message.feedbackState = "error";
+      errorMessage.value = error instanceof Error ? error.message : "反馈提交失败";
+    } finally {
+      messages.value = [...messages.value];
+    }
   };
 
   return {
@@ -451,6 +501,7 @@ export function useRetriFlowChat() {
     sessions,
     starterPrompts,
     statusText,
-    stopStreaming
+    stopStreaming,
+    submitFeedback
   };
 }

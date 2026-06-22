@@ -49,41 +49,75 @@ class RetriFlowEmbeddingService(Embeddings):
         from infra.llm import RetriFlowLLMService
 
         self.llm_service = RetriFlowLLMService()
+        self.default_provider_name: str | None = None
+        self.default_model_name: str | None = None
 
-    def embed_texts(self, texts: list[str]) -> list[list[float]]:
-        return self.embed_documents(texts)
+    def embed_texts(
+        self,
+        texts: list[str],
+        *,
+        provider_name: str | None = None,
+        model_name: str | None = None,
+    ) -> list[list[float]]:
+        return self._embed_documents(
+            texts,
+            provider_name=provider_name or self.default_provider_name,
+            model_name=model_name or self.default_model_name,
+        )
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return self._embed_documents(
+            texts,
+            provider_name=self.default_provider_name,
+            model_name=self.default_model_name,
+        )
+
+    def _embed_documents(
+        self,
+        texts: list[str],
+        *,
+        provider_name: str | None = None,
+        model_name: str | None = None,
+    ) -> list[list[float]]:
         if not texts:
             return []
 
-        provider = self._resolve_provider()
+        provider = self._resolve_provider(provider_name=provider_name)
         if provider is None:
             return self.fallback_embeddings.embed_documents(texts)
 
         try:
-            return self._request_embeddings(provider=provider, inputs=texts)
+            return self._request_embeddings(provider=provider, inputs=texts, model_name=model_name)
         except Exception:
             return self.fallback_embeddings.embed_documents(texts)
 
     def embed_query(self, text: str) -> list[float]:
-        provider = self._resolve_provider()
+        provider = self._resolve_provider(provider_name=self.default_provider_name)
         if provider is None:
             return self.fallback_embeddings.embed_query(text)
 
         try:
-            result = self._request_embeddings(provider=provider, inputs=[text])
+            result = self._request_embeddings(
+                provider=provider,
+                inputs=[text],
+                model_name=self.default_model_name,
+            )
         except Exception:
             return self.fallback_embeddings.embed_query(text)
 
         return result[0] if result else self.fallback_embeddings.embed_query(text)
 
-    def _request_embeddings(self, provider: EmbeddingProviderConfig, inputs: list[str]) -> list[list[float]]:
+    def _request_embeddings(
+        self,
+        provider: EmbeddingProviderConfig,
+        inputs: list[str],
+        model_name: str | None = None,
+    ) -> list[list[float]]:
         headers = {"Content-Type": "application/json"}
         if provider.api_key:
             headers["Authorization"] = f"Bearer {provider.api_key}"
         payload = {
-            "model": self.llm_service._resolve_model(
+            "model": model_name or self.llm_service._resolve_model(
                 capability="embedding",
                 provider_name=provider.name,
             ),
@@ -109,8 +143,12 @@ class RetriFlowEmbeddingService(Embeddings):
             raise RuntimeError("embedding response contained invalid vectors")
         return embeddings
 
-    def _resolve_provider(self) -> EmbeddingProviderConfig | None:
-        provider = self.llm_service._resolve_provider(capability="embedding")
+    def _resolve_provider(self, provider_name: str | None = None) -> EmbeddingProviderConfig | None:
+        provider = (
+            self.llm_service._provider_registry().get(provider_name)
+            if provider_name
+            else self.llm_service._resolve_provider(capability="embedding")
+        )
         if provider is None or provider.name == "disabled":
             return None
         return EmbeddingProviderConfig(
@@ -118,3 +156,17 @@ class RetriFlowEmbeddingService(Embeddings):
             base_url=provider.base_url,
             api_key=provider.api_key,
         )
+
+    def with_runtime_defaults(
+        self,
+        *,
+        provider_name: str | None = None,
+        model_name: str | None = None,
+    ) -> "RetriFlowEmbeddingService":
+        clone = RetriFlowEmbeddingService()
+        clone.settings = self.settings
+        clone.fallback_embeddings = self.fallback_embeddings
+        clone.llm_service = self.llm_service
+        clone.default_provider_name = provider_name
+        clone.default_model_name = model_name
+        return clone

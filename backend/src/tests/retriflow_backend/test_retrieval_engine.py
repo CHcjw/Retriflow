@@ -107,6 +107,47 @@ class RetriFlowRetrievalEngineTests(unittest.TestCase):
         self.assertGreaterEqual(len(result.sources), 1)
         self.assertEqual(result.sources[0].document_title, "LangChain retrieval notes")
 
+    def test_vector_search_channel_uses_search_context_and_returns_channel_result(self) -> None:
+        from modules.rag.retrieval.channels import RetrievedChunkRecord, SearchContext, VectorSearchChannel
+
+        semantic_records = [
+            RetrievedChunkRecord(
+                chunk_id=1,
+                knowledge_base_id="kb-demo-1",
+                document_id=1,
+                document_title="LangChain retrieval notes",
+                content="RetriFlow uses vector search through a channel.",
+                score=0.91,
+                channel="semantic",
+            )
+        ]
+
+        class FakeVectorStore:
+            def similarity_search(self, query: str, k: int = 80, knowledge_base_ids=None):
+                self.last_query = query
+                self.last_k = k
+                self.last_knowledge_base_ids = knowledge_base_ids
+                return semantic_records
+
+        fake_vector_store = FakeVectorStore()
+        channel = VectorSearchChannel(vector_store_factory=lambda: fake_vector_store)
+        result = channel.search(
+            SearchContext(
+                original_question="original question",
+                rewritten_question="rewritten question",
+                queries=["rewritten question"],
+                knowledge_base_ids=["kb-demo-1"],
+                top_k=7,
+            )
+        )
+
+        self.assertEqual(result.channel_name, "semantic")
+        self.assertEqual(result.records, semantic_records)
+        self.assertGreaterEqual(result.latency_ms, 0)
+        self.assertEqual(fake_vector_store.last_query, "rewritten question")
+        self.assertEqual(fake_vector_store.last_k, 7)
+        self.assertEqual(fake_vector_store.last_knowledge_base_ids, ["kb-demo-1"])
+
     def test_rrf_fusion_prefers_chunks_hit_by_multiple_retrievers(self) -> None:
         from modules.rag.retrieval.channels import RetrievedChunkRecord
         from modules.rag.retrieval.postprocessors import reciprocal_rank_fusion
@@ -128,6 +169,222 @@ class RetriFlowRetrievalEngineTests(unittest.TestCase):
         self.assertGreaterEqual(len(fused), 3)
         self.assertEqual(fused[0].chunk_id, 1)
         self.assertEqual(fused[0].channel, "hybrid_rrf")
+
+    def test_hybrid_retriever_executes_enabled_channel_registry(self) -> None:
+        from modules.rag.retrieval.channels import RetrievedChunkRecord, SearchChannelResult
+        from modules.rag.retrieval.engine import RetriFlowHybridRetriever
+
+        class FakeChannel:
+            name = "bm25"
+
+            def __init__(self) -> None:
+                self.seen_context = None
+
+            def is_enabled(self, context) -> bool:
+                self.seen_context = context
+                return True
+
+            def search(self, context) -> SearchChannelResult:
+                self.seen_context = context
+                return SearchChannelResult(
+                    channel_name=self.name,
+                    records=[
+                        RetrievedChunkRecord(
+                            chunk_id=1,
+                            knowledge_base_id="kb-demo-1",
+                            document_id=1,
+                            document_title="Doc A",
+                            content="registry hit",
+                            score=1.0,
+                            channel=self.name,
+                        )
+                    ],
+                    latency_ms=1,
+                )
+
+            def retrieve(self, question: str, knowledge_base_ids=None, top_k: int = 80):
+                raise AssertionError("engine should use search(context), not legacy retrieve()")
+
+        fake_channel = FakeChannel()
+
+        class FakeReranker:
+            def rerank(self, question: str, records: list[RetrievedChunkRecord], limit: int = 10) -> list[RetrievedChunkRecord]:
+                return records[:limit]
+
+        with patch("modules.rag.retrieval.engine.RetriFlowRerankService", return_value=FakeReranker()):
+            ranked, stage_counts = RetriFlowHybridRetriever(channels=[fake_channel]).retrieve_ranked_records(
+                "original question",
+                queries=["rewritten query"],
+            )
+
+        self.assertEqual([item.chunk_id for item in ranked], [1])
+        self.assertEqual(stage_counts["bm25"], 1)
+        self.assertEqual(fake_channel.seen_context.original_question, "original question")
+        self.assertEqual(fake_channel.seen_context.queries, ["rewritten query"])
+
+    def test_hybrid_retriever_keeps_results_when_one_channel_fails(self) -> None:
+        from modules.rag.retrieval.channels import RetrievedChunkRecord, SearchChannelResult
+        from modules.rag.retrieval.engine import RetriFlowHybridRetriever
+
+        class FailingChannel:
+            name = "bm25"
+
+            def is_enabled(self, context) -> bool:
+                return True
+
+            def search(self, context) -> SearchChannelResult:
+                raise RuntimeError("bm25 unavailable")
+
+            def retrieve(self, question: str, knowledge_base_ids=None, top_k: int = 80):
+                raise AssertionError("engine should use search(context)")
+
+        class WorkingChannel:
+            name = "semantic"
+
+            def is_enabled(self, context) -> bool:
+                return True
+
+            def search(self, context) -> SearchChannelResult:
+                return SearchChannelResult(
+                    channel_name=self.name,
+                    records=[
+                        RetrievedChunkRecord(
+                            chunk_id=2,
+                            knowledge_base_id="kb-demo-1",
+                            document_id=1,
+                            document_title="Doc B",
+                            content="semantic fallback",
+                            score=0.9,
+                            channel=self.name,
+                        )
+                    ],
+                    latency_ms=3,
+                    metadata={"query_count": len(context.effective_queries)},
+                )
+
+            def retrieve(self, question: str, knowledge_base_ids=None, top_k: int = 80):
+                raise AssertionError("engine should use search(context)")
+
+        retriever = RetriFlowHybridRetriever(
+            channels=[FailingChannel(), WorkingChannel()],
+        )
+        ranked, stage_counts = retriever.retrieve_ranked_records("fallback retrieval")
+
+        self.assertEqual([item.chunk_id for item in ranked], [2])
+        self.assertEqual(stage_counts["bm25"], 0)
+        self.assertEqual(stage_counts["semantic"], 1)
+        self.assertEqual(retriever._last_stage_metrics["bm25"]["error"], "bm25 unavailable")
+        self.assertEqual(retriever._last_stage_metrics["semantic"]["latency_ms"], 3)
+
+    def test_hybrid_retriever_executes_enabled_postprocessor_chain_in_order(self) -> None:
+        from modules.rag.retrieval.channels import RetrievedChunkRecord, SearchChannelResult
+        from modules.rag.retrieval.engine import RetriFlowHybridRetriever
+
+        class FakeChannel:
+            name = "bm25"
+
+            def is_enabled(self, context) -> bool:
+                return True
+
+            def search(self, context) -> SearchChannelResult:
+                return SearchChannelResult(
+                    channel_name=self.name,
+                    records=[
+                        RetrievedChunkRecord(1, "kb-demo-1", 1, "Doc A", "first", 1.0, self.name),
+                        RetrievedChunkRecord(2, "kb-demo-1", 2, "Doc B", "second", 0.9, self.name),
+                    ],
+                )
+
+            def retrieve(self, question: str, knowledge_base_ids=None, top_k: int = 80):
+                raise AssertionError("engine should use search(context)")
+
+        calls: list[str] = []
+
+        class FirstPostProcessor:
+            name = "first"
+            order = 20
+
+            def is_enabled(self, context) -> bool:
+                return True
+
+            def process(self, records, channel_results, context):
+                calls.append(self.name)
+                return list(reversed(records))
+
+        class SecondPostProcessor:
+            name = "second"
+            order = 10
+
+            def is_enabled(self, context) -> bool:
+                return True
+
+            def process(self, records, channel_results, context):
+                calls.append(self.name)
+                return records[:1]
+
+        ranked, stage_counts = RetriFlowHybridRetriever(
+            channels=[FakeChannel()],
+            postprocessors=[FirstPostProcessor(), SecondPostProcessor()],
+        ).retrieve_ranked_records("postprocessor order")
+
+        self.assertEqual(calls, ["second", "first"])
+        self.assertEqual([item.chunk_id for item in ranked], [1])
+        self.assertEqual(stage_counts["second"], 1)
+        self.assertEqual(stage_counts["first"], 1)
+        self.assertEqual(stage_counts["final"], 1)
+
+    def test_hybrid_retriever_skips_failing_postprocessor_and_continues(self) -> None:
+        from modules.rag.retrieval.channels import RetrievedChunkRecord, SearchChannelResult
+        from modules.rag.retrieval.engine import RetriFlowHybridRetriever
+
+        class FakeChannel:
+            name = "bm25"
+
+            def is_enabled(self, context) -> bool:
+                return True
+
+            def search(self, context) -> SearchChannelResult:
+                return SearchChannelResult(
+                    channel_name=self.name,
+                    records=[
+                        RetrievedChunkRecord(1, "kb-demo-1", 1, "Doc A", "first", 1.0, self.name),
+                        RetrievedChunkRecord(2, "kb-demo-1", 2, "Doc B", "second", 0.9, self.name),
+                    ],
+                )
+
+            def retrieve(self, question: str, knowledge_base_ids=None, top_k: int = 80):
+                raise AssertionError("engine should use search(context)")
+
+        class FailingPostProcessor:
+            name = "failing"
+            order = 10
+
+            def is_enabled(self, context) -> bool:
+                return True
+
+            def process(self, records, channel_results, context):
+                raise RuntimeError("postprocessor unavailable")
+
+        class FinalPostProcessor:
+            name = "after_failure"
+            order = 20
+
+            def is_enabled(self, context) -> bool:
+                return True
+
+            def process(self, records, channel_results, context):
+                return records[:1]
+
+        retriever = RetriFlowHybridRetriever(
+            channels=[FakeChannel()],
+            postprocessors=[FailingPostProcessor(), FinalPostProcessor()],
+        )
+        ranked, stage_counts = retriever.retrieve_ranked_records("postprocessor failure")
+
+        self.assertEqual([item.chunk_id for item in ranked], [1])
+        self.assertEqual(stage_counts["failing"], 2)
+        self.assertEqual(stage_counts["after_failure"], 1)
+        self.assertEqual(retriever._last_stage_metrics["failing"]["error"], "postprocessor unavailable")
 
     def test_retrieval_engine_uses_bm25_rrf_and_rerank_pipeline(self) -> None:
         from modules.rag.retrieval.engine import RetriFlowRetrievalEngine

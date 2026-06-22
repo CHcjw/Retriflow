@@ -16,6 +16,8 @@ from schemas.chat import (
 
 
 class RetriFlowChatService:
+    QUEUE_REJECT_MESSAGE = "system busy, please retry later"
+
     def __init__(self) -> None:
         self.workflow = RetriFlowChatWorkflow()
         self.memory_service = RetriFlowConversationMemoryService()
@@ -42,7 +44,7 @@ class RetriFlowChatService:
             deep_thinking=request.deep_thinking,
         )
         assistant_duration_ms = self._elapsed_ms(started_at)
-        self._persist_message_exchange(
+        assistant_message_id = self._persist_message_exchange(
             session_id=request.session_id,
             user_message=request.message,
             assistant_message=workflow_result.assistant_message,
@@ -51,7 +53,11 @@ class RetriFlowChatService:
         self.memory_service.update_short_term_memory(request.session_id)
         self.memory_service.update_mid_term_memory(request.session_id)
         self.memory_service.update_long_term_memory(request.session_id)
-        return self._build_response(request=request, workflow_result=workflow_result)
+        return self._build_response(
+            request=request,
+            workflow_result=workflow_result,
+            assistant_message_id=assistant_message_id,
+        )
 
     def prepare_stream(self, request: ChatMessageRequest, user_id: str) -> WorkflowStreamResult:
         self._ensure_session_access(request.session_id, user_id, claim_unowned=True)
@@ -79,13 +85,27 @@ class RetriFlowChatService:
         self.memory_service.update_mid_term_memory(request.session_id)
         self.memory_service.update_long_term_memory(request.session_id)
 
+    def persist_rejected_stream_result(self, request: ChatMessageRequest, user_id: str) -> None:
+        self._ensure_session_access(request.session_id, user_id, claim_unowned=True)
+        self._persist_message_exchange(
+            session_id=request.session_id,
+            user_message=request.message,
+            assistant_message=self.QUEUE_REJECT_MESSAGE,
+            assistant_duration_ms=0,
+        )
+        self.memory_service.update_short_term_memory(request.session_id)
+        self.memory_service.update_mid_term_memory(request.session_id)
+        self.memory_service.update_long_term_memory(request.session_id)
+
     @staticmethod
     def _build_response(
         request: ChatMessageRequest,
         workflow_result: WorkflowResult,
+        assistant_message_id: int | None = None,
     ) -> ChatMessageWithSourcesResponse:
         return ChatMessageWithSourcesResponse(
             session_id=request.session_id,
+            assistant_message_id=assistant_message_id,
             assistant_message=workflow_result.assistant_message,
             sources=workflow_result.sources,
             workflow=workflow_result.workflow,
@@ -98,7 +118,7 @@ class RetriFlowChatService:
         user_message: str,
         assistant_message: str,
         assistant_duration_ms: int = 0,
-    ) -> None:
+    ) -> int:
         with get_connection() as connection:
             connection.execute(
                 """
@@ -107,13 +127,15 @@ class RetriFlowChatService:
                 """,
                 (session_id, "user", user_message, 0),
             )
-            connection.execute(
+            cursor = connection.execute(
                 """
                 insert into conversation_messages (session_id, role, content, duration_ms)
                 values (?, ?, ?, ?)
+                returning id
                 """,
                 (session_id, "assistant", assistant_message, max(0, int(assistant_duration_ms or 0))),
             )
+            assistant_message_id = int(cursor.fetchone()[0])
             connection.execute(
                 """
                 update sessions
@@ -123,6 +145,7 @@ class RetriFlowChatService:
                 (session_id,),
             )
             connection.commit()
+        return assistant_message_id
 
     @staticmethod
     def _elapsed_ms(started_at: float) -> int:

@@ -33,6 +33,21 @@ class RetriFlowMcpRegistryTests(unittest.TestCase):
         tool_ids = {tool.tool_id for tool in registry.list_tools()}
         self.assertIn("weather_query", tool_ids)
         self.assertIn("sales_query", tool_ids)
+        self.assertIn("ticket_query", tool_ids)
+        self.assertTrue(registry.contains("weather_query"))
+        self.assertGreaterEqual(registry.size(), 3)
+        self.assertGreaterEqual(len(registry.list_executors()), 3)
+
+    def test_registry_can_unregister_tool(self) -> None:
+        from modules.mcp.registry import RetriFlowMcpRegistry
+
+        registry = RetriFlowMcpRegistry()
+
+        self.assertTrue(registry.contains("weather_query"))
+        registry.unregister("weather_query")
+
+        self.assertFalse(registry.contains("weather_query"))
+        self.assertIsNone(registry.get_executor("weather_query"))
 
     def test_registry_can_register_remote_tools(self) -> None:
         os.environ["RETRIFLOW_MCP_REMOTE_ENABLED"] = "true"
@@ -60,6 +75,39 @@ class RetriFlowMcpRegistryTests(unittest.TestCase):
 
         tool_ids = {tool.tool_id for tool in registry.list_tools()}
         self.assertIn("stock_query", tool_ids)
+        statuses = registry.remote_server_statuses()
+        self.assertEqual(len(statuses), 1)
+        self.assertEqual(statuses[0].name, "finance-remote")
+        self.assertTrue(statuses[0].healthy)
+        self.assertEqual(statuses[0].tool_count, 1)
+
+    def test_registry_skips_unhealthy_remote_server_without_losing_builtins(self) -> None:
+        os.environ["RETRIFLOW_MCP_REMOTE_ENABLED"] = "true"
+        os.environ["RETRIFLOW_MCP_REMOTE_SERVERS_JSON"] = (
+            '[{"name":"bad-remote","url":"http://mcp.invalid"}]'
+        )
+        from core.config import get_settings
+        from modules.mcp.registry import RetriFlowMcpRegistry
+
+        get_settings.cache_clear()
+
+        with patch(
+            "modules.mcp.registry.RetriFlowRemoteMcpClient.list_tools",
+            side_effect=RuntimeError("remote unavailable"),
+        ):
+            registry = RetriFlowMcpRegistry()
+
+        tool_ids = {tool.tool_id for tool in registry.list_tools()}
+        self.assertIn("weather_query", tool_ids)
+        self.assertIn("sales_query", tool_ids)
+        self.assertIn("ticket_query", tool_ids)
+
+        statuses = registry.remote_server_statuses()
+        self.assertEqual(len(statuses), 1)
+        self.assertEqual(statuses[0].name, "bad-remote")
+        self.assertFalse(statuses[0].healthy)
+        self.assertEqual(statuses[0].tool_count, 0)
+        self.assertIn("remote unavailable", statuses[0].error)
 
 
 if __name__ == "__main__":

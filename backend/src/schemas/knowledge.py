@@ -1,5 +1,7 @@
 from typing import Any
 
+import re
+
 from pydantic import BaseModel, Field, model_validator
 
 
@@ -15,8 +17,35 @@ class KnowledgeBaseItem(BaseModel):
     updated_at: str = ""
 
 
+COLLECTION_NAME_PATTERN = re.compile(r"^[a-z0-9]+$")
+
+
 class KnowledgeBaseCreateRequest(BaseModel):
     name: str
+    embedding_model: str = "Qwen/Qwen3-Embedding-8B"
+    collection_name: str = ""
+
+    @model_validator(mode="after")
+    def validate_knowledge_base(self) -> "KnowledgeBaseCreateRequest":
+        if not self.name.strip():
+            raise ValueError("name is required")
+        if self.collection_name and not COLLECTION_NAME_PATTERN.fullmatch(self.collection_name):
+            raise ValueError("collection_name can only contain lowercase letters and numbers")
+        return self
+
+
+class KnowledgeBaseUpdateRequest(BaseModel):
+    name: str | None = None
+    embedding_model: str | None = None
+    collection_name: str | None = None
+
+    @model_validator(mode="after")
+    def validate_knowledge_base_update(self) -> "KnowledgeBaseUpdateRequest":
+        if self.name is not None and not self.name.strip():
+            raise ValueError("name is required")
+        if self.collection_name is not None and not COLLECTION_NAME_PATTERN.fullmatch(self.collection_name):
+            raise ValueError("collection_name can only contain lowercase letters and numbers")
+        return self
 
 
 class KnowledgeBaseListResponse(BaseModel):
@@ -35,6 +64,7 @@ class KnowledgeDocumentItem(BaseModel):
     vector_chunk_count: int = 0
     document_type: str = "knowledge_base"
     size_label: str = "-"
+    source_uri: str = ""
     vector_indexed_at: str = ""
     created_at: str
 
@@ -44,10 +74,13 @@ class KnowledgeDocumentCreateRequest(BaseModel):
     source_type: str = "manual"
     content: str
     document_type: str = "manual"
+    process_mode: str = "chunk_strategy"
+    pipeline_id: int | None = None
     chunk_strategy: str = "auto"
     chunk_size: int = 600
     chunk_overlap: int = 120
     recursive_separators: list[str] = Field(default_factory=list)
+    chunk_config: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_chunk_settings(self) -> "KnowledgeDocumentCreateRequest":
@@ -62,10 +95,13 @@ class KnowledgeDocumentCreateRequest(BaseModel):
 
 class KnowledgeDocumentReindexRequest(BaseModel):
     document_type: str | None = None
+    process_mode: str = "chunk_strategy"
+    pipeline_id: int | None = None
     chunk_strategy: str = "auto"
     chunk_size: int = 600
     chunk_overlap: int = 120
     recursive_separators: list[str] = Field(default_factory=list)
+    chunk_config: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_chunk_settings(self) -> "KnowledgeDocumentReindexRequest":
@@ -78,8 +114,29 @@ class KnowledgeDocumentReindexRequest(BaseModel):
         return self
 
 
+class KnowledgeDocumentUpdateRequest(BaseModel):
+    title: str | None = None
+    enabled: bool | None = None
+
+    @model_validator(mode="after")
+    def validate_document_update(self) -> "KnowledgeDocumentUpdateRequest":
+        if self.title is not None and not self.title.strip():
+            raise ValueError("title is required")
+        return self
+
+
 class KnowledgeDocumentListResponse(BaseModel):
     items: list[KnowledgeDocumentItem]
+
+
+class KnowledgeDocumentPreviewResponse(BaseModel):
+    id: int
+    knowledge_base_id: str
+    title: str
+    source_type: str
+    content: str
+    source_uri: str = ""
+    created_at: str
 
 
 class KnowledgeSampleImportResponse(BaseModel):
@@ -105,7 +162,16 @@ class KnowledgeChunkListResponse(BaseModel):
 
 
 class KnowledgeChunkUpdateRequest(BaseModel):
-    enabled: bool
+    enabled: bool | None = None
+    content: str | None = None
+
+    @model_validator(mode="after")
+    def validate_chunk_update(self) -> "KnowledgeChunkUpdateRequest":
+        if self.enabled is None and self.content is None:
+            raise ValueError("enabled or content is required")
+        if self.content is not None and not self.content.strip():
+            raise ValueError("content is required")
+        return self
 
 
 class KnowledgeChunkBatchUpdateRequest(BaseModel):
@@ -169,10 +235,14 @@ class IngestionTaskListResponse(BaseModel):
 class IngestionTaskNodeItem(BaseModel):
     id: int
     task_id: int
+    node_id: str = ""
     node_type: str
     node_order: int
     success: bool
+    status: str = "success"
     message: str
+    error_message: str = ""
+    output: dict[str, Any] = Field(default_factory=dict)
     duration_ms: int
     created_at: str
 

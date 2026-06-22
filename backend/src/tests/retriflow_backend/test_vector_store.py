@@ -81,6 +81,68 @@ class RetriFlowVectorStoreTests(unittest.TestCase):
         self.assertEqual(first_record.knowledge_base_id, "kb-demo-1")
         self.assertIn("RetriFlow should persist chunk vectors", first_record.content)
 
+    def test_knowledge_service_uses_knowledge_base_vector_settings(self) -> None:
+        from modules.knowledge import RetriFlowKnowledgeService
+        from schemas.knowledge import KnowledgeBaseUpdateRequest, KnowledgeDocumentCreateRequest
+
+        captured_records: list[object] = []
+
+        class FakeVectorStore:
+            def upsert_chunk_records(self, records) -> None:
+                captured_records.extend(records)
+
+            def delete_document_records(self, document_id: int) -> None:
+                _ = document_id
+
+            def similarity_search(self, query: str, k: int = 4, knowledge_base_ids=None):
+                return []
+
+        with patch("modules.knowledge.service.resolve_vector_store", return_value=FakeVectorStore()):
+            service = RetriFlowKnowledgeService()
+            service.update_knowledge_base(
+                "kb-demo-1",
+                KnowledgeBaseUpdateRequest(
+                    name="Demo KB",
+                    embedding_model="qwen3-embedding:8b",
+                    collection_name="demokb",
+                ),
+            )
+            service.create_document(
+                "kb-demo-1",
+                KnowledgeDocumentCreateRequest(
+                    title="KB vector settings",
+                    source_type="manual",
+                    content="Knowledge base vector settings should flow to vector records.",
+                ),
+            )
+
+        self.assertGreaterEqual(len(captured_records), 1)
+        self.assertEqual(captured_records[0].collection_name, "demokb")
+        self.assertEqual(captured_records[0].embedding_model, "qwen3-embedding:8b")
+
+    def test_postgres_vector_store_persists_collection_and_model_columns(self) -> None:
+        from infra.vector_store import PostgresRetriFlowVectorStore
+
+        store = PostgresRetriFlowVectorStore()
+        insert_sql = store._build_insert_sql()
+
+        self.assertIn("collection_name", insert_sql)
+        self.assertIn("embedding_model", insert_sql)
+        self.assertIn("collection_name = excluded.collection_name", insert_sql)
+        self.assertIn("embedding_model = excluded.embedding_model", insert_sql)
+
+    def test_postgres_vector_store_derives_embedding_provider_from_model(self) -> None:
+        from infra.vector_store import PostgresRetriFlowVectorStore
+
+        self.assertEqual(
+            PostgresRetriFlowVectorStore._derive_embedding_provider("qwen3-embedding:8b"),
+            "ollama",
+        )
+        self.assertEqual(
+            PostgresRetriFlowVectorStore._derive_embedding_provider("Qwen/Qwen3-Embedding-8B"),
+            "siliconflow",
+        )
+
     def test_knowledge_service_reindex_replaces_document_vectors(self) -> None:
         from modules.knowledge import RetriFlowKnowledgeService
         from schemas.knowledge import KnowledgeDocumentCreateRequest, KnowledgeDocumentReindexRequest
@@ -125,6 +187,55 @@ class RetriFlowVectorStoreTests(unittest.TestCase):
         self.assertEqual(operation_log[0], ("delete", created.id))
         self.assertEqual(operation_log[1][0], "upsert")
         self.assertGreaterEqual(len(operation_log[1][1]), 1)
+
+    def test_chunk_update_and_delete_resync_document_vectors(self) -> None:
+        from modules.knowledge import RetriFlowKnowledgeService
+        from schemas.knowledge import KnowledgeDocumentCreateRequest
+
+        operation_log: list[tuple[str, object]] = []
+
+        class FakeVectorStore:
+            def upsert_chunk_records(self, records) -> None:
+                operation_log.append(("upsert", [record.content for record in records]))
+
+            def delete_document_records(self, document_id: int) -> None:
+                operation_log.append(("delete", document_id))
+
+            def similarity_search(self, query: str, k: int = 4, knowledge_base_ids=None):
+                return []
+
+        with patch("modules.knowledge.service.resolve_vector_store", return_value=FakeVectorStore()):
+            service = RetriFlowKnowledgeService()
+            created = service.create_document(
+                "kb-demo-1",
+                KnowledgeDocumentCreateRequest(
+                    title="Chunk vector mutation target",
+                    source_type="manual",
+                    content=(
+                        "First chunk content keeps enough text for the splitter. "
+                        "Second chunk content also keeps enough text for mutation coverage."
+                    ),
+                ),
+            )
+            chunks = service.list_document_chunks("kb-demo-1", created.id).items
+            self.assertGreaterEqual(len(chunks), 1)
+
+            operation_log.clear()
+            service.update_document_chunk(
+                "kb-demo-1",
+                created.id,
+                chunks[0].id,
+                content="Updated chunk vector content for semantic search.",
+            )
+            self.assertEqual(operation_log[0], ("delete", created.id))
+            self.assertEqual(operation_log[1][0], "upsert")
+            self.assertTrue(any("Updated chunk vector content" in item for item in operation_log[1][1]))
+
+            operation_log.clear()
+            service.delete_document_chunk("kb-demo-1", created.id, chunks[0].id)
+            self.assertEqual(operation_log[0], ("delete", created.id))
+            if len(operation_log) > 1:
+                self.assertEqual(operation_log[1][0], "upsert")
 
 
 if __name__ == "__main__":

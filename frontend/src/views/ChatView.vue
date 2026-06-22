@@ -32,7 +32,8 @@ const {
   sessions,
   starterPrompts,
   statusText,
-  stopStreaming
+  stopStreaming,
+  submitFeedback
 } = useRetriFlowChat();
 
 const submitPrompt = async (prompt?: string) => {
@@ -159,6 +160,7 @@ onMounted(() => {
             :loading="loading"
             :messages="messages"
             :status-text="statusText"
+            @feedback="submitFeedback"
           />
         </div>
       </div>

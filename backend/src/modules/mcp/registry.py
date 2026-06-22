@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 
 from core.config import get_settings
@@ -7,9 +8,19 @@ from modules.mcp.client import RemoteMcpServerConfig, RetriFlowRemoteMcpClient
 from modules.mcp.executors import (
     RetriFlowMcpToolExecutor,
     SalesMcpToolExecutor,
+    TicketMcpToolExecutor,
     WeatherMcpToolExecutor,
 )
 from modules.mcp.models import McpToolDefinition
+
+
+@dataclass(frozen=True)
+class RemoteMcpServerStatus:
+    name: str
+    url: str
+    healthy: bool
+    tool_count: int
+    error: str = ""
 
 
 class RemoteMcpToolExecutor(RetriFlowMcpToolExecutor):
@@ -28,11 +39,12 @@ class RetriFlowMcpRegistry:
     def __init__(self) -> None:
         self.settings = get_settings()
         self._executors: dict[str, RetriFlowMcpToolExecutor] = {}
+        self._remote_server_statuses: list[RemoteMcpServerStatus] = []
         self._register_builtin_tools()
         self._register_remote_tools()
 
     def _register_builtin_tools(self) -> None:
-        for executor in (WeatherMcpToolExecutor(), SalesMcpToolExecutor()):
+        for executor in (WeatherMcpToolExecutor(), SalesMcpToolExecutor(), TicketMcpToolExecutor()):
             self.register(executor)
 
     def _register_remote_tools(self) -> None:
@@ -41,8 +53,30 @@ class RetriFlowMcpRegistry:
 
         for server in self._load_remote_servers():
             client = RetriFlowRemoteMcpClient(server)
-            for tool in client.list_tools():
+            try:
+                tools = client.list_tools()
+            except Exception as exc:
+                self._remote_server_statuses.append(
+                    RemoteMcpServerStatus(
+                        name=server.name,
+                        url=server.url,
+                        healthy=False,
+                        tool_count=0,
+                        error=str(exc),
+                    )
+                )
+                continue
+
+            for tool in tools:
                 self.register(RemoteMcpToolExecutor(client=client, definition=tool))
+            self._remote_server_statuses.append(
+                RemoteMcpServerStatus(
+                    name=server.name,
+                    url=server.url,
+                    healthy=True,
+                    tool_count=len(tools),
+                )
+            )
 
     def _load_remote_servers(self) -> list[RemoteMcpServerConfig]:
         raw = self.settings.mcp_remote_servers_json.strip()
@@ -86,4 +120,19 @@ class RetriFlowMcpRegistry:
 
     def list_tools(self) -> list[McpToolDefinition]:
         return [executor.get_definition() for executor in self._executors.values()]
+
+    def remote_server_statuses(self) -> list[RemoteMcpServerStatus]:
+        return list(self._remote_server_statuses)
+
+    def list_executors(self) -> list[RetriFlowMcpToolExecutor]:
+        return list(self._executors.values())
+
+    def unregister(self, tool_id: str) -> None:
+        self._executors.pop(tool_id, None)
+
+    def contains(self, tool_id: str) -> bool:
+        return tool_id in self._executors
+
+    def size(self) -> int:
+        return len(self._executors)
 

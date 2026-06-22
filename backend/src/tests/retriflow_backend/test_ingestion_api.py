@@ -80,6 +80,42 @@ class RetriFlowIngestionApiTests(unittest.TestCase):
         self.assertEqual([item["node_type"] for item in payload["items"]], ["normalize", "segment", "chunk", "index"])
         self.assertTrue(all(item["success"] for item in payload["items"]))
         self.assertIn("segments", payload["items"][1]["message"])
+        chunk_node = payload["items"][2]
+        index_node = payload["items"][3]
+        self.assertEqual(chunk_node["node_id"], "chunk")
+        self.assertEqual(chunk_node["status"], "success")
+        self.assertEqual(chunk_node["error_message"], "")
+        self.assertEqual(chunk_node["output"]["chunkCount"], task["chunk_count"])
+        self.assertEqual(index_node["output"]["settings"], {"store": "local"})
+
+    def test_ingestion_tasks_can_be_filtered_by_document(self) -> None:
+        knowledge_base_id = self._create_knowledge_base()
+        first_response = self.client.post(
+            f"/api/v1/knowledge-bases/{knowledge_base_id}/documents",
+            json={
+                "title": "First ingestion target",
+                "source_type": "manual",
+                "content": "First document should have a dedicated ingestion task.",
+            },
+        )
+        second_response = self.client.post(
+            f"/api/v1/knowledge-bases/{knowledge_base_id}/documents",
+            json={
+                "title": "Second ingestion target",
+                "source_type": "manual",
+                "content": "Second document should not appear in the first document task list.",
+            },
+        )
+        self.assertEqual(first_response.status_code, 201)
+        self.assertEqual(second_response.status_code, 201)
+
+        document_id = first_response.json()["id"]
+        tasks_response = self.client.get(f"/api/v1/ingestion/tasks?document_id={document_id}")
+
+        self.assertEqual(tasks_response.status_code, 200)
+        payload = tasks_response.json()
+        self.assertGreaterEqual(len(payload["items"]), 1)
+        self.assertTrue(all(item["document_id"] == document_id for item in payload["items"]))
 
     def test_admin_can_list_default_ingestion_pipeline(self) -> None:
         response = self.client.get("/api/v1/ingestion/pipelines")

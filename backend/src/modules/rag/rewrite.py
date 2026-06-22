@@ -3,22 +3,15 @@ from __future__ import annotations
 from typing import Any
 
 from infra.llm import RetriFlowLLMService
+from modules.rag.prompt import get_prompt_template_loader
+from modules.rag.term_mapping import QueryTermMappingService
 
 
 class RetriFlowQueryRewriteService:
-    SYSTEM_PROMPT = (
-        "你是一个查询改写助手。根据对话历史和用户的最新问题，将问题改写为适合检索的查询。\n\n"
-        "要求：\n"
-        "1. 补全代词和省略的上下文信息\n"
-        "2. 将口语化表达转化为更正式、更适合检索的表达\n"
-        "3. 如果问题包含多个独立意图，拆分为多个子查询\n"
-        "4. 如果问题已经完整清晰且只有一个意图，只输出一个查询\n"
-        "5. 以 JSON 格式输出，格式为：{\"queries\": [\"查询1\", \"查询2\"]}\n"
-        "6. 不要输出 JSON 以外的任何内容"
-    )
-
     def __init__(self) -> None:
         self.llm_service = RetriFlowLLMService()
+        self.term_mapping_service = QueryTermMappingService()
+        self.prompt_loader = get_prompt_template_loader()
 
     def rewrite(
         self,
@@ -26,7 +19,7 @@ class RetriFlowQueryRewriteService:
         history_messages: list[dict[str, str]],
         query: str,
     ) -> list[str]:
-        normalized_query = query.strip()
+        normalized_query = self.term_mapping_service.normalize(query.strip()).strip()
         if not normalized_query:
             return []
 
@@ -36,16 +29,19 @@ class RetriFlowQueryRewriteService:
 
         try:
             payload = self.llm_service.extract_json_object(
-                system_prompt=self.SYSTEM_PROMPT,
-                user_prompt=self._build_user_prompt(history_messages=history_messages, query=normalized_query),
+                system_prompt=self.prompt_loader.render_section("rewrite.md", "system"),
+                user_prompt=self._build_user_prompt(
+                    history_messages=history_messages,
+                    query=normalized_query,
+                ),
                 capability="rewrite",
             )
         except Exception:
             return [normalized_query]
         return self._normalize_queries(payload, fallback_query=normalized_query)
 
-    @staticmethod
     def _build_user_prompt(
+        self,
         *,
         history_messages: list[dict[str, str]],
         query: str,
@@ -64,7 +60,11 @@ class RetriFlowQueryRewriteService:
             history_lines.append(f"{role_name}：{content}")
 
         history_text = "\n".join(history_lines).strip() or "无"
-        return f"对话历史：\n{history_text}\n\n用户最新问题：{query}"
+        return self.prompt_loader.render_section(
+            "rewrite.md",
+            "user",
+            {"history": history_text, "query": query},
+        )
 
     @staticmethod
     def _normalize_queries(payload: dict[str, Any], fallback_query: str) -> list[str]:
@@ -76,9 +76,7 @@ class RetriFlowQueryRewriteService:
         seen: set[str] = set()
         for item in raw_queries:
             text = str(item).strip()
-            if not text:
-                continue
-            if text in seen:
+            if not text or text in seen:
                 continue
             seen.add(text)
             normalized.append(text)
