@@ -235,6 +235,7 @@ def _initialize_sqlite_database() -> None:
                 vector_index_status text not null default 'pending',
                 vector_chunk_count integer not null default 0,
                 vector_indexed_at text,
+                processing_config_json text not null default '{}',
                 created_at text not null default current_timestamp,
                 foreign key (knowledge_base_id) references knowledge_bases (id)
             )
@@ -244,6 +245,7 @@ def _initialize_sqlite_database() -> None:
         _ensure_sqlite_column(connection, "knowledge_documents", "vector_chunk_count", "integer not null default 0")
         _ensure_sqlite_column(connection, "knowledge_documents", "vector_indexed_at", "text")
         _ensure_sqlite_column(connection, "knowledge_documents", "source_uri", "text not null default ''")
+        _ensure_sqlite_column(connection, "knowledge_documents", "processing_config_json", "text not null default '{}'")
         connection.execute(
             """
             create table if not exists knowledge_chunks (
@@ -599,6 +601,7 @@ def _initialize_postgres_database() -> None:
                     vector_index_status text not null default 'pending',
                     vector_chunk_count integer not null default 0,
                     vector_indexed_at timestamptz,
+                    processing_config_json jsonb not null default '{}'::jsonb,
                     created_at timestamptz not null default now()
                 )
                 """
@@ -626,6 +629,12 @@ def _initialize_postgres_database() -> None:
                 "knowledge_documents",
                 "source_uri",
                 "text not null default ''",
+            )
+            _ensure_postgres_column(
+                cursor,
+                "knowledge_documents",
+                "processing_config_json",
+                "jsonb not null default '{}'::jsonb",
             )
             cursor.execute(
                 """

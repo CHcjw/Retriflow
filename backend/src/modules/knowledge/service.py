@@ -285,6 +285,7 @@ class RetriFlowKnowledgeService:
                     kd.vector_index_status,
                     kd.vector_chunk_count,
                     kd.vector_indexed_at,
+                    kd.processing_config_json,
                     kd.created_at,
                     min(kc.strategy) as processing_mode,
                     min(kc.document_type) as document_type,
@@ -303,6 +304,7 @@ class RetriFlowKnowledgeService:
                     kd.vector_index_status,
                     kd.vector_chunk_count,
                     kd.vector_indexed_at,
+                    kd.processing_config_json,
                     kd.created_at
                 order by kd.id
                 """,
@@ -340,6 +342,7 @@ class RetriFlowKnowledgeService:
             chunk_documents=pipeline_result.chunk_documents,
             node_results=pipeline_result.node_results,
             structured_document=None,
+            persist_ingestion_task=request.process_mode == "data_channel",
         )
 
     def upload_document(
@@ -374,39 +377,22 @@ class RetriFlowKnowledgeService:
                 detail=str(exc),
             ) from exc
 
-        structured_source_documents = self._build_source_documents_from_structured_document(parsed_result.structured_document)
-        resolved_document_type = document_type or self._infer_upload_document_type(parsed_result.structured_document)
-        pipeline_options = self._build_pipeline_options(
-                strategy=chunk_strategy,
-                chunk_size=chunk_size,
-                chunk_overlap=chunk_overlap,
-                recursive_separators=recursive_separators,
-                chunk_config=chunk_config,
-            )
-        if process_mode == "data_channel":
-            pipeline_options["process_mode"] = process_mode
-            pipeline_options["pipeline_id"] = pipeline_id
-        pipeline_result = self._build_ingestion_pipeline(**pipeline_options).run(
-            parsed_result.ingestion_text,
-            document_type=resolved_document_type,
-            metadata={
-                "source_type": "upload",
-                "source_uri": stored_file.uri,
-                "file_name": parsed_result.structured_document.file_name,
-                "content_type": parsed_result.structured_document.content_type,
-            },
-            source_documents=structured_source_documents,
-        )
-        merged_nodes = self._resequence_node_results(parsed_result.node_results + pipeline_result.node_results)
-        return self._persist_document(
+        return self._persist_uploaded_document(
             knowledge_base_id=knowledge_base_id,
             title=parsed_result.title,
-            source_type="upload",
-            normalized_content=pipeline_result.normalized_text,
-            chunk_documents=pipeline_result.chunk_documents,
-            node_results=merged_nodes,
             structured_document=parsed_result.structured_document,
+            parsed_content=parsed_result.ingestion_text,
             source_uri=stored_file.uri,
+            processing_config=self._build_processing_config(
+                document_type=document_type or "knowledge_base",
+                process_mode=process_mode,
+                pipeline_id=pipeline_id,
+                chunk_strategy=chunk_strategy,
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+                recursive_separators=recursive_separators or [],
+                chunk_config=chunk_config or {},
+            ),
         )
 
     def reindex_document(
@@ -463,24 +449,31 @@ class RetriFlowKnowledgeService:
             pipeline_options["pipeline_id"] = request.pipeline_id
         pipeline = self._build_ingestion_pipeline(**pipeline_options)
 
-        if structured_document is not None:
-            source_documents = self._build_source_documents_from_structured_document(structured_document)
-            pipeline_result = pipeline.run(
-                structured_document.text_content or str(document_row["content"]),
-                document_type=resolved_document_type,
-                metadata={
-                    "source_type": str(document_row["source_type"]),
-                    "file_name": structured_document.file_name,
-                    "content_type": structured_document.content_type,
-                },
-                source_documents=source_documents,
-            )
-        else:
-            pipeline_result = pipeline.run(
-                str(document_row["content"]),
-                document_type=resolved_document_type,
-                metadata={"source_type": str(document_row["source_type"])},
-            )
+        try:
+            if structured_document is not None:
+                source_documents = self._build_source_documents_from_structured_document(structured_document)
+                pipeline_result = pipeline.run(
+                    structured_document.text_content or str(document_row["content"]),
+                    document_type=resolved_document_type,
+                    metadata={
+                        "source_type": str(document_row["source_type"]),
+                        "file_name": structured_document.file_name,
+                        "content_type": structured_document.content_type,
+                    },
+                    source_documents=source_documents,
+                )
+            else:
+                pipeline_result = pipeline.run(
+                    str(document_row["content"]),
+                    document_type=resolved_document_type,
+                    metadata={"source_type": str(document_row["source_type"])},
+                )
+        except Exception as exc:
+            self._mark_document_index_failed(document_id)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Document chunking failed: {exc}",
+            ) from exc
 
         return self._replace_document_index(
             knowledge_base_id=knowledge_base_id,
@@ -491,6 +484,17 @@ class RetriFlowKnowledgeService:
             chunk_documents=pipeline_result.chunk_documents,
             node_results=pipeline_result.node_results,
             structured_document=structured_document,
+            processing_config=self._build_processing_config(
+                document_type=resolved_document_type,
+                process_mode=request.process_mode,
+                pipeline_id=request.pipeline_id,
+                chunk_strategy=request.chunk_strategy,
+                chunk_size=request.chunk_size,
+                chunk_overlap=request.chunk_overlap,
+                recursive_separators=request.recursive_separators,
+                chunk_config=request.chunk_config,
+            ),
+            persist_ingestion_task=request.process_mode == "data_channel",
         )
 
     def import_sample_directory(self, knowledge_base_id: str) -> int:
@@ -806,6 +810,8 @@ class RetriFlowKnowledgeService:
         node_results: list[IngestionPipelineNodeResult],
         structured_document: StructuredDocument | None = None,
         source_uri: str = "",
+        processing_config: dict | None = None,
+        persist_ingestion_task: bool = False,
     ) -> KnowledgeDocumentItem:
         try:
             self.vector_store.delete_document_records(document_id)
@@ -825,7 +831,8 @@ class RetriFlowKnowledgeService:
                     status = ?,
                     vector_index_status = ?,
                     vector_chunk_count = ?,
-                    vector_indexed_at = ?
+                    vector_indexed_at = ?,
+                    processing_config_json = ?
                 where knowledge_base_id = ? and id = ?
                 """,
                 (
@@ -836,6 +843,7 @@ class RetriFlowKnowledgeService:
                     "pending",
                     0,
                     None,
+                    json.dumps(processing_config or {}, ensure_ascii=False),
                     knowledge_base_id,
                     document_id,
                 ),
@@ -887,58 +895,68 @@ class RetriFlowKnowledgeService:
             if structured_document is not None:
                 self._persist_structured_document(connection, knowledge_base_id, document_id, structured_document)
 
-            task_cursor = connection.execute(
-                """
-                insert into ingestion_tasks (knowledge_base_id, document_id, source_type, status, chunk_count, message)
-                values (?, ?, ?, ?, ?, ?)
-                returning id
-                """,
-                (
-                    knowledge_base_id,
-                    document_id,
-                    source_type,
-                    "completed",
-                    len(chunk_documents),
-                    "RetriFlow reindex pipeline completed.",
-                ),
-            )
-            task_id = int(task_cursor.fetchone()[0])
-            connection.executemany(
-                """
-                insert into ingestion_task_nodes (
-                    task_id,
-                    node_id,
-                    node_type,
-                    node_order,
-                    success,
-                    status,
-                    message,
-                    error_message,
-                    output_json,
-                    duration_ms
+            if persist_ingestion_task:
+                self._persist_ingestion_task(
+                    connection=connection,
+                    knowledge_base_id=knowledge_base_id,
+                    document_id=document_id,
+                    source_type=source_type,
+                    chunk_count=len(chunk_documents),
+                    message="RetriFlow data channel pipeline completed.",
+                    node_results=node_results,
                 )
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    (
-                        task_id,
-                        node_result.node_id,
-                        node_result.node_type,
-                        node_result.node_order,
-                        int(node_result.success),
-                        node_result.status,
-                        node_result.message,
-                        node_result.error_message,
-                        json.dumps(node_result.output, ensure_ascii=False),
-                        node_result.duration_ms,
-                    )
-                    for node_result in node_results
-                ],
-            )
             self._sync_knowledge_base_route_profile(connection, knowledge_base_id)
             connection.commit()
 
         return self._finalize_vector_index(document_id=document_id, vector_records=vector_records)
+
+    def _persist_uploaded_document(
+        self,
+        knowledge_base_id: str,
+        title: str,
+        structured_document: StructuredDocument,
+        parsed_content: str,
+        source_uri: str,
+        processing_config: dict,
+    ) -> KnowledgeDocumentItem:
+        with get_connection() as connection:
+            cursor = connection.execute(
+                """
+                insert into knowledge_documents (
+                    knowledge_base_id,
+                    title,
+                    source_type,
+                    source_uri,
+                    content,
+                    status,
+                    vector_index_status,
+                    vector_chunk_count,
+                    vector_indexed_at,
+                    processing_config_json
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                returning id
+                """,
+                (
+                    knowledge_base_id,
+                    title,
+                    "upload",
+                    source_uri,
+                    parsed_content,
+                    "indexed",
+                    "pending",
+                    0,
+                    None,
+                    json.dumps(processing_config, ensure_ascii=False),
+                ),
+            )
+            document_id = int(cursor.fetchone()[0])
+            self._persist_structured_document(connection, knowledge_base_id, document_id, structured_document)
+            self._sync_knowledge_base_document_count(connection, knowledge_base_id)
+            self._sync_knowledge_base_route_profile(connection, knowledge_base_id)
+            connection.commit()
+
+        return self._get_document(document_id)
 
     def _persist_document(
         self,
@@ -950,6 +968,7 @@ class RetriFlowKnowledgeService:
         node_results: list[IngestionPipelineNodeResult],
         structured_document: StructuredDocument | None = None,
         source_uri: str = "",
+        persist_ingestion_task: bool = False,
     ) -> KnowledgeDocumentItem:
         vector_records: list[VectorChunkRecord] = []
         with get_connection() as connection:
@@ -1030,54 +1049,16 @@ class RetriFlowKnowledgeService:
             if structured_document is not None:
                 self._persist_structured_document(connection, knowledge_base_id, document_id, structured_document)
 
-            task_cursor = connection.execute(
-                """
-                insert into ingestion_tasks (knowledge_base_id, document_id, source_type, status, chunk_count, message)
-                values (?, ?, ?, ?, ?, ?)
-                returning id
-                """,
-                (
-                    knowledge_base_id,
-                    document_id,
-                    source_type,
-                    "completed",
-                    len(chunk_documents),
-                    "RetriFlow ingestion pipeline completed.",
-                ),
-            )
-            task_id = int(task_cursor.fetchone()[0])
-            connection.executemany(
-                """
-                insert into ingestion_task_nodes (
-                    task_id,
-                    node_id,
-                    node_type,
-                    node_order,
-                    success,
-                    status,
-                    message,
-                    error_message,
-                    output_json,
-                    duration_ms
+            if persist_ingestion_task:
+                self._persist_ingestion_task(
+                    connection=connection,
+                    knowledge_base_id=knowledge_base_id,
+                    document_id=document_id,
+                    source_type=source_type,
+                    chunk_count=len(chunk_documents),
+                    message="RetriFlow data channel pipeline completed.",
+                    node_results=node_results,
                 )
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    (
-                        task_id,
-                        node_result.node_id,
-                        node_result.node_type,
-                        node_result.node_order,
-                        int(node_result.success),
-                        node_result.status,
-                        node_result.message,
-                        node_result.error_message,
-                        json.dumps(node_result.output, ensure_ascii=False),
-                        node_result.duration_ms,
-                    )
-                    for node_result in node_results
-                ],
-            )
             self._sync_knowledge_base_document_count(connection, knowledge_base_id)
             self._sync_knowledge_base_route_profile(connection, knowledge_base_id)
             connection.commit()
@@ -1101,6 +1082,66 @@ class RetriFlowKnowledgeService:
                 (document_id,),
             ).fetchone()
         return self._finalize_vector_index(document_id=document_id, vector_records=vector_records)
+
+    @staticmethod
+    def _persist_ingestion_task(
+        *,
+        connection,
+        knowledge_base_id: str,
+        document_id: int,
+        source_type: str,
+        chunk_count: int,
+        message: str,
+        node_results: list[IngestionPipelineNodeResult],
+    ) -> None:
+        task_cursor = connection.execute(
+            """
+            insert into ingestion_tasks (knowledge_base_id, document_id, source_type, status, chunk_count, message)
+            values (?, ?, ?, ?, ?, ?)
+            returning id
+            """,
+            (
+                knowledge_base_id,
+                document_id,
+                source_type,
+                "completed",
+                chunk_count,
+                message,
+            ),
+        )
+        task_id = int(task_cursor.fetchone()[0])
+        connection.executemany(
+            """
+            insert into ingestion_task_nodes (
+                task_id,
+                node_id,
+                node_type,
+                node_order,
+                success,
+                status,
+                message,
+                error_message,
+                output_json,
+                duration_ms
+            )
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    task_id,
+                    node_result.node_id,
+                    node_result.node_type,
+                    node_result.node_order,
+                    int(node_result.success),
+                    node_result.status,
+                    node_result.message,
+                    node_result.error_message,
+                    json.dumps(node_result.output, ensure_ascii=False),
+                    node_result.duration_ms,
+                )
+                for node_result in node_results
+            ],
+        )
 
     @staticmethod
     def _persist_structured_document(
@@ -1240,6 +1281,7 @@ class RetriFlowKnowledgeService:
                     kd.vector_index_status,
                     kd.vector_chunk_count,
                     kd.vector_indexed_at,
+                    kd.processing_config_json,
                     kd.created_at,
                     min(kc.strategy) as processing_mode,
                     min(kc.document_type) as document_type,
@@ -1247,11 +1289,26 @@ class RetriFlowKnowledgeService:
                 from knowledge_documents kd
                 left join knowledge_chunks kc on kc.document_id = kd.id
                 where kd.id = ?
-                group by kd.id, kd.knowledge_base_id, kd.title, kd.source_type, kd.source_uri, kd.content, kd.status, kd.vector_index_status, kd.vector_chunk_count, kd.vector_indexed_at, kd.created_at
+                group by kd.id, kd.knowledge_base_id, kd.title, kd.source_type, kd.source_uri, kd.content, kd.status, kd.vector_index_status, kd.vector_chunk_count, kd.vector_indexed_at, kd.processing_config_json, kd.created_at
                 """,
                 (document_id,),
             ).fetchone()
         return self._to_document(row)
+
+    @staticmethod
+    def _mark_document_index_failed(document_id: int) -> None:
+        with get_connection() as connection:
+            connection.execute(
+                """
+                update knowledge_documents
+                set vector_index_status = ?,
+                    vector_chunk_count = ?,
+                    vector_indexed_at = current_timestamp
+                where id = ?
+                """,
+                ("failed", 0, document_id),
+            )
+            connection.commit()
 
     def _get_document(self, document_id: int) -> KnowledgeDocumentItem:
         with get_connection() as connection:
@@ -1268,6 +1325,7 @@ class RetriFlowKnowledgeService:
                     kd.vector_index_status,
                     kd.vector_chunk_count,
                     kd.vector_indexed_at,
+                    kd.processing_config_json,
                     kd.created_at,
                     min(kc.strategy) as processing_mode,
                     min(kc.document_type) as document_type,
@@ -1275,7 +1333,7 @@ class RetriFlowKnowledgeService:
                 from knowledge_documents kd
                 left join knowledge_chunks kc on kc.document_id = kd.id
                 where kd.id = ?
-                group by kd.id, kd.knowledge_base_id, kd.title, kd.source_type, kd.source_uri, kd.content, kd.status, kd.vector_index_status, kd.vector_chunk_count, kd.vector_indexed_at, kd.created_at
+                group by kd.id, kd.knowledge_base_id, kd.title, kd.source_type, kd.source_uri, kd.content, kd.status, kd.vector_index_status, kd.vector_chunk_count, kd.vector_indexed_at, kd.processing_config_json, kd.created_at
                 """,
                 (document_id,),
             ).fetchone()
@@ -1598,6 +1656,29 @@ class RetriFlowKnowledgeService:
         return options
 
     @staticmethod
+    def _build_processing_config(
+        *,
+        document_type: str,
+        process_mode: str,
+        pipeline_id: int | None,
+        chunk_strategy: str,
+        chunk_size: int,
+        chunk_overlap: int,
+        recursive_separators: list[str],
+        chunk_config: dict,
+    ) -> dict:
+        return {
+            "documentType": document_type,
+            "processMode": process_mode,
+            "pipelineId": pipeline_id,
+            "chunkStrategy": chunk_strategy,
+            "chunkSize": chunk_size,
+            "chunkOverlap": chunk_overlap,
+            "recursiveSeparators": recursive_separators,
+            "chunkConfig": chunk_config,
+        }
+
+    @staticmethod
     def _load_ingestion_pipeline_nodes(pipeline_id: int | None) -> list[IngestionPipelineNodeConfig]:
         with get_connection() as connection:
             if pipeline_id is None:
@@ -1709,19 +1790,25 @@ class RetriFlowKnowledgeService:
 
     @staticmethod
     def _to_document(row) -> KnowledgeDocumentItem:
+        processing_config = RetriFlowKnowledgeService._parse_json_field(
+            row.get("processing_config_json"),
+            default={},
+        )
+        min_enabled = row.get("min_enabled")
         return KnowledgeDocumentItem(
             id=row["id"],
             knowledge_base_id=row["knowledge_base_id"],
             title=row["title"],
             source_type=RetriFlowKnowledgeService._source_type_label(row["source_type"]),
             source_uri=row.get("source_uri") or "",
-            processing_mode=row.get("processing_mode") or "auto",
+            processing_mode=row.get("processing_mode") or processing_config.get("processMode") or "auto",
             status=row["status"],
-            enabled=bool(row.get("min_enabled", 1)),
+            enabled=True if min_enabled is None else bool(min_enabled),
             vector_index_status=row.get("vector_index_status", "pending"),
             vector_chunk_count=int(row.get("vector_chunk_count", 0) or 0),
-            document_type=row.get("document_type") or "knowledge_base",
+            document_type=row.get("document_type") or processing_config.get("documentType") or "knowledge_base",
             size_label=RetriFlowKnowledgeService._format_content_size(row.get("content", "")),
+            processing_config=processing_config,
             vector_indexed_at=RetriFlowKnowledgeService._serialize_timestamp(row.get("vector_indexed_at")),
             created_at=RetriFlowKnowledgeService._serialize_timestamp(row["created_at"]),
         )
@@ -1759,7 +1846,11 @@ class RetriFlowKnowledgeService:
 
     @staticmethod
     def _serialize_timestamp(value) -> str:
+        if value is None:
+            return ""
         if isinstance(value, str):
+            if value.strip().lower() == "none":
+                return ""
             return value
         if hasattr(value, "isoformat"):
             return value.isoformat()

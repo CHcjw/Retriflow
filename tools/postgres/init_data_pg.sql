@@ -61,7 +61,7 @@ INSERT INTO knowledge_base_route_profiles (
 VALUES (
     'kb-demo-1',
     'RetriFlow product knowledge base migration python vue rag langgraph langchain',
-    '["RetriFlow 鏄粈涔堬紵", "RetriFlow 鐨勮縼绉荤洰鏍囨槸浠€涔堬紵"]'::jsonb,
+    '["RetriFlow 是什么？", "RetriFlow 的迁移目标是什么？"]'::jsonb,
     '["retriflow", "langgraph", "langchain", "migration", "rag"]'::jsonb
 )
 ON CONFLICT (knowledge_base_id) DO NOTHING;
@@ -165,7 +165,7 @@ VALUES
     (3, 1, 'chunk', 'chunk', 3, 1, 'success', 'Generated 1 chunks with overlap-aware chunking.', '', '{"chunkCount":1}'::jsonb, 1),
     (4, 1, 'index', 'index', 4, 1, 'success', 'Indexed chunks into the local retrieval store.', '', '{"settings":{"store":"local"},"chunkCount":1}'::jsonb, 1)
 ON CONFLICT (id) DO NOTHING;
-`r`n
+
 -- ============================================
 -- Seed Ingestion Pipeline
 -- ============================================
@@ -215,17 +215,17 @@ INSERT INTO admin_intent_nodes (
 )
 VALUES (
     'intent-demo-retriflow',
-    'RetriFlow 鐭ヨ瘑妫€绱?,
+    'RetriFlow 知识检索',
     'retriflow_knowledge',
     'DOMAIN',
     'KB',
     'ROOT',
     'kb-demo-1',
     'retriflow_chunk_vectors',
-    '鐢ㄤ簬璇嗗埆 RetriFlow 椤圭洰瑙勫垝銆丷AG 娴佺▼銆佽縼绉荤洰鏍囩浉鍏抽棶棰樸€?,
-    '["RetriFlow 涓€鏈熷簲璇ュ厛鍋氫粈涔堬紵", "RetriFlow 鐨勮縼绉荤洰鏍囨槸浠€涔堬紵"]'::jsonb,
-    '鍛戒腑 retriflow銆乺ag銆乴anggraph銆乴angchain銆佽縼绉?绛夊叧閿瘝鏃朵紭鍏堣繘鍏ヨ鑺傜偣銆?,
-    '鏍规嵁 RetriFlow 鐭ヨ瘑搴撳唴瀹硅繘琛屽洖绛旓紝蹇呴』寮曠敤鏉ユ簮銆?,
+    '用于识别 RetriFlow 项目规划、RAG 流程、迁移目标相关问题。',
+    '["RetriFlow 一期应该先做什么？", "RetriFlow 的迁移目标是什么？"]'::jsonb,
+    '命中 retriflow、rag、langgraph、langchain、迁移等关键词时优先进入该节点。',
+    '根据 RetriFlow 知识库内容进行回答，必须引用来源。',
     5,
     10,
     1
@@ -243,8 +243,8 @@ INSERT INTO admin_keyword_mappings (
     knowledge_base_id
 )
 VALUES
-    ('keyword-demo-rag', 'rag', 'RAG 妫€绱㈠寮虹敓鎴?, 'contains', 20, 1, 'RAG 鐩稿叧闂褰掍竴鍖?, 'kb-demo-1'),
-    ('keyword-demo-retriflow', 'retriflow', 'RetriFlow', 'contains', 30, 1, '椤圭洰鍚嶇О鍛戒腑', 'kb-demo-1')
+    ('keyword-demo-rag', 'rag', 'RAG 检索增强生成', 'contains', 20, 1, 'RAG 相关问题归一化', 'kb-demo-1'),
+    ('keyword-demo-retriflow', 'retriflow', 'RetriFlow', 'contains', 30, 1, '项目名称命中', 'kb-demo-1')
 ON CONFLICT (id) DO NOTHING;
 
 -- ============================================
@@ -256,5 +256,41 @@ SET document_count = (
     SELECT COUNT(*)
     FROM knowledge_documents
     WHERE knowledge_documents.knowledge_base_id = knowledge_bases.id
+);
+
+-- ============================================
+-- Refresh Identity Sequences
+-- ============================================
+-- PostgreSQL identity sequences are not advanced by explicit id values in seed
+-- inserts. Keep them aligned so the backend can insert new rows after seeding.
+
+SELECT setval(
+    pg_get_serial_sequence('knowledge_documents', 'id'),
+    COALESCE((SELECT MAX(id) FROM knowledge_documents), 1),
+    (SELECT MAX(id) IS NOT NULL FROM knowledge_documents)
+);
+
+SELECT setval(
+    pg_get_serial_sequence('knowledge_chunks', 'id'),
+    COALESCE((SELECT MAX(id) FROM knowledge_chunks), 1),
+    (SELECT MAX(id) IS NOT NULL FROM knowledge_chunks)
+);
+
+SELECT setval(
+    pg_get_serial_sequence('ingestion_tasks', 'id'),
+    COALESCE((SELECT MAX(id) FROM ingestion_tasks), 1),
+    (SELECT MAX(id) IS NOT NULL FROM ingestion_tasks)
+);
+
+SELECT setval(
+    pg_get_serial_sequence('ingestion_task_nodes', 'id'),
+    COALESCE((SELECT MAX(id) FROM ingestion_task_nodes), 1),
+    (SELECT MAX(id) IS NOT NULL FROM ingestion_task_nodes)
+);
+
+SELECT setval(
+    pg_get_serial_sequence('ingestion_pipelines', 'id'),
+    COALESCE((SELECT MAX(id) FROM ingestion_pipelines), 1),
+    (SELECT MAX(id) IS NOT NULL FROM ingestion_pipelines)
 );
 

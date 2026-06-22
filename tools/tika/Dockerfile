@@ -6,4 +6,4 @@ COPY tools/tika/tika-server-standard-3.2.3.jar /app/tika-server-standard-3.2.3.j
 
 EXPOSE 9998
 
-CMD ["java", "-jar", "/app/tika-server-standard-3.2.3.jar", "--port", "9998"]
+CMD ["java", "-jar", "/app/tika-server-standard-3.2.3.jar", "--host", "*", "--port", "9998"]

@@ -5,6 +5,8 @@ from zipfile import BadZipFile, ZipFile
 
 import httpx
 
+from infra.document_parser.tika_client import build_content_disposition
+
 
 class RetriFlowImageCaptionEnrichmentService:
     CAPTION_PREFIX_PATTERN = re.compile(
@@ -79,7 +81,7 @@ class RetriFlowImageCaptionEnrichmentService:
     ) -> list[tuple[str, bytes, str]]:
         headers = {
             "Content-Type": content_type or "application/octet-stream",
-            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Disposition": build_content_disposition(filename),
         }
         try:
             response = httpx.put(

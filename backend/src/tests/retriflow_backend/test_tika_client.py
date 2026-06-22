@@ -109,6 +109,15 @@ class RetriFlowTikaClientTests(unittest.TestCase):
 
         self.assertEqual(detected, "text/plain")
 
+    def test_content_disposition_supports_non_ascii_filename(self) -> None:
+        from infra.document_parser.tika_client import build_content_disposition
+
+        header = build_content_disposition("测试文档.docx")
+
+        header.encode("ascii")
+        self.assertIn('filename="____.docx"', header)
+        self.assertIn("filename*=UTF-8''%E6%B5%8B%E8%AF%95%E6%96%87%E6%A1%A3.docx", header)
+
 
 if __name__ == "__main__":
     unittest.main()

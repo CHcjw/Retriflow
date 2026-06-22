@@ -29,6 +29,7 @@ WHERE table_schema = current_schema()
       'sessions',
       'users',
       'conversation_messages',
+      'message_feedback',
       'rag_trace_nodes',
       'knowledge_bases',
       'knowledge_base_route_profiles',
@@ -58,6 +59,8 @@ UNION ALL
 SELECT 'users', COUNT(*) FROM users
 UNION ALL
 SELECT 'conversation_messages', COUNT(*) FROM conversation_messages
+UNION ALL
+SELECT 'message_feedback', COUNT(*) FROM message_feedback
 UNION ALL
 SELECT 'rag_trace_nodes', COUNT(*) FROM rag_trace_nodes
 UNION ALL
@@ -112,6 +115,19 @@ SELECT
     created_at
 FROM users
 ORDER BY created_at DESC, id DESC
+LIMIT 20;
+
+SELECT
+    id,
+    message_id,
+    session_id,
+    user_id,
+    vote,
+    reason,
+    created_at,
+    updated_at
+FROM message_feedback
+ORDER BY updated_at DESC, id DESC
 LIMIT 20;
 
 SELECT

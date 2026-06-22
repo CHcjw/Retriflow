@@ -1,7 +1,14 @@
 import httpx
+from urllib.parse import quote
 
 from core.config import get_settings
 from schemas.document_structure import RawParsedDocument
+
+
+def build_content_disposition(filename: str) -> str:
+    ascii_fallback = "".join(char if ord(char) < 128 and char not in {'"', "\\", ";"} else "_" for char in filename).strip()
+    ascii_fallback = ascii_fallback or "upload.bin"
+    return f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{quote(filename)}"
 
 
 class RetriFlowTikaClient:
@@ -14,7 +21,7 @@ class RetriFlowTikaClient:
 
         headers = {
             "Content-Type": fallback_content_type or "application/octet-stream",
-            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Disposition": build_content_disposition(filename),
         }
         request_options = {"timeout": self.settings.tika_request_timeout_seconds}
         base_url = self.settings.tika_endpoint.rstrip("/")
@@ -41,7 +48,7 @@ class RetriFlowTikaClient:
 
         headers = {
             "Content-Type": content_type or "application/octet-stream",
-            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Disposition": build_content_disposition(filename),
         }
         request_options = {"timeout": self.settings.tika_request_timeout_seconds}
         base_url = self.settings.tika_endpoint.rstrip("/")

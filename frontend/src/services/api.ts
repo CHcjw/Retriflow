@@ -175,6 +175,7 @@ export interface KnowledgeDocumentItem {
   document_type: string;
   size_label: string;
   source_uri: string;
+  processing_config: KnowledgeChunkingOptions;
   vector_indexed_at: string;
   created_at: string;
 }

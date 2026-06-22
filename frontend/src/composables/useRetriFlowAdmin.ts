@@ -40,6 +40,7 @@ import {
   type AdminUserPasswordChangeRequest,
   type AdminUserUpdateRequest,
   type IngestionPipelineCreateRequest,
+  type KnowledgeChunkingOptions,
   uploadKnowledgeDocument,
   fetchRouteProfile,
   updateRouteProfile,
@@ -53,7 +54,8 @@ import { useAuthStore } from "../stores/auth";
 
 const DEFAULT_CHUNK_SIZE = 512;
 const DEFAULT_CHUNK_OVERLAP = 128;
-const DEFAULT_STRUCTURE_MAX_CHARS = 128;
+const DEFAULT_STRUCTURE_TARGET_CHARS = 1400;
+const DEFAULT_STRUCTURE_MAX_CHARS = 1800;
 const DEFAULT_STRUCTURE_MIN_CHARS = 600;
 const DEFAULT_RECURSIVE_SEPARATOR_TEXT = ["\\n\\n", "\\n", "。", "；", "，", ". ", "! ", "? ", "[space]"].join("\n");
 
@@ -87,12 +89,12 @@ const autoStrategyRecommendations: Record<string, string> = {
   ocr: "OCR 文本推荐重叠分块，用重叠窗口缓解识别噪声造成的断句问题。",
   mixed_knowledge: "混合企业知识推荐递归 + 语义混合分块，先按结构粗切，再做语义细切。"
 };
-function normalizeChunkSettings(chunkSize: number, chunkOverlap: number) {
+function normalizeChunkSettings(chunkSize: number, chunkOverlap: number, maxChunkSize = 1000) {
   if (chunkSize === -1) {
     return { chunkSize: -1, chunkOverlap: 0 };
   }
   const safeChunkSize = Number.isFinite(chunkSize)
-    ? Math.max(200, Math.min(1000, Math.floor(chunkSize)))
+    ? Math.max(200, Math.min(maxChunkSize, Math.floor(chunkSize)))
     : DEFAULT_CHUNK_SIZE;
   const maxAllowedOverlap = Math.max(0, safeChunkSize - 1);
   const recommendedOverlap = Math.min(Math.floor(safeChunkSize * 0.25), maxAllowedOverlap);
@@ -166,6 +168,20 @@ function parseRecursiveSeparatorsText(value: string): string[] {
     .filter((separator): separator is string => separator !== null);
 }
 
+const hasSavedProcessingConfig = (config?: KnowledgeChunkingOptions | null): config is KnowledgeChunkingOptions =>
+  Boolean(config && Object.keys(config).length > 0);
+
+const normalizeSavedProcessingConfig = (config: KnowledgeChunkingOptions): KnowledgeChunkingOptions => ({
+  documentType: config.documentType ?? "knowledge_base",
+  processMode: config.processMode ?? "chunk_strategy",
+  pipelineId: config.processMode === "data_channel" ? config.pipelineId : undefined,
+  chunkStrategy: config.chunkStrategy ?? "structure_aware",
+  chunkSize: config.chunkSize ?? DEFAULT_CHUNK_SIZE,
+  chunkOverlap: config.chunkOverlap ?? 0,
+  recursiveSeparators: config.recursiveSeparators ?? parseRecursiveSeparatorsText(DEFAULT_RECURSIVE_SEPARATOR_TEXT),
+  chunkConfig: config.chunkConfig ?? {}
+});
+
 function createChunkingPresentation(
   strategy: ReturnType<typeof shallowRef<string>>,
   documentType: ReturnType<typeof shallowRef<string>>,
@@ -220,6 +236,7 @@ export function useRetriFlowAdmin() {
   const taskNodeLoading = shallowRef(false);
   const uploadLoading = shallowRef(false);
   const reindexLoading = shallowRef(false);
+  const reindexingDocumentId = shallowRef<number | null>(null);
   const error = shallowRef("");
   const infoMessage = shallowRef("");
 
@@ -260,7 +277,7 @@ export function useRetriFlowAdmin() {
   const uploadProcessMode = shallowRef<"chunk_strategy" | "data_channel">("chunk_strategy");
   const uploadPipelineId = shallowRef<number | null>(null);
   const uploadChunkStrategy = shallowRef("structure_aware");
-  const uploadChunkSize = shallowRef(DEFAULT_CHUNK_SIZE);
+  const uploadChunkSize = shallowRef(DEFAULT_STRUCTURE_TARGET_CHARS);
   const uploadChunkOverlap = shallowRef(0);
   const uploadStructureMaxChars = shallowRef(DEFAULT_STRUCTURE_MAX_CHARS);
   const uploadStructureMinChars = shallowRef(DEFAULT_STRUCTURE_MIN_CHARS);
@@ -269,7 +286,7 @@ export function useRetriFlowAdmin() {
   const documentProcessMode = shallowRef<"chunk_strategy" | "data_channel">("chunk_strategy");
   const documentPipelineId = shallowRef<number | null>(null);
   const documentChunkStrategy = shallowRef("structure_aware");
-  const documentChunkSize = shallowRef(DEFAULT_CHUNK_SIZE);
+  const documentChunkSize = shallowRef(DEFAULT_STRUCTURE_TARGET_CHARS);
   const documentChunkOverlap = shallowRef(0);
   const documentStructureMaxChars = shallowRef(DEFAULT_STRUCTURE_MAX_CHARS);
   const documentStructureMinChars = shallowRef(DEFAULT_STRUCTURE_MIN_CHARS);
@@ -643,11 +660,11 @@ export function useRetriFlowAdmin() {
   const uploadDocument = async (file: File | null) => {
     if (!canManageKnowledge.value) {
       denyManagementAction();
-      return;
+      return null;
     }
 
     if (!file || !selectedKnowledgeBaseId.value) {
-      return;
+      return null;
     }
 
     uploadLoading.value = true;
@@ -675,8 +692,10 @@ export function useRetriFlowAdmin() {
       });
       infoMessage.value = "上传文档已完成入库。";
       await refreshKnowledgeData(created.id);
+      return created;
     } catch (err) {
       error.value = err instanceof Error ? err.message : "上传文档失败";
+      return null;
     } finally {
       uploadLoading.value = false;
     }
@@ -710,7 +729,7 @@ export function useRetriFlowAdmin() {
     documentProcessMode.value = "chunk_strategy";
     documentChunkStrategy.value = strategy || "structure_aware";
     if (documentChunkStrategy.value === "structure_aware") {
-      documentChunkSize.value = options?.chunkSize ?? DEFAULT_CHUNK_SIZE;
+      documentChunkSize.value = options?.chunkSize ?? DEFAULT_STRUCTURE_TARGET_CHARS;
       documentChunkOverlap.value = options?.chunkOverlap ?? 0;
       documentStructureMaxChars.value = DEFAULT_STRUCTURE_MAX_CHARS;
       documentStructureMinChars.value = DEFAULT_STRUCTURE_MIN_CHARS;
@@ -753,23 +772,32 @@ export function useRetriFlowAdmin() {
     }
 
     reindexLoading.value = true;
+    reindexingDocumentId.value = selectedDocumentId.value;
     error.value = "";
-    infoMessage.value = "";
+    infoMessage.value = "正在切块，请稍候...";
 
     try {
+      const savedConfig = selectedDocument.value?.processing_config;
+      const requestOptions = hasSavedProcessingConfig(savedConfig)
+        ? normalizeSavedProcessingConfig(savedConfig)
+        : {
+            documentType: documentType.value,
+            chunkStrategy: chunkStrategy.value,
+            chunkSize: chunkSize.value,
+            chunkOverlap: chunkOverlap.value,
+            recursiveSeparators: parseRecursiveSeparatorsText(recursiveSeparatorsText.value)
+          };
       const reindexed = await reindexKnowledgeDocument(selectedKnowledgeBaseId.value, selectedDocumentId.value, {
-        documentType: documentType.value,
-        chunkStrategy: chunkStrategy.value,
-        chunkSize: chunkSize.value,
-        chunkOverlap: chunkOverlap.value,
-        recursiveSeparators: parseRecursiveSeparatorsText(recursiveSeparatorsText.value)
+        ...requestOptions
       });
-      infoMessage.value = "";
       await refreshKnowledgeData(reindexed.id);
+      infoMessage.value = reindexed.vector_index_status === "indexed" ? "切块完成。" : "切块失败，请查看文档状态。";
     } catch (err) {
-      error.value = err instanceof Error ? err.message : "重建索引失败";
+      error.value = err instanceof Error ? err.message : "切块失败";
+      await refreshKnowledgeData(selectedDocumentId.value);
     } finally {
       reindexLoading.value = false;
+      reindexingDocumentId.value = null;
     }
   };
 
@@ -791,8 +819,9 @@ export function useRetriFlowAdmin() {
       return null;
     }
     reindexLoading.value = true;
+    reindexingDocumentId.value = selectedDocumentId.value;
     error.value = "";
-    infoMessage.value = "";
+    infoMessage.value = "正在切块，请稍候...";
     try {
       const reindexed = await reindexKnowledgeDocument(selectedKnowledgeBaseId.value, selectedDocumentId.value, {
         documentType: "knowledge_base",
@@ -812,19 +841,22 @@ export function useRetriFlowAdmin() {
         )
       });
       await refreshKnowledgeData(reindexed.id);
+      infoMessage.value = reindexed.vector_index_status === "indexed" ? "切块完成。" : "切块失败，请查看文档状态。";
       return reindexed;
     } catch (err) {
-      error.value = err instanceof Error ? err.message : "重建索引失败";
+      error.value = err instanceof Error ? err.message : "切块失败";
+      await refreshKnowledgeData(selectedDocumentId.value);
       return null;
     } finally {
       reindexLoading.value = false;
+      reindexingDocumentId.value = null;
     }
   };
 
   watch(
     chunkSize,
     (value) => {
-      const normalized = normalizeChunkSettings(value, chunkOverlap.value);
+      const normalized = normalizeChunkSettings(value, chunkOverlap.value, chunkStrategy.value === "structure_aware" ? 5000 : 1000);
       if (normalized.chunkSize !== chunkSize.value) {
         chunkSize.value = normalized.chunkSize;
         return;
@@ -839,7 +871,7 @@ export function useRetriFlowAdmin() {
   watch(
     uploadChunkSize,
     (value) => {
-      const normalized = normalizeChunkSettings(value, uploadChunkOverlap.value);
+      const normalized = normalizeChunkSettings(value, uploadChunkOverlap.value, uploadChunkStrategy.value === "structure_aware" ? 5000 : 1000);
       if (normalized.chunkSize !== uploadChunkSize.value) {
         uploadChunkSize.value = normalized.chunkSize;
         return;
@@ -852,22 +884,28 @@ export function useRetriFlowAdmin() {
   );
 
   watch(chunkOverlap, (value) => {
-    const normalized = normalizeChunkSettings(chunkSize.value, value);
+    const normalized = normalizeChunkSettings(chunkSize.value, value, chunkStrategy.value === "structure_aware" ? 5000 : 1000);
     if (normalized.chunkOverlap !== chunkOverlap.value) {
       chunkOverlap.value = normalized.chunkOverlap;
     }
   });
 
   watch(uploadChunkOverlap, (value) => {
-    const normalized = normalizeChunkSettings(uploadChunkSize.value, value);
+    const normalized = normalizeChunkSettings(uploadChunkSize.value, value, uploadChunkStrategy.value === "structure_aware" ? 5000 : 1000);
     if (normalized.chunkOverlap !== uploadChunkOverlap.value) {
       uploadChunkOverlap.value = normalized.chunkOverlap;
     }
   });
 
+  watch([uploadProcessMode, ingestionPipelines], ([mode, pipelines]) => {
+    if (mode === "data_channel" && uploadPipelineId.value === null) {
+      uploadPipelineId.value = pipelines[0]?.id ?? null;
+    }
+  });
+
   watch(uploadChunkStrategy, (strategy) => {
     if (strategy === "structure_aware") {
-      uploadChunkSize.value = DEFAULT_CHUNK_SIZE;
+      uploadChunkSize.value = DEFAULT_STRUCTURE_TARGET_CHARS;
       uploadChunkOverlap.value = 0;
       uploadStructureMaxChars.value = DEFAULT_STRUCTURE_MAX_CHARS;
       uploadStructureMinChars.value = DEFAULT_STRUCTURE_MIN_CHARS;
@@ -881,7 +919,7 @@ export function useRetriFlowAdmin() {
 
   watch(documentChunkStrategy, (strategy) => {
     if (strategy === "structure_aware") {
-      documentChunkSize.value = DEFAULT_CHUNK_SIZE;
+      documentChunkSize.value = DEFAULT_STRUCTURE_TARGET_CHARS;
       documentChunkOverlap.value = 0;
       documentStructureMaxChars.value = DEFAULT_STRUCTURE_MAX_CHARS;
       documentStructureMinChars.value = DEFAULT_STRUCTURE_MIN_CHARS;
@@ -1229,6 +1267,7 @@ export function useRetriFlowAdmin() {
     taskNodeLoading,
     uploadLoading,
     reindexLoading,
+    reindexingDocumentId,
     error,
     infoMessage,
     meta,

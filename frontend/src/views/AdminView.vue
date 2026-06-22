@@ -41,6 +41,7 @@ const {
   taskNodeLoading,
   uploadLoading,
   reindexLoading,
+  reindexingDocumentId,
   error,
   infoMessage,
   knowledgeBases,
@@ -260,12 +261,12 @@ function paginationLabel(total: number, page: number) {
   return `第 ${Math.min(Math.max(1, page), totalPages(total))} / ${totalPages(total)} 页，共 ${total} 条`;
 }
 
-function previousPage(pageRef: { value: number }) {
-  pageRef.value = Math.max(1, pageRef.value - 1);
+function previousPage(page: number) {
+  return Math.max(1, page - 1);
 }
 
-function nextPage(pageRef: { value: number }, total: number) {
-  pageRef.value = Math.min(totalPages(total), pageRef.value + 1);
+function nextPage(page: number, total: number) {
+  return Math.min(totalPages(total), page + 1);
 }
 
 const dashboardStats = computed(() => ({
@@ -785,6 +786,10 @@ function closeAdminModal() {
   activeAdminModal.value = null;
 }
 
+function clearAdminError() {
+  error.value = "";
+}
+
 function openKnowledgeBaseModal() {
   editingKnowledgeBaseId.value = "";
   newKnowledgeBaseName.value = "";
@@ -809,6 +814,13 @@ function openUploadDocumentModal() {
   editingDocumentId.value = null;
   editDocumentTitle.value = "";
   editDocumentEnabled.value = true;
+  uploadProcessMode.value = "chunk_strategy";
+  uploadPipelineId.value = ingestionPipelines.value[0]?.id ?? null;
+  uploadChunkStrategy.value = "structure_aware";
+  uploadChunkSize.value = 1400;
+  uploadChunkOverlap.value = 0;
+  uploadStructureMaxChars.value = 1800;
+  uploadStructureMinChars.value = 600;
   selectedUploadFile.value = null;
   selectedUploadFileName.value = "";
   if (modalUploadFileInput.value) {
@@ -862,7 +874,10 @@ async function createPipelineTaskFromModal() {
   }
   uploadProcessMode.value = "data_channel";
   uploadPipelineId.value = newPipelineTaskPipelineId.value;
-  await uploadDocument(newPipelineTaskFile.value);
+  const created = await uploadDocument(newPipelineTaskFile.value);
+  if (!created) {
+    return;
+  }
   newPipelineTaskFile.value = null;
   if (newPipelineTaskFileInput.value) {
     newPipelineTaskFileInput.value.value = "";
@@ -1202,9 +1217,9 @@ async function onFileChange(event: Event) {
   const input = event.target as HTMLInputElement;
   const file = input.files?.[0] ?? null;
   selectedUploadFileName.value = file?.name ?? "";
-  await uploadDocument(file);
+  const created = await uploadDocument(file);
   input.value = "";
-  if (file) {
+  if (created) {
     closeAdminModal();
     await refreshKnowledgeData();
   }
@@ -1218,7 +1233,10 @@ async function uploadSelectedDocumentFromModal() {
   if (!selectedUploadFile.value) {
     return;
   }
-  await uploadDocument(selectedUploadFile.value);
+  const created = await uploadDocument(selectedUploadFile.value);
+  if (!created) {
+    return;
+  }
   selectedUploadFile.value = null;
   if (modalUploadFileInput.value) {
     modalUploadFileInput.value.value = "";
@@ -1313,7 +1331,7 @@ async function removeChunk(chunkId: number) {
 }
 
 function formatDate(value: string) {
-  if (!value) {
+  if (!value || value === "None") {
     return "-";
   }
   const date = new Date(value);
@@ -1341,6 +1359,9 @@ function formatDuration(value: number | string | null | undefined) {
 }
 
 function statusLabel(status: string) {
+  if (status === "indexing") {
+    return "切块中";
+  }
   if (status === "indexed") {
     return "切块成功";
   }
@@ -1357,7 +1378,7 @@ function statusClass(status: string) {
   return {
     success: status === "indexed",
     danger: status === "failed",
-    warning: status === "pending"
+    warning: status === "pending" || status === "indexing"
   };
 }
 
@@ -1484,7 +1505,11 @@ async function savePipelineFromModal() {
 function processingModeLabel(mode: string) {
   const labels: Record<string, string> = {
     auto: "自动处理",
+    chunk_strategy: "按切块策略处理",
+    data_channel: "按数据通道处理",
+    structure_aware: "结构感知分块",
     fixed: "固定分块",
+    fixed_size: "固定大小分块",
     overlap: "重叠分块",
     recursive: "递归分块",
     semantic_embedding: "Embedding 语义分块",
@@ -1604,7 +1629,12 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
         <div class="breadcrumb">{{ breadcrumbItems.join(" / ") }}</div>
 
         <p v-if="readonlyNotice" class="notice-card">{{ readonlyNotice }}</p>
-        <p v-if="error" class="notice-card danger">{{ error }}</p>
+        <div v-if="error" class="notice-card danger notice-card-dismissible">
+          <span>{{ error }}</span>
+          <button class="notice-close" type="button" aria-label="关闭错误提示" @click="clearAdminError">
+            ×
+          </button>
+        </div>
 
         <template v-if="currentTab === 'knowledge'">
           <div v-if="knowledgeStage === 'knowledge-bases'" class="page-head">
@@ -1703,8 +1733,8 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
             <div class="table-pagination">
               <span>{{ paginationLabel(filteredKnowledgeBases.length, knowledgeBasePage) }}</span>
               <div>
-                <button class="ghost-btn compact" type="button" :disabled="knowledgeBasePage <= 1" @click="previousPage(knowledgeBasePage)">上一页</button>
-                <button class="ghost-btn compact" type="button" :disabled="knowledgeBasePage >= totalPages(filteredKnowledgeBases.length)" @click="nextPage(knowledgeBasePage, filteredKnowledgeBases.length)">下一页</button>
+                <button class="ghost-btn compact" type="button" :disabled="knowledgeBasePage <= 1" @click="knowledgeBasePage = previousPage(knowledgeBasePage)">上一页</button>
+                <button class="ghost-btn compact" type="button" :disabled="knowledgeBasePage >= totalPages(filteredKnowledgeBases.length)" @click="knowledgeBasePage = nextPage(knowledgeBasePage, filteredKnowledgeBases.length)">下一页</button>
               </div>
             </div>
           </section>
@@ -1729,60 +1759,76 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
             </div>
 
             <section v-if="showUploadPanel" class="form-panel upload-panel">
-              <label>
+              <p class="form-hint wide">上传后会解析文档内容用于预览；下方配置会保存到文档，后续点击“切块”时直接按这些参数执行。</p>
+              <label class="wide">
                 处理模式
-                <select v-model="uploadProcessMode" class="ui-input">
-                  <option value="chunk_strategy">按切块策略入库</option>
-                  <option value="data_channel">按数据通道入库</option>
+                <select v-model="uploadProcessMode">
+                  <option value="chunk_strategy">按切块策略处理</option>
+                  <option value="data_channel">按数据通道处理</option>
                 </select>
               </label>
-              <label v-if="uploadProcessMode === 'data_channel'">
-                数据通道
-                <select v-model="uploadPipelineId" class="ui-input">
-                  <option :value="null">自动选择默认通道</option>
-                  <option v-for="pipeline in ingestionPipelines" :key="pipeline.id" :value="pipeline.id">
-                    {{ pipeline.name }}
-                  </option>
-                </select>
-              </label>
-              <label v-if="uploadProcessMode === 'chunk_strategy'">
+              <label v-if="uploadProcessMode === 'chunk_strategy'" class="wide">
                 切块策略
-                <select v-model="uploadChunkStrategy" class="ui-input">
+                <select v-model="uploadChunkStrategy">
                   <option v-for="option in chunkStrategyOptions" :key="option.value" :value="option.value">
                     {{ option.label }}
                   </option>
                 </select>
               </label>
-              <label v-if="uploadProcessMode === 'chunk_strategy' && uploadShowChunkSizeControls">
-                Chunk Size
-                <input v-model.number="uploadChunkSize" class="ui-input" min="200" max="1000" type="number" />
+              <label v-else class="wide">
+                数据通道
+                <select v-model.number="uploadPipelineId" :disabled="ingestionPipelines.length === 0">
+                  <option v-if="ingestionPipelines.length === 0" :value="null">暂无数据通道</option>
+                  <option v-for="pipeline in ingestionPipelines" :key="pipeline.id" :value="pipeline.id">
+                    {{ pipeline.name }}
+                  </option>
+                </select>
               </label>
-              <label v-if="uploadProcessMode === 'chunk_strategy' && uploadShowChunkSizeControls">
-                Overlap
-                <input v-model.number="uploadChunkOverlap" class="ui-input" min="0" type="number" />
-              </label>
-              <label v-if="uploadProcessMode === 'chunk_strategy' && uploadChunkStrategy === 'structure_aware'" class="wide">
-                结构最大字符数
-                <input v-model.number="uploadStructureMaxChars" class="ui-input" min="200" type="number" />
-              </label>
-              <label v-if="uploadProcessMode === 'chunk_strategy' && uploadChunkStrategy === 'structure_aware'" class="wide">
-                结构最小字符数
-                <input v-model.number="uploadStructureMinChars" class="ui-input" min="50" type="number" />
-              </label>
-              <label v-if="uploadProcessMode === 'chunk_strategy' && uploadShowRecursiveSeparatorControls" class="wide">
-                递归分隔符
-                <textarea v-model="uploadRecursiveSeparatorsText" class="ui-input" rows="4"></textarea>
-              </label>
-              <p v-if="uploadProcessMode === 'chunk_strategy'" class="form-hint wide">
-                {{ uploadChunkSummary }}
-                <span v-if="uploadAutoStrategyRecommendation"> {{ uploadAutoStrategyRecommendation }}</span>
-                <span v-if="uploadShowSemanticNotice"> 语义分块会调用 embedding 能力。</span>
-                <span v-if="uploadShowRecursiveSeparatorControls"> {{ uploadRecursiveSeparatorSummary }}</span>
-              </p>
-              <p v-else class="form-hint wide">文档将按选定数据通道的节点配置执行解析、清洗、切块和向量化。</p>
+              <template v-if="uploadProcessMode === 'chunk_strategy'">
+                <template v-if="uploadChunkStrategy === 'structure_aware'">
+                  <div class="form-row">
+                    <label>
+                      理想块大小
+                      <input v-model.number="uploadChunkSize" min="1" type="number" />
+                    </label>
+                    <label>
+                      块上限
+                      <input v-model.number="uploadStructureMaxChars" min="1" type="number" />
+                    </label>
+                  </div>
+                  <div class="form-row">
+                    <label>
+                      块下限
+                      <input v-model.number="uploadStructureMinChars" min="1" type="number" />
+                    </label>
+                    <label>
+                      重叠大小
+                      <input v-model.number="uploadChunkOverlap" min="0" type="number" />
+                    </label>
+                  </div>
+                </template>
+                <div v-else-if="uploadShowChunkSizeControls" class="form-row">
+                  <label>
+                    Chunk Size
+                    <input v-model.number="uploadChunkSize" min="1" type="number" />
+                  </label>
+                  <label>
+                    Overlap
+                    <input v-model.number="uploadChunkOverlap" min="0" type="number" />
+                  </label>
+                </div>
+                <label v-if="uploadShowRecursiveSeparatorControls" class="wide">
+                  递归分隔符
+                  <textarea v-model="uploadRecursiveSeparatorsText" rows="4"></textarea>
+                </label>
+                <p class="form-hint wide">{{ uploadChunkSummary }}</p>
+                <p v-if="uploadAutoStrategyRecommendation" class="form-hint wide">{{ uploadAutoStrategyRecommendation }}</p>
+                <p v-if="uploadShowRecursiveSeparatorControls" class="form-hint wide">{{ uploadRecursiveSeparatorSummary }}</p>
+                <p v-if="uploadShowSemanticNotice" class="form-hint wide">语义切块会保留策略配置，后端按当前可用能力执行。</p>
+              </template>
               <input ref="inlineUploadFileInput" :accept="uploadAccept" hidden type="file" @change="onFileChange" />
               <button class="primary-btn wide" type="button" :disabled="uploadLoading" @click="inlineUploadFileInput?.click()">
-                {{ uploadLoading ? "上传并切块中..." : "选择文件并上传" }}
+                {{ uploadLoading ? "上传并解析中..." : "选择文件并上传" }}
               </button>
               <p v-if="selectedUploadFileName" class="form-hint wide">最近选择：{{ selectedUploadFileName }}</p>
             </section>
@@ -1791,7 +1837,7 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
               <div class="table-toolbar">
                 <div>
                   <h2>文档列表</h2>
-                  <p>上传后会自动解析、切块、向量化；也可以手动重新切块。</p>
+                  <p>上传后会解析为可预览文档，点击“切块”后再生成分块和向量索引。</p>
                 </div>
                 <div class="toolbar-actions">
                   <input v-model="documentSearch" class="ui-input" type="text" placeholder="搜索文档名称" />
@@ -1813,7 +1859,6 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
                     <th>来源</th>
                     <th>处理模式</th>
                     <th>状态</th>
-                    <th>启用</th>
                     <th>分块数</th>
                     <th>类型</th>
                     <th>大小</th>
@@ -1836,13 +1881,8 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
                     <td>{{ sourceLabel(document.source_type) }}</td>
                     <td>{{ processingModeLabel(document.processing_mode) }}</td>
                     <td>
-                      <span class="status-pill" :class="statusClass(document.vector_index_status)">
-                        {{ statusLabel(document.vector_index_status) }}
-                      </span>
-                    </td>
-                    <td>
-                      <span class="status-pill" :class="{ success: document.enabled, warning: !document.enabled }">
-                        {{ document.enabled ? "启用" : "禁用" }}
+                      <span class="status-pill" :class="statusClass(reindexingDocumentId === document.id ? 'indexing' : document.vector_index_status)">
+                        {{ statusLabel(reindexingDocumentId === document.id ? 'indexing' : document.vector_index_status) }}
                       </span>
                     </td>
                     <td>{{ document.vector_chunk_count }}</td>
@@ -1859,17 +1899,17 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
                         :disabled="document.vector_chunk_count <= 0"
                         @click="openChunks(document.id)"
                       >
-                        分块
+                        分块详情
                       </button>
                       <button class="ghost-btn compact" type="button" @click="openDocumentEditModal(document.id)">修改</button>
                       <button
                         v-if="canManageKnowledge"
                         class="ghost-btn compact"
                         type="button"
-                        :disabled="reindexLoading || document.vector_index_status === 'indexed'"
+                        :disabled="reindexingDocumentId === document.id || document.vector_index_status === 'indexed'"
                         @click="runChunking(document.id)"
                       >
-                        切块
+                        {{ reindexingDocumentId === document.id ? "切块中..." : "切块" }}
                       </button>
                       <button
                         v-if="canManageKnowledge"
@@ -1882,7 +1922,7 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
                     </td>
                   </tr>
                   <tr v-if="!documentLoading && filteredDocuments.length === 0">
-                    <td colspan="10" class="empty-cell">暂无文档，请上传文档。</td>
+                    <td colspan="9" class="empty-cell">暂无文档，请上传文档。</td>
                   </tr>
                 </tbody>
               </table>
@@ -1890,8 +1930,8 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
               <div class="table-pagination">
                 <span>{{ paginationLabel(filteredDocuments.length, documentPage) }}</span>
                 <div>
-                  <button class="ghost-btn compact" type="button" :disabled="documentPage <= 1" @click="previousPage(documentPage)">上一页</button>
-                  <button class="ghost-btn compact" type="button" :disabled="documentPage >= totalPages(filteredDocuments.length)" @click="nextPage(documentPage, filteredDocuments.length)">下一页</button>
+                  <button class="ghost-btn compact" type="button" :disabled="documentPage <= 1" @click="documentPage = previousPage(documentPage)">上一页</button>
+                  <button class="ghost-btn compact" type="button" :disabled="documentPage >= totalPages(filteredDocuments.length)" @click="documentPage = nextPage(documentPage, filteredDocuments.length)">下一页</button>
                 </div>
               </div>
             </section>
@@ -2007,8 +2047,8 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
               <div class="table-pagination">
                 <span>{{ paginationLabel(filteredChunks.length, chunkPage) }}</span>
                 <div>
-                  <button class="ghost-btn compact" type="button" :disabled="chunkPage <= 1" @click="previousPage(chunkPage)">上一页</button>
-                  <button class="ghost-btn compact" type="button" :disabled="chunkPage >= totalPages(filteredChunks.length)" @click="nextPage(chunkPage, filteredChunks.length)">下一页</button>
+                  <button class="ghost-btn compact" type="button" :disabled="chunkPage <= 1" @click="chunkPage = previousPage(chunkPage)">上一页</button>
+                  <button class="ghost-btn compact" type="button" :disabled="chunkPage >= totalPages(filteredChunks.length)" @click="chunkPage = nextPage(chunkPage, filteredChunks.length)">下一页</button>
                 </div>
               </div>
             </section>
@@ -2164,8 +2204,8 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
             <div class="table-pagination">
               <span>{{ paginationLabel(realIntentRows.length, realIntentPage) }}</span>
               <div>
-                <button class="ghost-btn compact" type="button" :disabled="realIntentPage <= 1" @click="previousPage(realIntentPage)">上一页</button>
-                <button class="ghost-btn compact" type="button" :disabled="realIntentPage >= totalPages(realIntentRows.length)" @click="nextPage(realIntentPage, realIntentRows.length)">下一页</button>
+                <button class="ghost-btn compact" type="button" :disabled="realIntentPage <= 1" @click="realIntentPage = previousPage(realIntentPage)">上一页</button>
+                <button class="ghost-btn compact" type="button" :disabled="realIntentPage >= totalPages(realIntentRows.length)" @click="realIntentPage = nextPage(realIntentPage, realIntentRows.length)">下一页</button>
               </div>
             </div>
           </section>
@@ -2319,8 +2359,8 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
             <div class="table-pagination">
               <span>{{ paginationLabel(realKeywordRows.length, keywordPage) }}</span>
               <div>
-                <button class="ghost-btn compact" type="button" :disabled="keywordPage <= 1" @click="previousPage(keywordPage)">上一页</button>
-                <button class="ghost-btn compact" type="button" :disabled="keywordPage >= totalPages(realKeywordRows.length)" @click="nextPage(keywordPage, realKeywordRows.length)">下一页</button>
+                <button class="ghost-btn compact" type="button" :disabled="keywordPage <= 1" @click="keywordPage = previousPage(keywordPage)">上一页</button>
+                <button class="ghost-btn compact" type="button" :disabled="keywordPage >= totalPages(realKeywordRows.length)" @click="keywordPage = nextPage(keywordPage, realKeywordRows.length)">下一页</button>
               </div>
             </div>
           </section>
@@ -2379,8 +2419,8 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
             <div class="table-pagination">
               <span>{{ paginationLabel(pipelineRows.length, pipelinePage) }}</span>
               <div>
-                <button class="ghost-btn compact" type="button" :disabled="pipelinePage <= 1" @click="previousPage(pipelinePage)">上一页</button>
-                <button class="ghost-btn compact" type="button" :disabled="pipelinePage >= totalPages(pipelineRows.length)" @click="nextPage(pipelinePage, pipelineRows.length)">下一页</button>
+                <button class="ghost-btn compact" type="button" :disabled="pipelinePage <= 1" @click="pipelinePage = previousPage(pipelinePage)">上一页</button>
+                <button class="ghost-btn compact" type="button" :disabled="pipelinePage >= totalPages(pipelineRows.length)" @click="pipelinePage = nextPage(pipelinePage, pipelineRows.length)">下一页</button>
               </div>
             </div>
           </section>
@@ -2440,8 +2480,8 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
               <div class="table-pagination">
                 <span>{{ paginationLabel(filteredIngestionTasks.length, ingestionTaskPage) }}</span>
                 <div>
-                  <button class="ghost-btn compact" type="button" :disabled="ingestionTaskPage <= 1" @click="previousPage(ingestionTaskPage)">上一页</button>
-                  <button class="ghost-btn compact" type="button" :disabled="ingestionTaskPage >= totalPages(filteredIngestionTasks.length)" @click="nextPage(ingestionTaskPage, filteredIngestionTasks.length)">下一页</button>
+                  <button class="ghost-btn compact" type="button" :disabled="ingestionTaskPage <= 1" @click="ingestionTaskPage = previousPage(ingestionTaskPage)">上一页</button>
+                  <button class="ghost-btn compact" type="button" :disabled="ingestionTaskPage >= totalPages(filteredIngestionTasks.length)" @click="ingestionTaskPage = nextPage(ingestionTaskPage, filteredIngestionTasks.length)">下一页</button>
                 </div>
               </div>
           </section>
@@ -2634,8 +2674,8 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
             <div class="table-pagination">
               <span>{{ paginationLabel(filteredAdminUsers.length, userPage) }}</span>
               <div>
-                <button class="ghost-btn compact" type="button" :disabled="userPage <= 1" @click="previousPage(userPage)">上一页</button>
-                <button class="ghost-btn compact" type="button" :disabled="userPage >= totalPages(filteredAdminUsers.length)" @click="nextPage(userPage, filteredAdminUsers.length)">下一页</button>
+                <button class="ghost-btn compact" type="button" :disabled="userPage <= 1" @click="userPage = previousPage(userPage)">上一页</button>
+                <button class="ghost-btn compact" type="button" :disabled="userPage >= totalPages(filteredAdminUsers.length)" @click="userPage = nextPage(userPage, filteredAdminUsers.length)">下一页</button>
               </div>
             </div>
           </section>
@@ -2694,8 +2734,8 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
             <div class="table-pagination">
               <span>{{ paginationLabel(sampleQuestionRows.length, sampleQuestionPage) }}</span>
               <div>
-                <button class="ghost-btn compact" type="button" :disabled="sampleQuestionPage <= 1" @click="previousPage(sampleQuestionPage)">上一页</button>
-                <button class="ghost-btn compact" type="button" :disabled="sampleQuestionPage >= totalPages(sampleQuestionRows.length)" @click="nextPage(sampleQuestionPage, sampleQuestionRows.length)">下一页</button>
+                <button class="ghost-btn compact" type="button" :disabled="sampleQuestionPage <= 1" @click="sampleQuestionPage = previousPage(sampleQuestionPage)">上一页</button>
+                <button class="ghost-btn compact" type="button" :disabled="sampleQuestionPage >= totalPages(sampleQuestionRows.length)" @click="sampleQuestionPage = nextPage(sampleQuestionPage, sampleQuestionRows.length)">下一页</button>
               </div>
             </div>
           </section>
@@ -2872,7 +2912,7 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
         <header class="modal-head">
           <div>
             <h2>{{ editingDocumentId ? "修改文档" : "上传文档" }}</h2>
-            <p>{{ editingDocumentId ? "更新文档标题、启用状态和处理配置。" : "支持本地文件上传，并配置解析、清洗、切块与向量化策略。" }}</p>
+            <p>{{ editingDocumentId ? "更新文档标题和启用状态。" : "上传后解析源文件用于预览；切块参数会保存到文档，点击“切块”时执行。" }}</p>
           </div>
           <button class="modal-close" type="button" aria-label="关闭" @click="closeAdminModal">×</button>
         </header>
@@ -2892,70 +2932,87 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
             <input ref="modalUploadFileInput" :accept="uploadAccept" class="ui-input modal-file" type="file" :disabled="!!editingDocumentId" @change="onUploadFileSelected" />
             <span>{{ selectedUploadFileLabel() }}</span>
           </label>
+          <template v-if="!editingDocumentId">
+            <label class="modal-label">
+              处理模式
+              <select v-model="uploadProcessMode" class="ui-input modal-control">
+                <option value="chunk_strategy">按切块策略处理</option>
+                <option value="data_channel">按数据通道处理</option>
+              </select>
+            </label>
+            <label v-if="uploadProcessMode === 'chunk_strategy'" class="modal-label">
+              切块策略
+              <select v-model="uploadChunkStrategy" class="ui-input modal-control">
+                <option v-for="option in chunkStrategyOptions" :key="option.value" :value="option.value">
+                  {{ option.label }}
+                </option>
+              </select>
+            </label>
+            <label v-else class="modal-label">
+              数据通道
+              <select v-model.number="uploadPipelineId" class="ui-input modal-control" :disabled="ingestionPipelines.length === 0">
+                <option v-if="ingestionPipelines.length === 0" :value="null">暂无数据通道</option>
+                <option v-for="pipeline in ingestionPipelines" :key="pipeline.id" :value="pipeline.id">
+                  {{ pipeline.name }}
+                </option>
+              </select>
+            </label>
+            <template v-if="uploadProcessMode === 'chunk_strategy'">
+              <template v-if="uploadChunkStrategy === 'structure_aware'">
+                <div class="modal-field-grid">
+                  <label class="modal-label">
+                    理想块大小
+                    <input v-model.number="uploadChunkSize" class="ui-input modal-control" min="1" type="number" />
+                  </label>
+                  <label class="modal-label">
+                    块上限
+                    <input v-model.number="uploadStructureMaxChars" class="ui-input modal-control" min="1" type="number" />
+                  </label>
+                </div>
+                <div class="modal-field-grid">
+                  <label class="modal-label">
+                    块下限
+                    <input v-model.number="uploadStructureMinChars" class="ui-input modal-control" min="1" type="number" />
+                  </label>
+                  <label class="modal-label">
+                    重叠大小
+                    <input v-model.number="uploadChunkOverlap" class="ui-input modal-control" min="0" type="number" />
+                  </label>
+                </div>
+              </template>
+              <div v-else-if="uploadShowChunkSizeControls" class="modal-field-grid">
+                <label class="modal-label">
+                  Chunk Size
+                  <input v-model.number="uploadChunkSize" class="ui-input modal-control" min="1" type="number" />
+                </label>
+                <label class="modal-label">
+                  Overlap
+                  <input v-model.number="uploadChunkOverlap" class="ui-input modal-control" min="0" type="number" />
+                </label>
+              </div>
+              <label v-if="uploadShowRecursiveSeparatorControls" class="modal-label">
+                递归分隔符
+                <textarea v-model="uploadRecursiveSeparatorsText" class="ui-input" rows="4"></textarea>
+              </label>
+              <p class="modal-hint">{{ uploadChunkSummary }}</p>
+              <p v-if="uploadAutoStrategyRecommendation" class="modal-hint">{{ uploadAutoStrategyRecommendation }}</p>
+              <p v-if="uploadShowRecursiveSeparatorControls" class="modal-hint">{{ uploadRecursiveSeparatorSummary }}</p>
+              <p v-if="uploadShowSemanticNotice" class="modal-hint">语义切块会保留策略配置，后端按当前可用能力执行。</p>
+            </template>
+          </template>
           <label v-if="editingDocumentId" class="modal-checkbox">
             <input v-model="editDocumentEnabled" type="checkbox" />
             启用文档
           </label>
-          <label class="modal-label">
-            处理模式
-            <select v-model="uploadProcessMode" class="ui-input modal-control">
-              <option value="chunk_strategy">按切块策略入库</option>
-              <option value="data_channel">按数据通道入库</option>
-            </select>
-          </label>
-          <label v-if="uploadProcessMode === 'data_channel'" class="modal-label">
-            数据通道
-            <select v-model="uploadPipelineId" class="ui-input modal-control">
-              <option :value="null">自动选择默认通道</option>
-              <option v-for="pipeline in ingestionPipelines" :key="pipeline.id" :value="pipeline.id">
-                {{ pipeline.name }}
-              </option>
-            </select>
-          </label>
-          <label v-if="uploadProcessMode === 'chunk_strategy'" class="modal-label">
-            分块策略
-            <select v-model="uploadChunkStrategy" class="ui-input modal-control">
-              <option v-for="option in chunkStrategyOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
-            </select>
-            <span>{{ uploadChunkSummary }}</span>
-          </label>
-          <div v-if="uploadProcessMode === 'chunk_strategy' && uploadShowChunkSizeControls" class="modal-field-grid">
-            <label class="modal-label">
-              块大小
-              <input v-model.number="uploadChunkSize" class="ui-input modal-control" min="200" max="1000" type="number" />
-            </label>
-            <label class="modal-label">
-              重叠大小
-              <input v-model.number="uploadChunkOverlap" class="ui-input modal-control" min="0" type="number" />
-            </label>
-          </div>
-          <div v-if="uploadProcessMode === 'chunk_strategy' && uploadChunkStrategy === 'structure_aware'" class="modal-field-grid">
-            <label class="modal-label">
-              结构最大字符数
-              <input v-model.number="uploadStructureMaxChars" class="ui-input modal-control" min="200" type="number" />
-            </label>
-            <label class="modal-label">
-              结构最小字符数
-              <input v-model.number="uploadStructureMinChars" class="ui-input modal-control" min="50" type="number" />
-            </label>
-          </div>
-          <label v-if="uploadProcessMode === 'chunk_strategy' && uploadShowRecursiveSeparatorControls" class="modal-label">
-            递归分隔符
-            <textarea v-model="uploadRecursiveSeparatorsText" class="ui-input" rows="4"></textarea>
-            <span>{{ uploadRecursiveSeparatorSummary }}</span>
-          </label>
-          <p v-if="uploadProcessMode === 'chunk_strategy' && (uploadAutoStrategyRecommendation || uploadShowSemanticNotice)" class="modal-hint">
-            {{ uploadAutoStrategyRecommendation }}
-            <span v-if="uploadShowSemanticNotice">语义分块会调用 Embedding 计算相邻段落语义相似度。</span>
+          <p v-if="!editingDocumentId" class="modal-hint">
+            上传只保存源文件并解析预览；分块、入库任务和向量化会在点击“切块”后执行。
           </p>
-          <p v-if="uploadProcessMode === 'data_channel'" class="modal-hint">
-            文档将按选定数据通道的节点配置执行解析、清洗、切块和向量化。
-          </p>
+          <p v-if="error" class="modal-hint danger">{{ error }}</p>
         </div>
         <footer class="modal-actions">
           <button class="ghost-btn" type="button" @click="closeAdminModal">取消</button>
           <button class="primary-btn" type="button" :disabled="uploadLoading || (!editingDocumentId && !selectedUploadFile) || (!!editingDocumentId && !editDocumentTitle.trim())" @click="void uploadSelectedDocumentFromModal()">
-            {{ editingDocumentId ? "保存" : (uploadLoading ? "上传中..." : "上传") }}
+            {{ editingDocumentId ? "保存" : (uploadLoading ? "上传并解析中..." : "上传") }}
           </button>
         </footer>
       </section>
@@ -2996,6 +3053,7 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
             任务元数据（JSON，可选）
             <textarea v-model="newPipelineTaskMetadataText" class="ui-input" rows="5" placeholder='{"source":"manual"}'></textarea>
           </label>
+          <p v-if="error" class="modal-hint danger">{{ error }}</p>
         </div>
         <footer class="modal-actions">
           <button class="ghost-btn" type="button" @click="closeAdminModal">取消</button>
@@ -3742,7 +3800,7 @@ kbd {
 
 .document-table th:nth-child(1),
 .document-table td:nth-child(1) {
-  width: 16%;
+  width: 17%;
 }
 
 .document-table th:nth-child(2),
@@ -3758,27 +3816,25 @@ kbd {
 }
 
 .document-table th:nth-child(5),
-.document-table td:nth-child(5),
-.document-table th:nth-child(6),
-.document-table td:nth-child(6) {
+.document-table td:nth-child(5) {
   width: 6%;
 }
 
+.document-table th:nth-child(6),
+.document-table td:nth-child(6),
 .document-table th:nth-child(7),
-.document-table td:nth-child(7),
+.document-table td:nth-child(7) {
+  width: 7%;
+}
+
 .document-table th:nth-child(8),
 .document-table td:nth-child(8) {
-  width: 7%;
+  width: 12%;
 }
 
 .document-table th:nth-child(9),
 .document-table td:nth-child(9) {
-  width: 12%;
-}
-
-.document-table th:nth-child(10),
-.document-table td:nth-child(10) {
-  width: 23%;
+  width: 27%;
 }
 
 .pipeline-table th:nth-child(1),
@@ -4508,11 +4564,22 @@ button:disabled {
 }
 
 .notice-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 22px;
   border: 1px solid #dbeafe;
   border-radius: 12px;
   padding: 12px 16px;
   background: #eff6ff;
   color: #1d4ed8;
+}
+
+.notice-card > span {
+  min-width: 0;
+  line-height: 1.55;
+  word-break: break-word;
 }
 
 .notice-card.success {
@@ -4525,6 +4592,23 @@ button:disabled {
   border-color: #fecaca;
   background: #fef2f2;
   color: #b91c1c;
+}
+
+.notice-close {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.notice-close:hover {
+  background: rgba(185, 28, 28, 0.09);
 }
 
 .modal-backdrop {
@@ -4629,6 +4713,15 @@ button:disabled {
   font-size: 14px;
   font-weight: 500;
   line-height: 1.55;
+}
+
+.modal-hint.danger {
+  border: 1px solid #fecaca;
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: #fff5f5;
+  color: #dc2626;
+  font-weight: 700;
 }
 
 .modal-control {

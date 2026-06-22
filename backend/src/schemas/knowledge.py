@@ -65,6 +65,7 @@ class KnowledgeDocumentItem(BaseModel):
     document_type: str = "knowledge_base"
     size_label: str = "-"
     source_uri: str = ""
+    processing_config: dict[str, Any] = Field(default_factory=dict)
     vector_indexed_at: str = ""
     created_at: str
 
