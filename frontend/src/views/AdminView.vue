@@ -562,15 +562,33 @@ const realKeywordRows = computed(() => {
 
 const pagedRealKeywordRows = computed(() => pageSlice(realKeywordRows.value, keywordPage.value));
 
+const sampleQuestionPresets: Record<string, { title: string; description: string }> = {
+  "询问助手是做什么的、是谁、能做什么等": {
+    title: "系统交互",
+    description: "关于助手"
+  },
+  "数据权限、访问控制、安全审计等相关说明": {
+    title: "业务系统",
+    description: "数据安全"
+  },
+  "销售数据统计，如：销售总额、销售量、销售占比、销售趋势、销售预测等": {
+    title: "实时数据",
+    description: "销售汇总数据统计"
+  }
+};
+
 const sampleQuestionRows = computed(() => {
   const questions = routeProfile.value?.sample_questions ?? [];
   return questions
-    .map((question) => ({
-      title: selectedKnowledgeBase.value?.name || "知识库",
-      description: "知识库推荐问法",
-      question,
-      updatedAt: routeProfile.value?.updated_at || ""
-    }))
+    .map((question) => {
+      const preset = sampleQuestionPresets[question];
+      return {
+        title: preset?.title ?? selectedKnowledgeBase.value?.name ?? "知识库",
+        description: preset?.description ?? "知识库推荐问法",
+        question,
+        updatedAt: routeProfile.value?.updated_at || ""
+      };
+    })
     .filter((item) => {
       const query = sampleQuestionSearch.value.trim().toLowerCase();
       return !query || item.title.toLowerCase().includes(query) || item.description.toLowerCase().includes(query) || item.question.toLowerCase().includes(query);
@@ -5471,12 +5489,58 @@ button:disabled {
 
 @media (max-width: 1100px) {
   .admin-layout {
-    grid-template-columns: 1fr;
+    grid-template-columns: 72px minmax(0, 1fr);
   }
 
   .admin-sidebar {
-    position: static;
-    height: auto;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    padding-inline: 12px;
+  }
+
+  .admin-sidebar .brand-copy,
+  .admin-sidebar .nav-label,
+  .admin-sidebar .nav-section-title {
+    display: none;
+  }
+
+  .admin-sidebar .admin-brand,
+  .admin-sidebar .nav-item {
+    justify-content: center;
+  }
+
+  .admin-sidebar .nav-chevron {
+    display: none;
+  }
+
+  .admin-sidebar .nav-sub-items {
+    margin-left: 0;
+  }
+
+  .admin-sidebar .nav-sub-item {
+    justify-content: center;
+  }
+
+  .admin-sidebar .nav-sub-item span:last-child {
+    display: none;
+  }
+
+  .admin-sidebar .collapse-btn {
+    left: 14px;
+    width: calc(100% - 28px);
+    padding-inline: 0;
+    font-size: 0;
+  }
+
+  .admin-sidebar .collapse-btn::before {
+    content: "‹";
+    font-size: 18px;
+    line-height: 1;
+  }
+
+  .admin-main {
+    min-width: 0;
   }
 
   .metric-grid,

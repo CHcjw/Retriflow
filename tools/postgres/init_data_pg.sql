@@ -52,9 +52,13 @@ INSERT INTO knowledge_base_route_profiles (
 )
 VALUES (
     'kb-demo-1',
-    'RetriFlow product knowledge base migration python vue rag langgraph langchain',
-    '["RetriFlow 是什么？", "RetriFlow 的迁移目标是什么？"]'::jsonb,
-    '["retriflow", "langgraph", "langchain", "migration", "rag"]'::jsonb
+    '系统交互 业务系统 实时数据 数据安全 销售汇总数据统计',
+    '[
+      "询问助手是做什么的、是谁、能做什么等",
+      "数据权限、访问控制、安全审计等相关说明",
+      "销售数据统计，如：销售总额、销售量、销售占比、销售趋势、销售预测等"
+    ]'::jsonb,
+    '["系统交互", "业务系统", "实时数据", "数据安全", "销售汇总数据统计"]'::jsonb
 )
 ON CONFLICT (knowledge_base_id) DO NOTHING;
 
