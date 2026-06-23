@@ -116,6 +116,33 @@ class RetriFlowChatMcpApiTests(unittest.TestCase):
         self.assertTrue(payload["mcp_calls"][0]["is_error"])
         self.assertIn("timeout", payload["mcp_calls"][0]["content"])
 
+    def test_weather_follow_up_uses_previous_city_and_weather_tool(self) -> None:
+        first_response = self.client.post(
+            "/api/v1/chat/messages",
+            json={
+                "session_id": "session-demo-1",
+                "message": "北京今天天气怎么样？",
+            },
+        )
+        self.assertEqual(first_response.status_code, 200)
+        self.assertEqual(first_response.json()["mcp_calls"][0]["tool_id"], "weather_query")
+
+        follow_up_response = self.client.post(
+            "/api/v1/chat/messages",
+            json={
+                "session_id": "session-demo-1",
+                "message": "未来三天呢",
+            },
+        )
+
+        self.assertEqual(follow_up_response.status_code, 200)
+        payload = follow_up_response.json()
+        self.assertEqual(payload["workflow"]["route_mode"], "mcp_only")
+        self.assertEqual(payload["mcp_calls"][0]["tool_id"], "weather_query")
+        self.assertEqual(payload["mcp_calls"][0]["arguments"]["city"], "北京")
+        self.assertEqual(payload["mcp_calls"][0]["arguments"]["query_type"], "forecast")
+        self.assertEqual(payload["workflow"]["rewritten_queries"], ["北京未来三天天气怎么样？"])
+
 
 if __name__ == "__main__":
     unittest.main()

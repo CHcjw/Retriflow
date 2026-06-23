@@ -192,6 +192,41 @@ class RetriFlowKnowledgeRouteTests(unittest.TestCase):
         self.assertIn("Claims Domain", decision.reason)
         self.assertIn("Claims Reimbursement Leaf", decision.reason)
 
+    def test_route_question_uses_mcp_intent_tree_nodes(self) -> None:
+        from modules.admin import RetriFlowAdminService
+        from modules.knowledge.routing import RetriFlowKnowledgeRouteService
+        from schemas.admin import AdminIntentNodeCreateRequest
+
+        parent = RetriFlowAdminService().create_intent_node(
+            AdminIntentNodeCreateRequest(
+                name="Sales Domain",
+                code="sales_domain",
+                level="DOMAIN",
+                node_type="MCP",
+                description="sales statistics domain",
+                sort_order=1,
+            )
+        )
+        RetriFlowAdminService().create_intent_node(
+            AdminIntentNodeCreateRequest(
+                name="Sales Statistics",
+                code="sales_statistics_leaf",
+                level="CATEGORY",
+                node_type="MCP",
+                parent_id=parent.id,
+                knowledge_base_id="kb-1",
+                description="sales amount and sales volume statistics",
+                sort_order=1,
+            )
+        )
+
+        decision = RetriFlowKnowledgeRouteService().route_question("sales statistics domain")
+
+        self.assertEqual(decision.mode, "knowledge_base")
+        self.assertEqual(decision.knowledge_base_ids, ["kb-1"])
+        self.assertIn("Sales Domain", decision.reason)
+        self.assertIn("Sales Statistics", decision.reason)
+
     def test_route_question_keeps_multiple_intent_tree_candidates(self) -> None:
         from modules.admin import RetriFlowAdminService
         from modules.knowledge import RetriFlowKnowledgeService

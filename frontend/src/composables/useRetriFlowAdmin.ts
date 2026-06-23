@@ -9,6 +9,7 @@ import {
   createAdminUser,
   createIngestionPipeline,
   createKnowledgeDocument,
+  deleteIngestionPipeline,
   deleteAdminUser,
   deleteAdminIntentNode,
   deleteAdminKeywordMapping,
@@ -34,6 +35,7 @@ import {
   updateKnowledgeBase,
   updateKnowledgeDocument,
   updateKnowledgeChunk,
+  updateIngestionPipeline,
   updateAdminUser,
   updateAdminUserRole,
   type AdminUserCreateRequest,
@@ -418,6 +420,38 @@ export function useRetriFlowAdmin() {
       infoMessage.value = "流水线已创建。";
     } catch (err) {
       error.value = err instanceof Error ? err.message : "新增流水线失败";
+    }
+  };
+
+  const updatePipeline = async (pipelineId: number, payload: IngestionPipelineCreateRequest) => {
+    if (!canViewIngestion.value) {
+      denyManagementAction();
+      return;
+    }
+    error.value = "";
+    infoMessage.value = "";
+    try {
+      const updated = await updateIngestionPipeline(pipelineId, payload);
+      ingestionPipelines.value = ingestionPipelines.value.map((item) => (item.id === pipelineId ? updated : item));
+      infoMessage.value = "流水线已更新。";
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : "更新流水线失败";
+    }
+  };
+
+  const removePipeline = async (pipelineId: number) => {
+    if (!canViewIngestion.value) {
+      denyManagementAction();
+      return;
+    }
+    error.value = "";
+    infoMessage.value = "";
+    try {
+      await deleteIngestionPipeline(pipelineId);
+      ingestionPipelines.value = ingestionPipelines.value.filter((item) => item.id !== pipelineId);
+      infoMessage.value = "流水线已删除。";
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : "删除流水线失败";
     }
   };
 
@@ -1352,6 +1386,8 @@ export function useRetriFlowAdmin() {
     searchAdminTraces,
     loadChunks,
     createPipeline,
+    updatePipeline,
+    removePipeline,
     refreshKnowledgeData,
     addDocument,
     uploadDocument,

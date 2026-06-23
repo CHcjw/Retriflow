@@ -486,6 +486,41 @@ class RetriFlowRetrievalEngineTests(unittest.TestCase):
         self.assertEqual(result.stage_counts["semantic"], 2)
         self.assertEqual(result.stage_counts["final"], 2)
 
+    def test_retrieval_engine_adds_assessment_count_context(self) -> None:
+        from modules.knowledge import RetriFlowKnowledgeService
+        from modules.rag.retrieval.engine import RetriFlowRetrievalEngine
+        from schemas.knowledge import KnowledgeDocumentCreateRequest
+
+        RetriFlowKnowledgeService().create_document(
+            "kb-demo-1",
+            KnowledgeDocumentCreateRequest(
+                title="软件工程复习材料",
+                source_type="manual",
+                content=(
+                    "第一部分 复习提纲:\n"
+                    "一、名词解释(本题共4小题,每小题5分,共20分)\n"
+                    "二、单选题(本题共20小题,每小题1分,共20分)\n"
+                    "三、问答题(本题共2小题,每题10分,共20分)\n"
+                    "四、应用题(第1小题20分,第2小题10分,第3小题10分,共40分)\n"
+                    "第二部分 选择题练习\n"
+                    "1、软件工程管理的具体内容不包括对_______管理。"
+                ),
+            ),
+        )
+
+        result = RetriFlowRetrievalEngine().retrieve(
+            "软件工程复习题有多少道",
+            knowledge_base_ids=["kb-demo-1"],
+        )
+
+        count_contexts = [source for source in result.sources if "题目统计线索" in source.content]
+        self.assertTrue(count_contexts)
+        self.assertIn("名词解释：4小题", count_contexts[0].content)
+        self.assertIn("单选题：20小题", count_contexts[0].content)
+        self.assertIn("问答题：2小题", count_contexts[0].content)
+        self.assertIn("应用题：3小题", count_contexts[0].content)
+        self.assertIn("合计：29小题", count_contexts[0].content)
+
     def test_retrieval_engine_uses_configured_hybrid_top_k_pipeline(self) -> None:
         os.environ["RETRIFLOW_RETRIEVAL_BM25_TOP_K"] = "7"
         os.environ["RETRIFLOW_RETRIEVAL_VECTOR_TOP_K"] = "9"

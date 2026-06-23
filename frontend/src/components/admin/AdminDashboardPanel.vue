@@ -26,6 +26,18 @@ const rangeOptions = [
 ] as const;
 
 const chartLabels = computed(() => props.dashboard?.traffic_overview.labels ?? []);
+const axisLabels = computed(() => {
+  const labels = chartLabels.value;
+  const step = labels.length > 14 ? 5 : labels.length > 8 ? 2 : 1;
+  return labels
+    .map((label, index) => ({ label, index }))
+    .filter(({ index }) => index === 0 || index === labels.length - 1 || index % step === 0)
+    .map((item) => ({
+      ...item,
+      left: labels.length > 1 ? `${(item.index / (labels.length - 1)) * 100}%` : "50%",
+      edge: item.index === 0 ? "start" : item.index === labels.length - 1 ? "end" : "middle"
+    }));
+});
 const trafficSeries = computed(() => props.dashboard?.traffic_overview.series ?? []);
 const trendPanels = computed(() => props.dashboard?.trend_panels ?? []);
 const qualitySnapshot = computed(() => props.dashboard?.quality_snapshot ?? []);
@@ -194,7 +206,14 @@ function insightTone(insight: AdminDashboardOpsInsight): string {
             </g>
           </svg>
           <div class="chart-labels">
-            <span v-for="label in chartLabels" :key="label">{{ label }}</span>
+            <span
+              v-for="item in axisLabels"
+              :key="`${item.index}-${item.label}`"
+              :class="item.edge"
+              :style="{ left: item.left }"
+            >
+              {{ item.label }}
+            </span>
           </div>
           <div class="chart-legend">
             <span v-for="series in trafficSeries" :key="series.key">
@@ -293,7 +312,14 @@ function insightTone(insight: AdminDashboardOpsInsight): string {
                 />
               </svg>
               <div class="mini-labels">
-                <span v-for="label in chartLabels" :key="`${panel.key}-${label}`">{{ label }}</span>
+                <span
+                  v-for="item in axisLabels"
+                  :key="`${panel.key}-${item.index}-${item.label}`"
+                  :class="item.edge"
+                  :style="{ left: item.left }"
+                >
+                  {{ item.label }}
+                </span>
               </div>
             </div>
             <div class="chart-legend mini">
@@ -539,17 +565,35 @@ function insightTone(insight: AdminDashboardOpsInsight): string {
 
 .chart-labels,
 .mini-labels {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(22px, 1fr));
-  gap: 8px;
+  position: relative;
+  height: 16px;
   margin-top: 10px;
   color: #8a98b1;
-  font-size: 11px;
+  font-size: 10px;
+  line-height: 16px;
 }
 
 .chart-labels span,
 .mini-labels span {
+  position: absolute;
+  top: 0;
+  max-width: 54px;
+  transform: translateX(-50%);
   text-align: center;
+  overflow: visible;
+  white-space: nowrap;
+}
+
+.chart-labels span.start,
+.mini-labels span.start {
+  transform: translateX(0);
+  text-align: left;
+}
+
+.chart-labels span.end,
+.mini-labels span.end {
+  transform: translateX(-100%);
+  text-align: right;
 }
 
 .chart-legend {

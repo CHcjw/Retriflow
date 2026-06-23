@@ -103,6 +103,8 @@ const {
   loadDocuments,
   loadChunks,
   createPipeline,
+  updatePipeline,
+  removePipeline,
   loadTaskNodes,
   refreshKnowledgeData,
   uploadDocument,
@@ -198,6 +200,7 @@ const activeAdminModal = shallowRef<
   | "keyword"
   | "knowledgeBase"
   | "pipeline"
+  | "pipelineNodes"
   | "pipelineTask"
   | "sampleQuestion"
   | "uploadDocument"
@@ -344,6 +347,9 @@ const legacyPipelineRows = computed(() => [
 void legacyPipelineRows;
 
 const showPipelineModal = shallowRef(false);
+const editingPipelineId = shallowRef<number | null>(null);
+const selectedPipelineNodes = ref<IngestionPipelineNodeConfig[]>([]);
+const selectedPipelineName = shallowRef("");
 const pipelineEditorMode = shallowRef<"form" | "json">("form");
 const newPipelineName = shallowRef("");
 const newPipelineDescription = shallowRef("");
@@ -481,6 +487,14 @@ function childIntentNodes(parentId: string) {
   return adminIntentNodes.value
     .filter((item) => item.parent_id === parentId)
     .sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name));
+}
+
+function intentNodeLevelClass(level: string) {
+  return `level-${level.toLowerCase()}`;
+}
+
+function intentNodeTypeClass(type: string) {
+  return `type-${type.toLowerCase()}`;
 }
 
 const realKeywordRows = computed(() => {
@@ -1401,6 +1415,7 @@ function stringifyPipelineNodes(nodes: IngestionPipelineNodeConfig[]) {
 }
 
 function resetPipelineForm() {
+  editingPipelineId.value = null;
   newPipelineName.value = "";
   newPipelineDescription.value = "";
   pipelineEditorMode.value = "form";
@@ -1417,8 +1432,31 @@ function openCreatePipelineModal() {
   showPipelineModal.value = true;
 }
 
+function openEditPipelineModal(pipeline: { id: number; name: string; description: string; nodes: IngestionPipelineNodeConfig[] }) {
+  editingPipelineId.value = pipeline.id;
+  newPipelineName.value = pipeline.name;
+  newPipelineDescription.value = pipeline.description === "-" ? "" : pipeline.description;
+  pipelineEditorMode.value = "form";
+  pipelineNodeDrafts.value = pipeline.nodes.map((node) => ({
+    node_id: node.node_id,
+    node_type: node.node_type,
+    next_node_id: node.next_node_id,
+    condition: node.condition,
+    config: { ...node.config }
+  }));
+  pipelineJsonText.value = stringifyPipelineNodes(pipelineNodeDrafts.value);
+  showPipelineModal.value = true;
+}
+
+function openPipelineNodesModal(pipeline: { name: string; nodes: IngestionPipelineNodeConfig[] }) {
+  selectedPipelineName.value = pipeline.name;
+  selectedPipelineNodes.value = pipeline.nodes;
+  activeAdminModal.value = "pipelineNodes";
+}
+
 function closeCreatePipelineModal() {
   showPipelineModal.value = false;
+  editingPipelineId.value = null;
 }
 
 function addPipelineNode() {
@@ -1493,13 +1531,25 @@ async function savePipelineFromModal() {
     }
   }
 
-  await createPipeline({
+  const payload = {
     name: newPipelineName.value.trim(),
     description: newPipelineDescription.value.trim(),
     owner: "admin",
     nodes
-  });
+  };
+  if (editingPipelineId.value !== null) {
+    await updatePipeline(editingPipelineId.value, payload);
+  } else {
+    await createPipeline(payload);
+  }
   closeCreatePipelineModal();
+}
+
+async function deletePipelineFromRow(pipelineId: number) {
+  if (!window.confirm("确认删除这条流水线吗？")) {
+    return;
+  }
+  await removePipeline(pipelineId);
 }
 
 function processingModeLabel(mode: string) {
@@ -2020,7 +2070,7 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
                       <input v-model="selectedChunkIds" :value="chunk.id" type="checkbox" />
                     </td>
                     <td>{{ chunk.chunk_index }}</td>
-                    <td class="chunk-content">{{ chunk.content }}</td>
+                    <td class="chunk-content"><span class="chunk-content-preview">{{ chunk.content }}</span></td>
                     <td>
                       <span class="status-pill" :class="{ success: chunk.enabled, warning: !chunk.enabled }">
                         {{ chunk.enabled ? "启用" : "禁用" }}
@@ -2089,30 +2139,38 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
                 </div>
               </div>
               <div class="intent-tree-box real-tree">
-                <button
-                  v-for="node in rootIntentNodes"
-                  :key="node.id"
-                  class="intent-node root-node tree-button"
-                  :class="{ active: selectedIntentNode?.id === node.id }"
-                  type="button"
-                  @click="selectedIntentNodeId = node.id"
-                >
-                  <strong>{{ node.name }}</strong>
-                  <span>{{ node.level }} · {{ node.node_type }} · {{ node.enabled ? "启用" : "停用" }}</span>
-                </button>
-                <template v-for="parent in rootIntentNodes" :key="`${parent.id}-children`">
+                <div v-for="node in rootIntentNodes" :key="node.id" class="intent-tree-group">
                   <button
-                    v-for="child in childIntentNodes(parent.id)"
-                    :key="child.id"
-                    class="intent-node child-node tree-button"
-                    :class="{ active: selectedIntentNode?.id === child.id }"
+                    class="intent-node root-node tree-button"
+                    :class="{ active: selectedIntentNode?.id === node.id }"
                     type="button"
-                    @click="selectedIntentNodeId = child.id"
+                    @click="selectedIntentNodeId = node.id"
                   >
-                    <strong>{{ child.name }}</strong>
-                    <span>{{ parent.name }} / {{ child.level }} · {{ child.node_type }}</span>
+                    <strong>{{ node.name }}</strong>
+                    <span class="intent-tag-row">
+                      <i class="intent-tag" :class="intentNodeLevelClass(node.level)">{{ node.level }}</i>
+                      <i class="intent-tag" :class="intentNodeTypeClass(node.node_type)">{{ node.node_type }}</i>
+                      <i class="intent-tag" :class="{ disabled: !node.enabled }">{{ node.enabled ? "启用" : "停用" }}</i>
+                    </span>
                   </button>
-                </template>
+                  <div v-if="childIntentNodes(node.id).length > 0" class="intent-child-list">
+                    <button
+                      v-for="child in childIntentNodes(node.id)"
+                      :key="child.id"
+                      class="intent-node child-node tree-button"
+                      :class="{ active: selectedIntentNode?.id === child.id }"
+                      type="button"
+                      @click="selectedIntentNodeId = child.id"
+                    >
+                      <strong>{{ child.name }}</strong>
+                      <span class="intent-tag-row">
+                        <i class="intent-tag" :class="intentNodeLevelClass(child.level)">{{ child.level }}</i>
+                        <i class="intent-tag" :class="intentNodeTypeClass(child.node_type)">{{ child.node_type }}</i>
+                        <i class="intent-parent-label">{{ node.name }}</i>
+                      </span>
+                    </button>
+                  </div>
+                </div>
                 <div v-if="adminIntentNodes.length === 0" class="empty-cell">暂无意图节点，请点击右上角新建。</div>
               </div>
             </article>
@@ -2122,7 +2180,11 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
                 <div class="intent-detail-head">
                   <div>
                     <h2>{{ selectedIntentNode.name }}</h2>
-                    <p>{{ selectedIntentNode.code }} · {{ selectedIntentNode.level }} · {{ selectedIntentNode.node_type }}</p>
+                    <div class="intent-detail-meta">
+                      <span>{{ selectedIntentNode.code }}</span>
+                      <i class="intent-tag" :class="intentNodeLevelClass(selectedIntentNode.level)">{{ selectedIntentNode.level }}</i>
+                      <i class="intent-tag" :class="intentNodeTypeClass(selectedIntentNode.node_type)">{{ selectedIntentNode.node_type }}</i>
+                    </div>
                   </div>
                   <span class="status-pill" :class="{ success: selectedIntentNode.enabled, warning: !selectedIntentNode.enabled }">
                     {{ selectedIntentNode.enabled ? "启用" : "停用" }}
@@ -2408,7 +2470,11 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
                     <td>{{ pipeline.owner }}</td>
                     <td>{{ pipeline.taskCount }}</td>
                     <td>{{ formatDate(pipeline.updatedAt) }}</td>
-                    <td class="row-actions"><button class="ghost-btn compact" type="button" @click="pipelineTab = 'tasks'">任务</button></td>
+                    <td class="row-actions">
+                      <button class="ghost-btn compact" type="button" @click="openPipelineNodesModal(pipeline)">查看节点</button>
+                      <button class="ghost-btn compact" type="button" @click="openEditPipelineModal(pipeline)">修改</button>
+                      <button class="danger-btn compact" type="button" @click="void deletePipelineFromRow(pipeline.id)">删除</button>
+                    </td>
                   </tr>
                   <tr v-if="pipelineRows.length === 0">
                     <td colspan="7" class="empty-cell">暂无流水线，请点击“新增流水线”创建。</td>
@@ -2769,8 +2835,8 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
       <section class="admin-modal admin-modal-wide" aria-label="新建流水线">
         <header class="modal-head">
           <div>
-            <h2>新建流水线</h2>
-            <p>配置文档摄取、解析、切块、向量化等节点顺序，保存后会进入 RetriFlow 后端流水线定义表。</p>
+            <h2>{{ editingPipelineId === null ? "新建流水线" : "修改流水线" }}</h2>
+            <p>{{ editingPipelineId === null ? "配置文档摄取、解析、切块、向量化等节点顺序，保存后会进入 RetriFlow 后端流水线定义表。" : "调整流水线名称、描述和节点配置。" }}</p>
           </div>
           <button class="modal-close" type="button" aria-label="关闭" @click="closeCreatePipelineModal">×</button>
         </header>
@@ -2850,7 +2916,7 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
 
         <footer class="modal-actions">
           <button class="ghost-btn" type="button" @click="closeCreatePipelineModal">取消</button>
-          <button class="primary-btn" type="button" :disabled="!newPipelineName.trim()" @click="void savePipelineFromModal()">保存流水线</button>
+          <button class="primary-btn" type="button" :disabled="!newPipelineName.trim()" @click="void savePipelineFromModal()">{{ editingPipelineId === null ? "保存流水线" : "保存修改" }}</button>
         </footer>
       </section>
     </div>
@@ -2868,6 +2934,37 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
           <p v-if="documentPreviewLoading" class="empty-cell">正在加载预览...</p>
           <pre v-else>{{ documentPreview?.content || "暂无可预览内容" }}</pre>
         </div>
+        <footer class="modal-actions">
+          <button class="ghost-btn" type="button" @click="closeAdminModal">关闭</button>
+        </footer>
+      </section>
+
+      <section v-else-if="activeAdminModal === 'pipelineNodes'" class="admin-modal admin-modal-wide" aria-label="查看流水线节点">
+        <header class="modal-head">
+          <div>
+            <h2>查看节点</h2>
+            <p>{{ selectedPipelineName }}，共 {{ selectedPipelineNodes.length }} 个节点。</p>
+          </div>
+          <button class="modal-close" type="button" aria-label="关闭" @click="closeAdminModal">×</button>
+        </header>
+        <section class="pipeline-node-panel readonly-node-panel">
+          <article v-for="(node, index) in selectedPipelineNodes" :key="`${node.node_id}-${index}`" class="pipeline-node-card">
+            <div class="node-card-head">
+              <div>
+                <span class="status-pill">{{ node.node_type }}</span>
+                <strong>{{ index + 1 }}. {{ node.node_id }}</strong>
+              </div>
+              <span class="muted-line">next: {{ node.next_node_id || "-" }}</span>
+            </div>
+            <dl class="node-detail-list">
+              <dt>条件</dt>
+              <dd>{{ node.condition || "-" }}</dd>
+              <dt>配置</dt>
+              <dd><pre>{{ JSON.stringify(node.config || {}, null, 2) }}</pre></dd>
+            </dl>
+          </article>
+          <p v-if="selectedPipelineNodes.length === 0" class="empty-cell">暂无节点。</p>
+        </section>
         <footer class="modal-actions">
           <button class="ghost-btn" type="button" @click="closeAdminModal">关闭</button>
         </footer>
@@ -3147,8 +3244,8 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
               类型
               <select v-model="newIntentType" class="ui-input modal-control">
                 <option value="KB">KB - 知识库检索</option>
-                <option value="CHAT">CHAT - 闲聊</option>
-                <option value="TOOL">TOOL - 工具调用</option>
+                <option value="MCP">MCP - 工具调用</option>
+                <option value="SYSTEM">SYSTEM - 系统交互</option>
               </select>
             </label>
           </div>
@@ -3156,7 +3253,7 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
             父节点
             <select v-model="newIntentParent" class="ui-input modal-control">
               <option value="ROOT">ROOT</option>
-              <option v-for="item in intentRows" :key="item.id" :value="item.id">{{ item.name }}</option>
+              <option v-for="item in adminIntentNodes" :key="item.id" :value="item.id">{{ item.name }}</option>
             </select>
           </label>
           <label class="modal-label">
@@ -3839,12 +3936,12 @@ kbd {
 
 .pipeline-table th:nth-child(1),
 .pipeline-table td:nth-child(1) {
-  width: 18%;
+  width: 15%;
 }
 
 .pipeline-table th:nth-child(2),
 .pipeline-table td:nth-child(2) {
-  width: 30%;
+  width: 20%;
 }
 
 .pipeline-table th:nth-child(3),
@@ -4074,8 +4171,16 @@ kbd {
   max-width: 520px;
   color: #38506f;
   line-height: 1.65;
+}
+
+.chunk-content-preview {
+  display: -webkit-box;
+  max-height: 7.95em;
+  overflow: hidden;
   white-space: pre-wrap;
   word-break: break-word;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 5;
 }
 
 .empty-cell {
@@ -4153,6 +4258,11 @@ kbd {
   margin-top: 14px;
 }
 
+.intent-tree-group {
+  display: grid;
+  gap: 8px;
+}
+
 .intent-node {
   display: grid;
   gap: 4px;
@@ -4167,13 +4277,104 @@ kbd {
   font-size: 13px;
 }
 
+.intent-tag-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.intent-tag,
+.intent-parent-label {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  border-radius: 999px;
+  padding: 0 8px;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 800;
+  line-height: 20px;
+}
+
+.intent-tag {
+  border: 1px solid #dbe4f0;
+  background: #ffffff;
+  color: #52627c;
+}
+
+.intent-tag.level-domain {
+  border-color: rgba(49, 94, 251, 0.28);
+  background: #eef3ff;
+  color: #315efb;
+}
+
+.intent-tag.level-category {
+  border-color: rgba(0, 168, 126, 0.28);
+  background: #eafaf5;
+  color: #067a60;
+}
+
+.intent-tag.type-mcp {
+  border-color: rgba(213, 125, 17, 0.28);
+  background: #fff5e8;
+  color: #a65f09;
+}
+
+.intent-tag.type-system {
+  border-color: rgba(114, 74, 214, 0.28);
+  background: #f4f0ff;
+  color: #6841c6;
+}
+
+.intent-tag.type-kb {
+  border-color: rgba(91, 114, 143, 0.24);
+  background: #f8fafc;
+  color: #52627c;
+}
+
+.intent-tag.disabled {
+  border-color: #e2e8f0;
+  background: #f8fafc;
+  color: #94a3b8;
+}
+
+.intent-parent-label {
+  background: #f8fafc;
+  color: #64748b;
+}
+
+.intent-parent-label::before {
+  content: "父级 ";
+  color: #94a3b8;
+  font-weight: 700;
+}
+
 .root-node {
   border-color: rgba(109, 61, 245, 0.34);
   background: linear-gradient(135deg, #f6f2ff 0%, #ffffff 100%);
 }
 
+.intent-child-list {
+  display: grid;
+  gap: 8px;
+  margin-left: 24px;
+  padding-left: 18px;
+  border-left: 1px solid rgba(148, 163, 184, 0.42);
+}
+
 .child-node {
-  margin-left: 20px;
+  position: relative;
+  margin-left: 0;
+}
+
+.intent-child-list .child-node::before {
+  content: "";
+  position: absolute;
+  left: -19px;
+  top: 24px;
+  width: 12px;
+  border-top: 1px solid rgba(148, 163, 184, 0.42);
 }
 
 .inline-form {
@@ -4831,6 +5032,40 @@ button:disabled {
   background: #fff;
 }
 
+.readonly-node-panel {
+  max-height: 62vh;
+  overflow: auto;
+}
+
+.node-detail-list {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 8px 12px;
+  margin: 12px 0 0;
+  color: var(--admin-text);
+}
+
+.node-detail-list dt {
+  color: var(--admin-muted);
+  font-size: 12px;
+}
+
+.node-detail-list dd {
+  margin: 0;
+  min-width: 0;
+  word-break: break-word;
+}
+
+.node-detail-list pre {
+  margin: 0;
+  padding: 10px;
+  max-height: 180px;
+  overflow: auto;
+  border-radius: 8px;
+  background: #f8fafc;
+  font-size: 12px;
+}
+
 .modal-actions {
   justify-content: flex-end;
   padding-top: 4px;
@@ -5126,6 +5361,16 @@ button:disabled {
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
+}
+
+.intent-detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  color: var(--admin-muted);
+  font-size: 13px;
 }
 
 .tag-row {

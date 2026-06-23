@@ -131,6 +131,29 @@ class RetriFlowVectorStoreTests(unittest.TestCase):
         self.assertIn("collection_name = excluded.collection_name", insert_sql)
         self.assertIn("embedding_model = excluded.embedding_model", insert_sql)
 
+    def test_postgres_vector_search_joins_current_chunk_tables(self) -> None:
+        from infra.vector_store import PostgresRetriFlowVectorStore
+
+        store = PostgresRetriFlowVectorStore()
+        search_sql = store._build_search_sql()
+
+        self.assertIn("join knowledge_chunks", search_sql)
+        self.assertIn("join knowledge_documents", search_sql)
+        self.assertIn("kc.enabled = 1", search_sql)
+        self.assertIn("kd.title", search_sql)
+        self.assertIn("kc.content", search_sql)
+
+    def test_postgres_vector_store_can_find_missing_primary_chunks(self) -> None:
+        from infra.vector_store import PostgresRetriFlowVectorStore
+
+        store = PostgresRetriFlowVectorStore()
+        missing_sql = store._build_missing_records_sql(knowledge_base_ids=["kb-demo-1"])
+
+        self.assertIn("left join", missing_sql)
+        self.assertIn("where kc.enabled = 1", missing_sql)
+        self.assertIn("v.chunk_id is null", missing_sql)
+        self.assertIn("kc.knowledge_base_id in (%s)", missing_sql)
+
     def test_postgres_vector_store_derives_embedding_provider_from_model(self) -> None:
         from infra.vector_store import PostgresRetriFlowVectorStore
 

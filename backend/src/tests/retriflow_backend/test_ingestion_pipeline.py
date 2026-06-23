@@ -93,6 +93,39 @@ class RetriFlowIngestionPipelineTests(unittest.TestCase):
         self.assertTrue(all(document.metadata["strategy"] == "structure_aware" for document in result.chunk_documents))
         self.assertTrue(any("```python\nprint('kept together')\n```" in document.page_content for document in result.chunk_documents))
 
+    def test_structure_aware_strategy_splits_long_paragraphs_on_natural_boundaries(self) -> None:
+        from modules.ingestion import RetriFlowIngestionPipeline
+
+        pipeline = RetriFlowIngestionPipeline(
+            strategy="structure_aware",
+            chunk_config={"targetChars": 80, "overlapChars": 0, "maxChars": 120, "minChars": 40},
+        )
+        text = "# Long Section\n\n" + "A long paragraph keeps its semantic unit. " * 12
+
+        result = pipeline.run(text)
+
+        self.assertGreater(len(result.chunk_documents), 1)
+        self.assertTrue(all(len(document.page_content) <= 120 for document in result.chunk_documents))
+        self.assertFalse(any(len(document.page_content) == 120 for document in result.chunk_documents))
+        self.assertTrue(all(document.page_content.endswith((".", "# Long Section")) for document in result.chunk_documents))
+
+    def test_structure_aware_strategy_splits_chinese_sentences_without_spaces(self) -> None:
+        from modules.ingestion import RetriFlowIngestionPipeline
+
+        pipeline = RetriFlowIngestionPipeline(
+            strategy="structure_aware",
+            chunk_config={"targetChars": 1400, "overlapChars": 0, "maxChars": 1800, "minChars": 600},
+        )
+        sentence = "互联网保险平台承载投保、承保、核保、理赔、续保、退保、保全、资金结算、风控反欺诈、渠道分销、合作共保与再保等全流程业务，贯穿大量敏感个人信息、健康医疗信息、金融交易信息与业务规则。"
+        text = "# 互联网保险系统数据安全规范\n\n" + sentence * 36
+
+        result = pipeline.run(text)
+
+        lengths = [len(document.page_content) for document in result.chunk_documents]
+        self.assertGreater(len(lengths), 1)
+        self.assertTrue(all(length <= 1800 for length in lengths), lengths)
+        self.assertFalse(any(length == 1800 for length in lengths), lengths)
+
     def test_recursive_strategy_respects_custom_separator_order(self) -> None:
         from modules.ingestion import RetriFlowIngestionPipeline
 

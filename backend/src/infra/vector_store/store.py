@@ -160,6 +160,7 @@ class PostgresRetriFlowVectorStore:
 
                 register_vector(connection)
                 self._maybe_backfill(connection)
+                self._maybe_backfill_missing_records(connection, knowledge_base_ids=knowledge_base_ids)
                 with connection.cursor() as cursor:
                     cursor.execute(
                         self._build_search_sql(knowledge_base_ids=knowledge_base_ids),
@@ -279,6 +280,42 @@ class PostgresRetriFlowVectorStore:
             )
         connection.commit()
 
+    def _maybe_backfill_missing_records(
+        self,
+        connection,
+        knowledge_base_ids: list[str] | None = None,
+    ) -> None:
+        records = self._load_missing_primary_chunk_records(connection, knowledge_base_ids=knowledge_base_ids)
+        if not records:
+            return
+
+        vector_by_chunk_id = self._embed_records(records)
+        if not vector_by_chunk_id:
+            return
+
+        with connection.cursor() as cursor:
+            cursor.executemany(
+                self._build_insert_sql(),
+                [
+                    (
+                        record.chunk_id,
+                        record.knowledge_base_id,
+                        record.document_id,
+                        record.document_title,
+                        record.content,
+                        record.document_type,
+                        record.strategy,
+                        record.collection_name,
+                        record.embedding_model,
+                        json.dumps(record.metadata, ensure_ascii=False),
+                        numpy.array(vector_by_chunk_id[record.chunk_id], dtype=numpy.float32),
+                    )
+                    for record in records
+                    if record.chunk_id in vector_by_chunk_id
+                ],
+            )
+        connection.commit()
+
     def _build_insert_sql(self) -> str:
         table = self.settings.pgvector_table
         return f"""
@@ -316,21 +353,66 @@ class PostgresRetriFlowVectorStore:
         where_clause = ""
         if knowledge_base_ids:
             placeholders = ", ".join("%s" for _ in knowledge_base_ids)
-            where_clause = f"where knowledge_base_id in ({placeholders})"
+            where_clause = f"and kc.knowledge_base_id in ({placeholders})"
         return f"""
             select
-                chunk_id,
-                knowledge_base_id,
-                document_id,
-                document_title,
-                content,
-                1 - (embedding <=> %s) as score,
-                updated_at
-            from {table}
+                kc.id as chunk_id,
+                kc.knowledge_base_id,
+                kc.document_id,
+                kd.title as document_title,
+                kc.content,
+                1 - (v.embedding <=> %s) as score,
+                coalesce(kd.vector_indexed_at, kc.created_at) as source_updated_at
+            from {table} v
+            join knowledge_chunks kc on kc.id = v.chunk_id
+            join knowledge_documents kd on kd.id = kc.document_id
+            where kc.enabled = 1
             {where_clause}
-            order by embedding <=> %s
+            order by v.embedding <=> %s
             limit %s
         """
+
+    def _build_missing_records_sql(self, knowledge_base_ids: list[str] | None = None) -> str:
+        table = self.settings.pgvector_table
+        where_clause = ""
+        if knowledge_base_ids:
+            placeholders = ", ".join("%s" for _ in knowledge_base_ids)
+            where_clause = f"and kc.knowledge_base_id in ({placeholders})"
+        return f"""
+            select
+                kc.id as chunk_id,
+                kc.knowledge_base_id,
+                kc.document_id,
+                kd.title as document_title,
+                kc.content,
+                kc.document_type,
+                kc.strategy,
+                kb.collection_name,
+                kb.embedding_model,
+                kc.metadata_json
+            from knowledge_chunks kc
+            join knowledge_documents kd on kd.id = kc.document_id
+            join knowledge_bases kb on kb.id = kc.knowledge_base_id
+            left join {table} v on v.chunk_id = kc.id
+            where kc.enabled = 1
+            {where_clause}
+              and v.chunk_id is null
+            order by kc.id
+        """
+
+    def _load_missing_primary_chunk_records(
+        self,
+        connection,
+        knowledge_base_ids: list[str] | None = None,
+    ) -> list[VectorChunkRecord]:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                self._build_missing_records_sql(knowledge_base_ids=knowledge_base_ids),
+                tuple(knowledge_base_ids or []),
+            )
+            rows = cursor.fetchall()
+
+        return [self._row_to_vector_chunk_record(row) for row in rows]
 
     @staticmethod
     def _import_psycopg():
@@ -373,23 +455,27 @@ class PostgresRetriFlowVectorStore:
             ).fetchall()
 
         return [
-            VectorChunkRecord(
-                chunk_id=int(row["chunk_id"]),
-                knowledge_base_id=str(row["knowledge_base_id"]),
-                document_id=int(row["document_id"]),
-                document_title=str(row["document_title"]),
-                content=str(row["content"]),
-                document_type=str(row["document_type"]),
-                strategy=str(row["strategy"]),
-                collection_name=str(row["collection_name"] or row["knowledge_base_id"]).replace("-", ""),
-                embedding_model=str(row["embedding_model"] or "Qwen/Qwen3-Embedding-8B"),
-                metadata=PostgresRetriFlowVectorStore._parse_json_field(
-                    row["metadata_json"],
-                    default={},
-                ),
-            )
+            PostgresRetriFlowVectorStore._row_to_vector_chunk_record(row)
             for row in rows
         ]
+
+    @staticmethod
+    def _row_to_vector_chunk_record(row) -> VectorChunkRecord:
+        return VectorChunkRecord(
+            chunk_id=int(row["chunk_id"]),
+            knowledge_base_id=str(row["knowledge_base_id"]),
+            document_id=int(row["document_id"]),
+            document_title=str(row["document_title"]),
+            content=str(row["content"]),
+            document_type=str(row["document_type"]),
+            strategy=str(row["strategy"]),
+            collection_name=str(row["collection_name"] or row["knowledge_base_id"]).replace("-", ""),
+            embedding_model=str(row["embedding_model"] or "Qwen/Qwen3-Embedding-8B"),
+            metadata=PostgresRetriFlowVectorStore._parse_json_field(
+                row["metadata_json"],
+                default={},
+            ),
+        )
 
     def _embed_records(self, records: list[VectorChunkRecord]) -> dict[int, list[float]]:
         vectors: dict[int, list[float]] = {}

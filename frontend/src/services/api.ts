@@ -960,6 +960,24 @@ export function createIngestionPipeline(
   });
 }
 
+export function updateIngestionPipeline(
+  pipelineId: number,
+  payload: Partial<IngestionPipelineCreateRequest>
+): Promise<IngestionPipelineItem> {
+  return request<IngestionPipelineItem>({
+    url: `/api/v1/ingestion/pipelines/${pipelineId}`,
+    method: "PATCH",
+    data: payload as unknown as Record<string, unknown>
+  });
+}
+
+export function deleteIngestionPipeline(pipelineId: number): Promise<void> {
+  return request<void>({
+    url: `/api/v1/ingestion/pipelines/${pipelineId}`,
+    method: "DELETE"
+  });
+}
+
 export function fetchIngestionTaskNodes(taskId: number): Promise<IngestionTaskNodeListResponse> {
   return request<IngestionTaskNodeListResponse>({ url: `/api/v1/ingestion/tasks/${taskId}/nodes` });
 }

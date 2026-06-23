@@ -1,7 +1,8 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+import re
 
 from core.config import get_settings
 from modules.mcp.models import McpExecutionResult, McpRouteDecision, McpToolCallResult
@@ -28,8 +29,9 @@ class RetriFlowMcpService:
         self.parameter_extractor = RetriFlowMcpParameterExtractor()
         self.trace_service = RetriFlowTraceService()
 
-    def route_question(self, question: str) -> McpRouteDecision:
-        matched = self._match_tools(question)
+    def route_question(self, question: str, *, memory_messages: list[dict[str, str]] | None = None) -> McpRouteDecision:
+        route_question = self._resolve_route_question(question, memory_messages or [])
+        matched = self._match_tools(route_question)
         if not matched:
             return McpRouteDecision(
                 mode="none",
@@ -52,21 +54,29 @@ class RetriFlowMcpService:
                 reason="matched tools did not pass confidence threshold",
             )
 
+        prefix = "contextual follow-up; " if route_question != question else ""
         return McpRouteDecision(
             mode="mcp",
             tool_ids=[candidate.tool_id for candidate in selected],
             confidence=selected[0].confidence,
-            reason="; ".join(
+            reason=prefix
+            + "; ".join(
                 f"{candidate.tool_id}: {candidate.reason}" for candidate in selected
             ),
         )
 
-    def execute_question(self, question: str) -> McpExecutionResult:
-        route = self.route_question(question)
+    def execute_question(
+        self,
+        question: str,
+        *,
+        memory_messages: list[dict[str, str]] | None = None,
+    ) -> McpExecutionResult:
+        route_question = self._resolve_route_question(question, memory_messages or [])
+        route = self.route_question(question, memory_messages=memory_messages)
         if route.mode != "mcp" or not route.tool_ids:
             return McpExecutionResult(route=route, calls=[])
 
-        calls = self._execute_tools(question=question, tool_ids=route.tool_ids)
+        calls = self._execute_tools(question=route_question, tool_ids=route.tool_ids)
         return McpExecutionResult(route=route, calls=calls)
 
     @property
@@ -242,3 +252,37 @@ class RetriFlowMcpService:
         matched.sort(key=lambda item: (-item.confidence, item.tool_id))
         return matched
 
+    def _resolve_route_question(self, question: str, memory_messages: list[dict[str, str]]) -> str:
+        if self._match_tools(question):
+            return question
+        if not self._looks_like_tool_follow_up(question):
+            return question
+
+        previous_user_question = self._latest_user_question(memory_messages)
+        if not previous_user_question or not self._match_tools(previous_user_question):
+            return question
+
+        return f"{previous_user_question}\n追问：{question}"
+
+    @staticmethod
+    def _looks_like_tool_follow_up(question: str) -> bool:
+        normalized = question.strip()
+        if not normalized:
+            return False
+        return bool(
+            re.search(
+                r"^(未来|明天|后天|大后天|接下来|之后|那|这个|那个|再查|还有|呢|.*呢$)",
+                normalized,
+            )
+            or re.search(r"(未来|明天|后天|三天|几天|本周|本月|本季度).{0,8}(呢|怎么样|如何|情况)?$", normalized)
+        )
+
+    @staticmethod
+    def _latest_user_question(memory_messages: list[dict[str, str]]) -> str:
+        for message in reversed(memory_messages):
+            if str(message.get("role", "")).lower() != "user":
+                continue
+            content = str(message.get("content", "")).strip()
+            if content:
+                return content
+        return ""

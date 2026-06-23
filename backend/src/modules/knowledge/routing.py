@@ -306,7 +306,7 @@ class RetriFlowKnowledgeRouteService:
                     sort_order
                 from admin_intent_nodes
                 where enabled = 1
-                  and node_type = 'KB'
+                  and node_type in ('KB', 'MCP', 'SYSTEM')
                 order by parent_id, sort_order, created_at, name
                 """
             ).fetchall()

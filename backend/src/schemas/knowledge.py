@@ -287,6 +287,23 @@ class IngestionPipelineCreateRequest(BaseModel):
         return self
 
 
+class IngestionPipelineUpdateRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    nodes: list[IngestionPipelineNodeConfig] | None = None
+    owner: str | None = None
+
+    @model_validator(mode="after")
+    def validate_pipeline(self) -> "IngestionPipelineUpdateRequest":
+        if self.name is not None and not self.name.strip():
+            raise ValueError("pipeline name is required")
+        if self.nodes is not None:
+            node_ids = [node.node_id.strip() for node in self.nodes]
+            if len(node_ids) != len(set(node_ids)):
+                raise ValueError("node_id must be unique")
+        return self
+
+
 class IngestionPipelineListResponse(BaseModel):
     items: list[IngestionPipelineItem]
 

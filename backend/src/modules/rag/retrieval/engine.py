@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 
 from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
 from pydantic import ConfigDict, PrivateAttr
 
+from core.state import get_connection
 from core.config import get_settings
 from infra.vector_store import resolve_vector_store
 from modules.rag.rerank import RetriFlowRerankService
@@ -227,6 +229,11 @@ class RetriFlowRetrievalEngine:
                 )
                 for item in ranked
             ]
+            sources = self._prepend_assessment_count_context(
+                question=question,
+                sources=sources,
+                knowledge_base_ids=knowledge_base_ids,
+            )
             span.finish_success(output_summary=f"sources={len(sources)}")
             return RetrievalResult(
                 channels=channel_names,
@@ -234,3 +241,144 @@ class RetriFlowRetrievalEngine:
                 stage_counts=stage_counts,
                 stage_metrics=retriever._last_stage_metrics,
             )
+
+    @classmethod
+    def _prepend_assessment_count_context(
+        cls,
+        *,
+        question: str,
+        sources: list[ChatSourceItem],
+        knowledge_base_ids: list[str] | None,
+    ) -> list[ChatSourceItem]:
+        if not cls._looks_like_assessment_count_question(question):
+            return sources
+
+        document_ids = []
+        for source in sources:
+            if source.document_id not in document_ids:
+                document_ids.append(source.document_id)
+
+        documents = cls._load_documents_for_count_context(
+            document_ids=document_ids,
+            knowledge_base_ids=knowledge_base_ids,
+            question=question,
+        )
+        if document_ids:
+            fallback_documents = cls._load_documents_for_count_context(
+                document_ids=[],
+                knowledge_base_ids=knowledge_base_ids,
+                question=question,
+            )
+            seen_ids = {int(document["id"]) for document in documents}
+            documents = [
+                *documents,
+                *(document for document in fallback_documents if int(document["id"]) not in seen_ids),
+            ]
+        for document in documents:
+            context = cls._build_assessment_count_context(str(document["content"] or ""))
+            if not context:
+                continue
+            synthetic_source = ChatSourceItem(
+                chunk_id=0 - int(document["id"]),
+                knowledge_base_id=str(document["knowledge_base_id"]),
+                document_id=int(document["id"]),
+                document_title=str(document["title"]),
+                content=context,
+                score=1.0,
+                source_link=(
+                    f"/api/v1/knowledge-bases/{document['knowledge_base_id']}"
+                    f"/documents/{document['id']}/preview"
+                ),
+                source_updated_at=str(document.get("created_at") or ""),
+            )
+            return [synthetic_source, *sources]
+
+        return sources
+
+    @staticmethod
+    def _looks_like_assessment_count_question(question: str) -> bool:
+        normalized = re.sub(r"\s+", "", question)
+        if "道" in normalized and any(token in normalized for token in ("多少", "几", "有几", "有多少", "共", "总共")):
+            return True
+        if any(token in normalized for token in ("多少道", "几道", "有多少道", "有几道", "共几道", "总共多少道")):
+            return True
+        if not any(token in normalized for token in ("多少", "有几", "有多少", "共几", "总共")):
+            return False
+        return any(token in normalized for token in ("题", "小题", "复习题", "试题", "练习题"))
+
+    @staticmethod
+    def _load_documents_for_count_context(
+        *,
+        document_ids: list[int],
+        knowledge_base_ids: list[str] | None,
+        question: str,
+    ) -> list:
+        with get_connection() as connection:
+            if document_ids:
+                placeholders = ",".join("?" for _ in document_ids)
+                return connection.execute(
+                    f"""
+                    select id, knowledge_base_id, title, content, created_at
+                    from knowledge_documents
+                    where id in ({placeholders})
+                    order by id
+                    """,
+                    tuple(document_ids),
+                ).fetchall()
+
+            params: list[str] = []
+            where_clauses: list[str] = []
+            if knowledge_base_ids:
+                placeholders = ",".join("?" for _ in knowledge_base_ids)
+                where_clauses.append(f"knowledge_base_id in ({placeholders})")
+                params.extend(knowledge_base_ids)
+
+            query_tokens = [token for token in ("复习", "软件工程", "题", "试题", "练习") if token in question]
+            if query_tokens:
+                token_clauses = []
+                for token in query_tokens:
+                    token_clauses.append("(title like ? or content like ?)")
+                    params.extend([f"%{token}%", f"%{token}%"])
+                where_clauses.append("(" + " or ".join(token_clauses) + ")")
+
+            where_sql = f"where {' and '.join(where_clauses)}" if where_clauses else ""
+            return connection.execute(
+                f"""
+                select id, knowledge_base_id, title, content, created_at
+                from knowledge_documents
+                {where_sql}
+                order by id desc
+                limit 5
+                """,
+                tuple(params),
+            ).fetchall()
+
+    @staticmethod
+    def _build_assessment_count_context(content: str) -> str:
+        rows: list[tuple[str, int, str]] = []
+        normalized_content = re.sub(r"(?<!^)([一二三四五六七八九十]+、)", r"\n\1", content)
+        for raw_line in normalized_content.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            label_match = re.match(r"^[一二三四五六七八九十]+、\s*([^（(]+)", line)
+            if not label_match:
+                continue
+            label = label_match.group(1).strip()
+            detail_match = re.search(r"本题共\s*(\d+)\s*小题", line)
+            if detail_match:
+                rows.append((label, int(detail_match.group(1)), line))
+                continue
+            sub_question_numbers = {int(item) for item in re.findall(r"第\s*(\d+)\s*小题", line)}
+            if sub_question_numbers:
+                rows.append((label, len(sub_question_numbers), line))
+
+        if not rows:
+            return ""
+
+        total = sum(count for _, count, _ in rows)
+        lines = ["题目统计线索："]
+        for label, count, original in rows:
+            lines.append(f"- {label}：{count}小题。依据：{original}")
+        lines.append(f"合计：{total}小题。")
+        return "\n".join(lines)

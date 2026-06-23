@@ -272,6 +272,44 @@ class RetriFlowChatApiTests(unittest.TestCase):
             "/api/v1/knowledge-bases/kb-demo-1/documents/2/chunks",
         )
 
+    def test_assessment_count_question_uses_statistical_source(self) -> None:
+        self._rebuild_app_with_langgraph()
+
+        self.client.post(
+            "/api/v1/knowledge-bases/kb-demo-1/documents",
+            json={
+                "title": "软件工程复习材料",
+                "source_type": "manual",
+                "content": (
+                    "第一部分 复习提纲\n"
+                    "一、名词解释(本题共4小题,每小题5分,共20分)\n"
+                    "二、单选题(本题共20小题,每小题1分,共20分)\n"
+                    "三、问答题(本题共2小题,每题10分,共20分)\n"
+                    "四、应用题(第1小题20分,第2小题10分,第3小题10分,共40分)\n"
+                    "第二部分 选择题练习\n"
+                    "1、软件工程管理的具体内容不包括对_______管理。\n"
+                    "14、软件过程成熟度模型CMMI认证最高级别是( )。"
+                ),
+            },
+        )
+
+        with patch("modules.rag.workflow_adapter.RetriFlowLLMService.generate_answer") as generate_answer:
+            response = self.client.post(
+                "/api/v1/chat/messages",
+                json={"session_id": "session-demo-1", "message": "软件工程复习题有多少道"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn("29 道", payload["assistant_message"])
+        self.assertIn("名词解释4小题", payload["assistant_message"])
+        self.assertIn("单选题20小题", payload["assistant_message"])
+        self.assertIn("问答题2小题", payload["assistant_message"])
+        self.assertIn("应用题3小题", payload["assistant_message"])
+        self.assertLess(payload["sources"][0]["chunk_id"], 0)
+        self.assertIn("题目统计线索", payload["sources"][0]["content"])
+        generate_answer.assert_not_called()
+
     def test_stream_chat_returns_sse_events_with_final_answer(self) -> None:
         self._rebuild_app_with_langgraph()
         session_response = self.client.post(
@@ -993,10 +1031,14 @@ class RetriFlowChatApiTests(unittest.TestCase):
         self.assertEqual(payload["assistant_message"], RetriFlowAnswerPostprocessor.DEFAULT_NO_ANSWER)
         self.assertEqual(payload["workflow"]["retrieval_count"], 0)
         self.assertEqual(payload["workflow"]["mcp_tool_count"], 0)
-    def test_chat_message_skips_query_rewrite_for_tool_call_intent(self) -> None:
+    def test_chat_message_rewrites_before_tool_call_intent(self) -> None:
         self._rebuild_app_with_langgraph()
 
         with (
+            patch(
+                "modules.rag.workflow_adapter.RetriFlowQueryRewriteService.rewrite",
+                return_value=["What is the weather today?"],
+            ),
             patch(
                 "modules.rag.workflow_adapter.RetriFlowIntentClassifier.classify",
                 return_value={
@@ -1007,10 +1049,6 @@ class RetriFlowChatApiTests(unittest.TestCase):
                     "clarification_question": "",
                 },
             ),
-            patch(
-                "modules.rag.workflow_adapter.RetriFlowQueryRewriteService.rewrite",
-                side_effect=AssertionError("rewrite should not be called"),
-            ),
         ):
             response = self.client.post(
                 "/api/v1/chat/messages",
@@ -1020,7 +1058,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertEqual(payload["workflow"]["intent"], "tool_call")
-        self.assertEqual(payload["workflow"]["rewrite_query_count"], 0)
+        self.assertEqual(payload["workflow"]["rewritten_queries"], ["What is the weather today?"])
         self.assertEqual(payload["workflow"]["route_mode"], "mcp_only")
 
     def test_chat_message_supports_chitchat_intent_without_retrieval(self) -> None:
@@ -1038,12 +1076,12 @@ class RetriFlowChatApiTests(unittest.TestCase):
                 },
             ),
             patch(
-                "modules.rag.workflow_adapter.RetriFlowLLMService.generate_answer",
-                return_value="Hello, how can I help you today?",
+                "modules.rag.workflow_adapter.RetriFlowQueryRewriteService.rewrite",
+                return_value=["hello"],
             ),
             patch(
-                "modules.rag.workflow_adapter.RetriFlowQueryRewriteService.rewrite",
-                side_effect=AssertionError("rewrite should not be called"),
+                "modules.rag.workflow_adapter.RetriFlowLLMService.generate_answer",
+                return_value="Hello, how can I help you today?",
             ),
         ):
             response = self.client.post(
@@ -1055,7 +1093,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["workflow"]["intent"], "chitchat")
         self.assertEqual(payload["workflow"]["retrieval_count"], 0)
-        self.assertEqual(payload["workflow"]["rewrite_query_count"], 0)
+        self.assertEqual(payload["workflow"]["rewrite_query_count"], 1)
         self.assertEqual(payload["workflow"]["route_mode"], "chitchat")
 
     def test_chat_message_returns_clarification_question_for_clarification_intent(self) -> None:
@@ -1072,10 +1110,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
                     "clarification_question": "你说的“这个”具体指哪个产品、订单或文档？",
                 },
             ),
-            patch(
-                "modules.rag.workflow_adapter.RetriFlowQueryRewriteService.rewrite",
-                side_effect=AssertionError("rewrite should not be called"),
-            ),
+            patch("modules.rag.workflow_adapter.RetriFlowQueryRewriteService.rewrite", return_value=["What does it mean?"]),
         ):
             response = self.client.post(
                 "/api/v1/chat/messages",
@@ -1087,7 +1122,48 @@ class RetriFlowChatApiTests(unittest.TestCase):
         self.assertEqual(payload["workflow"]["intent"], "clarification")
         self.assertTrue(payload["assistant_message"])
         self.assertEqual(payload["workflow"]["retrieval_count"], 0)
+        self.assertEqual(payload["workflow"]["rewrite_query_count"], 1)
         self.assertEqual(payload["workflow"]["route_mode"], "clarification")
+
+    def test_chat_message_overrides_llm_clarification_for_retrievable_question(self) -> None:
+        self._rebuild_app_with_langgraph()
+
+        self.client.post(
+            "/api/v1/knowledge-bases/kb-demo-1/documents",
+            json={
+                "title": "软件工程复习资料",
+                "source_type": "manual",
+                "content": "软件工程复习题包括选择题、填空题和简答题。复习题总数为 26 道。",
+            },
+        )
+
+        with (
+            patch(
+                "modules.rag.workflow_adapter.RetriFlowIntentClassifier.classify",
+                return_value={
+                    "intent": "clarification",
+                    "confidence": 0.9,
+                    "reason": "question is short",
+                    "source": "llm",
+                    "clarification_question": "请问您指的是哪个课程、学校或考试类型的软件工程复习题？",
+                },
+            ),
+            patch(
+                "modules.rag.workflow_adapter.RetriFlowLLMService.generate_answer",
+                return_value="软件工程复习题共有 26 道。[1]",
+            ),
+        ):
+            response = self.client.post(
+                "/api/v1/chat/messages",
+                json={"session_id": "session-demo-1", "message": "软件工程复习题有多少道"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["workflow"]["intent"], "knowledge_retrieval")
+        self.assertIn("overrode non-referential clarification", payload["workflow"]["intent_reason"])
+        self.assertGreaterEqual(payload["workflow"]["retrieval_count"], 1)
+        self.assertIn("26", payload["assistant_message"])
 
     def test_chat_message_falls_back_to_knowledge_retrieval_when_intent_classification_fails(self) -> None:
         self._rebuild_app_with_langgraph()

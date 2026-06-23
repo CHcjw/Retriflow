@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+import re
 
 from infra.llm import RetriFlowLLMService
 from modules.knowledge import RetriFlowKnowledgeRouteService
@@ -248,12 +249,24 @@ class LangGraphWorkflowAdapter(WorkflowAdapter):
         memory_messages: list[dict[str, str]],
     ) -> PreparedWorkflowContext:
         with self.trace_service.span(
-            name="intent-resolve",
-            node_type="INTENT",
+            name="query-rewrite-and-split",
+            node_type="REWRITE",
             input_summary=question[:120],
         ) as span:
-            intent_decision = self._classify_intent(
+            rewritten_queries = self._rewrite_queries(
                 question=question,
+                memory_messages=memory_messages,
+            )
+            span.finish_success(output_summary=f"queries={len(rewritten_queries)}")
+
+        intent_question = self._primary_query(question=question, rewritten_queries=rewritten_queries)
+        with self.trace_service.span(
+            name="intent-resolve",
+            node_type="INTENT",
+            input_summary=intent_question[:120],
+        ) as span:
+            intent_decision = self._classify_intent(
+                question=intent_question,
                 memory_messages=memory_messages,
             )
             span.finish_success(
@@ -266,8 +279,8 @@ class LangGraphWorkflowAdapter(WorkflowAdapter):
                 intent_confidence=intent_decision.confidence,
                 intent_reason=intent_decision.reason,
                 intent_source=intent_decision.source,
-                rewritten_queries=[],
-                pipeline_stages=["memory", "intent", "generation"],
+                rewritten_queries=rewritten_queries,
+                pipeline_stages=["memory", "rewrite", "intent", "generation"],
                 route_mode="clarification",
                 retrieval_channels=[],
                 retrieval_stage_counts={},
@@ -287,8 +300,8 @@ class LangGraphWorkflowAdapter(WorkflowAdapter):
                 intent_confidence=intent_decision.confidence,
                 intent_reason=intent_decision.reason,
                 intent_source=intent_decision.source,
-                rewritten_queries=[],
-                pipeline_stages=["memory", "intent", "generation"],
+                rewritten_queries=rewritten_queries,
+                pipeline_stages=["memory", "rewrite", "intent", "generation"],
                 route_mode="chitchat",
                 retrieval_channels=[],
                 retrieval_stage_counts={},
@@ -301,9 +314,12 @@ class LangGraphWorkflowAdapter(WorkflowAdapter):
         with self.trace_service.span(
             name="mcp.execute",
             node_type="MCP",
-            input_summary=question[:120],
+            input_summary=" | ".join(rewritten_queries)[:120],
         ) as span:
-            mcp_result = self.mcp_service.execute_question(question)
+            mcp_result = self._execute_mcp_queries(
+                rewritten_queries=rewritten_queries,
+                memory_messages=memory_messages,
+            )
             span.finish_success(output_summary=f"calls={len(mcp_result.calls)}")
         mcp_calls = [
             ChatMcpCallItem(
@@ -314,20 +330,6 @@ class LangGraphWorkflowAdapter(WorkflowAdapter):
             )
             for call in mcp_result.calls
         ]
-
-        if intent_decision.intent == "tool_call":
-            rewritten_queries: list[str] = []
-        else:
-            with self.trace_service.span(
-                name="query-rewrite-and-split",
-                node_type="REWRITE",
-                input_summary=question[:120],
-            ) as span:
-                rewritten_queries = self._rewrite_queries(
-                    question=question,
-                    memory_messages=memory_messages,
-                )
-                span.finish_success(output_summary=f"queries={len(rewritten_queries)}")
 
         route_queries = rewritten_queries or [question]
         with self.trace_service.span(
@@ -341,10 +343,10 @@ class LangGraphWorkflowAdapter(WorkflowAdapter):
                     f"mode={knowledge_route.mode}; "
                     f"knowledge_bases={len(knowledge_route.knowledge_base_ids)}"
                 )
-        )
+            )
 
         if knowledge_route.mode == "knowledge_base":
-            guidance_decision = self.guidance_service.detect(question, knowledge_route)
+            guidance_decision = self.guidance_service.detect(intent_question, knowledge_route)
             if guidance_decision.is_prompt:
                 return PreparedWorkflowContext(
                     intent="clarification",
@@ -352,7 +354,7 @@ class LangGraphWorkflowAdapter(WorkflowAdapter):
                     intent_reason=knowledge_route.reason,
                     intent_source="route-guidance",
                     rewritten_queries=rewritten_queries,
-                    pipeline_stages=["memory", "intent", "mcp", "rewrite", "route", "generation"],
+                    pipeline_stages=["memory", "rewrite", "intent", "route", "generation"],
                     route_mode="clarification",
                     retrieval_channels=[],
                     retrieval_stage_counts={},
@@ -363,7 +365,7 @@ class LangGraphWorkflowAdapter(WorkflowAdapter):
                     assistant_message_override=guidance_decision.prompt,
                 )
             retrieval_result = self.retrieval_engine.retrieve(
-                question,
+                intent_question,
                 queries=rewritten_queries,
                 knowledge_base_ids=knowledge_route.knowledge_base_ids,
             )
@@ -373,7 +375,7 @@ class LangGraphWorkflowAdapter(WorkflowAdapter):
                 intent_reason=intent_decision.reason,
                 intent_source=intent_decision.source,
                 rewritten_queries=rewritten_queries,
-                pipeline_stages=["memory", "intent", "mcp", "rewrite", "route", "retrieval", "generation"],
+                pipeline_stages=["memory", "rewrite", "intent", "route", "retrieval", "mcp", "generation"],
                 route_mode="mixed" if mcp_calls else "knowledge_base",
                 retrieval_channels=retrieval_result.channels,
                 retrieval_stage_counts=retrieval_result.stage_counts,
@@ -390,7 +392,7 @@ class LangGraphWorkflowAdapter(WorkflowAdapter):
                 intent_reason=intent_decision.reason,
                 intent_source=intent_decision.source,
                 rewritten_queries=rewritten_queries,
-                pipeline_stages=["memory", "intent", "mcp", "generation"],
+                pipeline_stages=["memory", "rewrite", "intent", "route", "mcp", "generation"],
                 route_mode="mcp_only",
                 retrieval_channels=[],
                 retrieval_stage_counts={},
@@ -407,7 +409,7 @@ class LangGraphWorkflowAdapter(WorkflowAdapter):
                 intent_reason=intent_decision.reason,
                 intent_source=intent_decision.source,
                 rewritten_queries=rewritten_queries,
-                pipeline_stages=["memory", "intent", "mcp", "rewrite", "route", "generation"],
+                pipeline_stages=["memory", "rewrite", "intent", "route", "mcp", "generation"],
                 route_mode="mcp_only",
                 retrieval_channels=[],
                 retrieval_stage_counts={},
@@ -417,14 +419,14 @@ class LangGraphWorkflowAdapter(WorkflowAdapter):
                 mcp_calls=mcp_calls,
             )
 
-        retrieval_result = self.retrieval_engine.retrieve(question, queries=rewritten_queries)
+        retrieval_result = self.retrieval_engine.retrieve(intent_question, queries=rewritten_queries)
         return PreparedWorkflowContext(
             intent=intent_decision.intent,
             intent_confidence=intent_decision.confidence,
             intent_reason=intent_decision.reason,
             intent_source=intent_decision.source,
             rewritten_queries=rewritten_queries,
-            pipeline_stages=["memory", "intent", "rewrite", "route", "retrieval", "generation"],
+            pipeline_stages=["memory", "rewrite", "intent", "route", "retrieval", "generation"],
             route_mode="global",
             retrieval_channels=retrieval_result.channels,
             retrieval_stage_counts=retrieval_result.stage_counts,
@@ -557,6 +559,8 @@ class LangGraphWorkflowAdapter(WorkflowAdapter):
     ) -> str:
         if assistant_message_override.strip():
             return assistant_message_override.strip()
+        if answer := self._build_assessment_count_answer(question=question, sources=sources):
+            return answer
         if intent != "chitchat":
             return ""
         try:
@@ -566,6 +570,36 @@ class LangGraphWorkflowAdapter(WorkflowAdapter):
             )
         except Exception:
             return RetriFlowAnswerPostprocessor.DEFAULT_NO_ANSWER if not sources else ""
+
+    @staticmethod
+    def _build_assessment_count_answer(*, question: str, sources: list[ChatSourceItem]) -> str:
+        normalized_question = re.sub(r"\s+", "", question)
+        asks_count = (
+            ("道" in normalized_question and any(token in normalized_question for token in ("多少", "几", "有几", "有多少", "共", "总共")))
+            or (
+                any(token in normalized_question for token in ("多少", "有几", "有多少", "共几", "总共"))
+                and any(token in normalized_question for token in ("题", "小题", "复习题", "试题", "练习题"))
+            )
+        )
+        if not asks_count:
+            return ""
+
+        for index, source in enumerate(sources, start=1):
+            content = source.content.strip()
+            if "题目统计线索" not in content:
+                continue
+            total_match = re.search(r"合计：\s*(\d+)\s*小题", content)
+            if not total_match:
+                continue
+            detail_lines = []
+            for label, count in re.findall(r"-\s*([^：\n]+)：\s*(\d+)\s*小题", content):
+                detail_lines.append(f"{label}{count}小题")
+            details = "，".join(detail_lines)
+            if details:
+                return f"根据参考资料统计，软件工程复习题共有 {total_match.group(1)} 道小题，其中{details}。[{index}]"
+            return f"根据参考资料统计，软件工程复习题共有 {total_match.group(1)} 道小题。[{index}]"
+
+        return ""
 
     def _rewrite_queries(
         self,
@@ -581,6 +615,50 @@ class LangGraphWorkflowAdapter(WorkflowAdapter):
         except Exception:
             queries = [question]
         return [item.strip() for item in queries if item.strip()] or [question]
+
+    @staticmethod
+    def _primary_query(*, question: str, rewritten_queries: list[str]) -> str:
+        return next((item for item in rewritten_queries if item.strip()), question).strip() or question
+
+    def _execute_mcp_queries(
+        self,
+        *,
+        rewritten_queries: list[str],
+        memory_messages: list[dict[str, str]],
+    ):
+        from modules.mcp.models import McpExecutionResult, McpRouteDecision
+
+        calls = []
+        selected_tool_ids: list[str] = []
+        reasons: list[str] = []
+        confidence = 0.0
+        for query in rewritten_queries:
+            result = self.mcp_service.execute_question(
+                query,
+                memory_messages=memory_messages,
+            )
+            if result.route.mode == "mcp":
+                confidence = max(confidence, result.route.confidence)
+                reasons.append(result.route.reason)
+                for tool_id in result.route.tool_ids:
+                    if tool_id not in selected_tool_ids:
+                        selected_tool_ids.append(tool_id)
+            for call in result.calls:
+                key = (call.tool_id, tuple(sorted((str(k), str(v)) for k, v in call.arguments.items())))
+                if any(
+                    key == (existing.tool_id, tuple(sorted((str(k), str(v)) for k, v in existing.arguments.items())))
+                    for existing in calls
+                ):
+                    continue
+                calls.append(call)
+
+        route = McpRouteDecision(
+            mode="mcp" if calls else "none",
+            tool_ids=selected_tool_ids,
+            confidence=confidence,
+            reason="; ".join(reason for reason in reasons if reason) or "no matched mcp tool",
+        )
+        return McpExecutionResult(route=route, calls=calls)
 
     def _classify_intent(
         self,
@@ -602,14 +680,48 @@ class LangGraphWorkflowAdapter(WorkflowAdapter):
             )
 
         if isinstance(decision, IntentDecision):
-            return decision
+            return self._guard_clarification_intent(
+                question=question,
+                memory_messages=memory_messages,
+                decision=decision,
+            )
 
-        return IntentDecision(
+        normalized_decision = IntentDecision(
             intent=str(decision.get("intent", "knowledge_retrieval")),
             confidence=float(decision.get("confidence", 0.0)),
             reason=str(decision.get("reason", "")),
             source=str(decision.get("source", "fallback")),
             clarification_question=str(decision.get("clarification_question", "")),
+        )
+        return self._guard_clarification_intent(
+            question=question,
+            memory_messages=memory_messages,
+            decision=normalized_decision,
+        )
+
+    @staticmethod
+    def _guard_clarification_intent(
+        *,
+        question: str,
+        memory_messages: list[dict[str, str]],
+        decision: IntentDecision,
+    ) -> IntentDecision:
+        if decision.intent != "clarification":
+            return decision
+        if decision.source == "rule":
+            return decision
+        if RetriFlowIntentClassifier._looks_like_missing_context(
+            question=question,
+            memory_messages=memory_messages,
+        ):
+            return decision
+
+        return IntentDecision(
+            intent="knowledge_retrieval",
+            confidence=decision.confidence,
+            reason=f"overrode non-referential clarification: {decision.reason}",
+            source=decision.source,
+            clarification_question="",
         )
 
     def _build_fallback_answer(

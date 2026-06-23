@@ -57,9 +57,16 @@ class WeatherMcpToolExecutor(RetriFlowMcpToolExecutor):
         city = str(arguments.get("city", "Beijing"))
         query_type = str(arguments.get("query_type", "current"))
         if query_type == "forecast":
-            content = f"{city} forecast: partly cloudy to clear, temperature around 22 to 30 C."
+            content = (
+                f"{city}未来三天天气预报：\n"
+                "| 日期 | 天气 | 温度 | 湿度 | 风向 |\n"
+                "| --- | --- | --- | --- | --- |\n"
+                "| 今天 | 晴 | 2°C~14°C | 44% | 东南风2-3级 |\n"
+                "| 明天 | 晴 | 3°C~10°C | 41% | 东风5-6级 |\n"
+                "| 后天 | 阵雨 | 4°C~14°C | 81% | 东南风4-5级 |"
+            )
         else:
-            content = f"{city} current weather: clear, 26 C, suitable for travel."
+            content = f"{city}今天天气晴，当前约12°C，气温2°C~14°C，湿度44%，东南风2-3级。"
         return McpToolCallResult(
             tool_id=self.get_definition().tool_id,
             arguments={"city": city, "query_type": query_type},

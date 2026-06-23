@@ -160,6 +160,27 @@ class RetriFlowSessionApiTests(unittest.TestCase):
         self.assertEqual(session_row["c"], 0)
         self.assertEqual(message_row["c"], 0)
 
+    def test_first_chat_message_renames_new_session_to_question(self) -> None:
+        created = self.client.post(
+            "/api/v1/sessions",
+            json={"title": "RetriFlow 新会话 1"},
+            headers={"Authorization": f"Bearer {self.token}"},
+        ).json()
+
+        chat_response = self.client.post(
+            "/api/v1/chat/messages",
+            json={"session_id": created["id"], "message": "北京今天天气怎么样？"},
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(chat_response.status_code, 200)
+
+        listed = self.client.get(
+            "/api/v1/sessions",
+            headers={"Authorization": f"Bearer {self.token}"},
+        ).json()
+        renamed = next(item for item in listed["items"] if item["id"] == created["id"])
+        self.assertEqual(renamed["title"], "北京今天天气怎么样？")
+
     def test_update_session_title_renames_owned_session(self) -> None:
         created = self.client.post(
             "/api/v1/sessions",

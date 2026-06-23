@@ -120,6 +120,15 @@ class RetriFlowChatService:
         assistant_duration_ms: int = 0,
     ) -> int:
         with get_connection() as connection:
+            session_row = connection.execute(
+                """
+                select title, message_count
+                from sessions
+                where id = ?
+                """,
+                (session_id,),
+            ).fetchone()
+            previous_message_count = int(session_row["message_count"] or 0) if session_row else 0
             connection.execute(
                 """
                 insert into conversation_messages (session_id, role, content, duration_ms)
@@ -139,13 +148,28 @@ class RetriFlowChatService:
             connection.execute(
                 """
                 update sessions
-                set message_count = message_count + 2
+                set title = case
+                        when ? = 0 then ?
+                        else title
+                    end,
+                    message_count = message_count + 2
                 where id = ?
                 """,
-                (session_id,),
+                (
+                    previous_message_count,
+                    RetriFlowChatService._build_session_title_from_question(user_message),
+                    session_id,
+                ),
             )
             connection.commit()
         return assistant_message_id
+
+    @staticmethod
+    def _build_session_title_from_question(question: str) -> str:
+        normalized = " ".join(question.strip().split())
+        if len(normalized) <= 30:
+            return normalized or "新对话"
+        return normalized[:30]
 
     @staticmethod
     def _elapsed_ms(started_at: float) -> int:

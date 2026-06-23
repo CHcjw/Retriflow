@@ -77,7 +77,7 @@ class RetriFlowMcpParameterExtractor:
     ) -> dict[str, object]:
         if tool_definition.tool_id == "weather_query":
             city = self._extract_city(question)
-            query_type = "forecast" if re.search(r"明天|后天|未来|预报", question) else "current"
+            query_type = "forecast" if re.search(r"明天|后天|未来|预报|三天|几天|近几日", question) else "current"
             return {"city": city, "query_type": query_type}
 
         if tool_definition.tool_id == "sales_query":

@@ -21,13 +21,17 @@ class RetriFlowIntentClassifier:
     TOOL_KEYWORDS = (
         "天气",
         "气温",
+        "温度",
+        "预报",
         "销售",
         "销量",
+        "销售额",
         "业绩",
         "工单",
         "机票",
         "火车票",
         "weather",
+        "forecast",
         "sales",
         "ticket",
     )

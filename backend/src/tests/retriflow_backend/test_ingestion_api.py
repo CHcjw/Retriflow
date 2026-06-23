@@ -123,8 +123,8 @@ class RetriFlowIngestionApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         names = [item["name"] for item in payload["items"]]
-        self.assertIn("retriflow-ingestion-pipeline", names)
-        default_pipeline = next(item for item in payload["items"] if item["name"] == "retriflow-ingestion-pipeline")
+        self.assertIn("pdf-ingestion-pipeline", names)
+        default_pipeline = next(item for item in payload["items"] if item["name"] == "pdf-ingestion-pipeline")
         self.assertGreaterEqual(default_pipeline["node_count"], 5)
         self.assertTrue(default_pipeline["nodes"])
 
@@ -177,6 +177,43 @@ class RetriFlowIngestionApiTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 422)
+
+    def test_admin_can_update_and_delete_ingestion_pipeline(self) -> None:
+        create_response = self.client.post(
+            "/api/v1/ingestion/pipelines",
+            json={
+                "name": "editable-pipeline",
+                "description": "Editable pipeline",
+                "owner": "admin",
+                "nodes": [
+                    {"node_id": "parse", "node_type": "parser", "next_node_id": "", "condition": "", "config": {}},
+                ],
+            },
+        )
+        self.assertEqual(create_response.status_code, 201)
+        pipeline_id = create_response.json()["id"]
+
+        update_response = self.client.patch(
+            f"/api/v1/ingestion/pipelines/{pipeline_id}",
+            json={
+                "name": "updated-pipeline",
+                "description": "Updated pipeline",
+                "nodes": [
+                    {"node_id": "parse", "node_type": "parser", "next_node_id": "index", "condition": "", "config": {}},
+                    {"node_id": "index", "node_type": "indexer", "next_node_id": "", "condition": "", "config": {"store": "pgvector"}},
+                ],
+            },
+        )
+        self.assertEqual(update_response.status_code, 200)
+        self.assertEqual(update_response.json()["name"], "updated-pipeline")
+        self.assertEqual(update_response.json()["node_count"], 2)
+
+        delete_response = self.client.delete(f"/api/v1/ingestion/pipelines/{pipeline_id}")
+        self.assertEqual(delete_response.status_code, 204)
+
+        list_response = self.client.get("/api/v1/ingestion/pipelines")
+        self.assertEqual(list_response.status_code, 200)
+        self.assertNotIn("updated-pipeline", [item["name"] for item in list_response.json()["items"]])
 
     def test_upload_ingestion_task_includes_parse_and_extract_nodes(self) -> None:
         from infra.document_parser import ParsedUploadDocumentResult

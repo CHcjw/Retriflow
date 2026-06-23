@@ -15,6 +15,7 @@ from schemas.knowledge import (
     IngestionPipelineItem,
     IngestionPipelineListResponse,
     IngestionPipelineNodeConfig,
+    IngestionPipelineUpdateRequest,
     IngestionTaskItem,
     IngestionTaskListResponse,
     IngestionTaskNodeItem,
@@ -191,11 +192,24 @@ class RetriFlowIngestionPipeline:
             segments = [document.page_content for document in normalized_source_documents]
         else:
             segments = self._segment_text(normalized_text)
-            normalized_source_documents = self._build_source_documents(
-                segments=segments,
-                document_type=resolved_document_type,
-                metadata=metadata or {},
-            )
+            if resolved_strategy == "structure_aware":
+                normalized_source_documents = [
+                    Document(
+                        page_content=normalized_text,
+                        metadata={
+                            **(metadata or {}),
+                            "document_type": resolved_document_type,
+                            "segment_index": 0,
+                            "segment_count": len(segments) or 1,
+                        },
+                    )
+                ]
+            else:
+                normalized_source_documents = self._build_source_documents(
+                    segments=segments,
+                    document_type=resolved_document_type,
+                    metadata=metadata or {},
+                )
 
         chunk_documents = self._chunk_documents(
             source_documents=normalized_source_documents,
@@ -778,17 +792,20 @@ class RetriFlowIngestionPipeline:
         chunk_index = 0
 
         for source_document in source_documents:
-            blocks = self._markdown_blocks(source_document.page_content)
+            blocks = self._expand_long_structure_blocks(
+                self._markdown_blocks(source_document.page_content),
+                target_chars=target_chars,
+                max_chars=max_chars,
+            )
             current_blocks: list[str] = []
             current_length = 0
             block_start = 0
 
             for block_index, block in enumerate(blocks):
-                block_length = len(block)
+                candidate_length = len("\n\n".join([*current_blocks, block])) if current_blocks else len(block)
                 should_flush = (
                     current_blocks
-                    and current_length >= min_chars
-                    and (current_length + block_length > target_chars or current_length + block_length > max_chars)
+                    and candidate_length > max_chars
                 )
                 if should_flush:
                     chunk_text = "\n\n".join(current_blocks).strip()
@@ -807,41 +824,6 @@ class RetriFlowIngestionPipeline:
                     current_blocks = self._overlap_tail(current_blocks, overlap_chars)
                     block_start = max(0, block_index - len(current_blocks))
                     current_length = len("\n\n".join(current_blocks))
-
-                if block_length > max_chars:
-                    if current_blocks:
-                        chunk_text = "\n\n".join(current_blocks).strip()
-                        documents.append(
-                            Document(
-                                page_content=chunk_text,
-                                metadata={
-                                    **dict(source_document.metadata),
-                                    "block_start": block_start,
-                                    "block_end": block_index - 1,
-                                    "structure_chunk": chunk_index,
-                                },
-                            )
-                        )
-                        chunk_index += 1
-                        current_blocks = []
-                        current_length = 0
-                    fixed_parts = self._split_long_block(block, max_chars=max_chars, overlap_chars=overlap_chars)
-                    for part_index, part in enumerate(fixed_parts):
-                        documents.append(
-                            Document(
-                                page_content=part,
-                                metadata={
-                                    **dict(source_document.metadata),
-                                    "block_start": block_index,
-                                    "block_end": block_index,
-                                    "structure_chunk": chunk_index,
-                                    "long_block_part": part_index,
-                                },
-                            )
-                        )
-                        chunk_index += 1
-                    block_start = block_index + 1
-                    continue
 
                 current_blocks.append(block)
                 current_length = len("\n\n".join(current_blocks))
@@ -985,6 +967,8 @@ class RetriFlowIngestionPipeline:
             processed.append(buffer_document)
 
         normalized = [document for document in processed if document.page_content.strip()]
+        if strategy == "structure_aware":
+            normalized = self._merge_small_structure_chunks(normalized)
         for chunk_index, document in enumerate(normalized):
             document.metadata["postprocessed"] = True
             document.metadata["strategy"] = strategy
@@ -992,6 +976,49 @@ class RetriFlowIngestionPipeline:
             document.metadata["chunk_index"] = chunk_index
             document.metadata["chunk_count"] = len(normalized)
         return normalized
+
+    def _merge_small_structure_chunks(self, chunk_documents: list[Document]) -> list[Document]:
+        if not chunk_documents:
+            return []
+        max_chars = self._config_int("maxChars", 1800)
+        min_chars = self._config_int("minChars", 600)
+        merged: list[Document] = []
+        for document in chunk_documents:
+            if (
+                merged
+                and len(document.page_content) < min_chars
+                and len(f"{merged[-1].page_content}\n\n{document.page_content}") <= max_chars
+            ):
+                previous = merged.pop()
+                merged.append(
+                    Document(
+                        page_content=f"{previous.page_content}\n\n{document.page_content}".strip(),
+                        metadata={**dict(previous.metadata), "merged_small_structure_chunk": True},
+                    )
+                )
+                continue
+            if (
+                len(document.page_content) < min_chars
+                and len(chunk_documents) > 1
+                and not merged
+            ):
+                merged.append(document)
+                continue
+            merged.append(document)
+
+        if len(merged) >= 2 and len(merged[0].page_content) < min_chars:
+            combined = f"{merged[0].page_content}\n\n{merged[1].page_content}".strip()
+            if len(combined) <= max_chars:
+                first = merged.pop(0)
+                second = merged.pop(0)
+                merged.insert(
+                    0,
+                    Document(
+                        page_content=combined,
+                        metadata={**dict(first.metadata), **dict(second.metadata), "merged_small_structure_chunk": True},
+                    ),
+                )
+        return merged
 
     @staticmethod
     def _semantic_units(content: str) -> list[str]:
@@ -1048,9 +1075,11 @@ class RetriFlowIngestionPipeline:
             if in_code_fence:
                 current.append(line)
                 continue
-            if stripped.startswith("#") and current:
-                blocks.append("\n".join(current).strip())
-                current = [line]
+            if stripped.startswith("#"):
+                if current:
+                    blocks.append("\n".join(current).strip())
+                    current = []
+                blocks.append(line.strip())
                 continue
             if not stripped:
                 if current:
@@ -1062,6 +1091,69 @@ class RetriFlowIngestionPipeline:
         if current:
             blocks.append("\n".join(current).strip())
         return [block for block in blocks if block]
+
+    @classmethod
+    def _expand_long_structure_blocks(cls, blocks: list[str], *, target_chars: int, max_chars: int) -> list[str]:
+        if max_chars <= 0:
+            return blocks
+        expanded: list[str] = []
+        for block in blocks:
+            if len(block) <= max_chars or block.lstrip().startswith("```"):
+                expanded.append(block)
+                continue
+            expanded.extend(cls._split_block_on_natural_boundaries(block, target_chars=target_chars, max_chars=max_chars))
+        return [block for block in expanded if block.strip()]
+
+    @classmethod
+    def _split_block_on_natural_boundaries(cls, block: str, *, target_chars: int, max_chars: int) -> list[str]:
+        units = cls._natural_boundary_units(block)
+        if len(units) <= 1 and len(block) > max_chars:
+            units = cls._recursive_boundary_units(block, max_chars=max_chars)
+
+        pieces: list[str] = []
+        current: list[str] = []
+        target = max(1, min(target_chars, max_chars))
+        for unit in units:
+            unit = unit.strip()
+            if not unit:
+                continue
+            candidate = " ".join([*current, unit]).strip()
+            if current and len(candidate) > target:
+                pieces.append(" ".join(current).strip())
+                if len(unit) > max_chars:
+                    pieces.extend(cls._recursive_boundary_units(unit, max_chars=max_chars))
+                    current = []
+                else:
+                    current = [unit]
+                continue
+            if not current and len(unit) > max_chars:
+                pieces.extend(cls._recursive_boundary_units(unit, max_chars=max_chars))
+                current = []
+                continue
+            current.append(unit)
+
+        if current:
+            pieces.append(" ".join(current).strip())
+        return pieces or [block]
+
+    @staticmethod
+    def _natural_boundary_units(block: str) -> list[str]:
+        normalized = block.replace("\r\n", "\n").replace("\r", "\n")
+        lines = [line.strip() for line in normalized.split("\n") if line.strip()]
+        if len(lines) > 1:
+            return lines
+        units = re.findall(r".+?(?:[。！？!?\.；;]+|$)", normalized.strip(), flags=re.S)
+        return [unit.strip() for unit in units if unit.strip()]
+
+    @classmethod
+    def _recursive_boundary_units(cls, text: str, *, max_chars: int) -> list[str]:
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=max_chars,
+            chunk_overlap=0,
+            separators=["\n\n", "\n", "。", "！", "？", ".", "!", "?", "；", ";", "，", ",", " ", ""],
+            keep_separator=True,
+        )
+        return [document.page_content.strip() for document in splitter.create_documents([text]) if document.page_content.strip()]
 
     @staticmethod
     def _overlap_tail(blocks: list[str], overlap_chars: int) -> list[str]:
@@ -1121,6 +1213,75 @@ class RetriFlowIngestionService:
                 ),
             ).fetchone()
             connection.commit()
+        return self._to_pipeline(row)
+
+    def update_pipeline(self, pipeline_id: int, request: IngestionPipelineUpdateRequest) -> IngestionPipelineItem:
+        mapping = request.model_dump(exclude_unset=True)
+        if not mapping:
+            return self._get_pipeline_or_404(pipeline_id)
+
+        fields: list[str] = []
+        values: list[object] = []
+        if "name" in mapping:
+            fields.append("name = ?")
+            values.append(str(mapping["name"]).strip())
+        if "description" in mapping:
+            fields.append("description = ?")
+            values.append(str(mapping["description"] or "").strip())
+        if "nodes" in mapping:
+            fields.append("nodes_json = ?")
+            nodes = mapping["nodes"] or []
+            values.append(json.dumps(nodes, ensure_ascii=False))
+        if "owner" in mapping:
+            fields.append("owner = ?")
+            values.append(str(mapping["owner"] or "").strip() or "admin")
+
+        fields.append("updated_at = current_timestamp")
+        with get_connection() as connection:
+            existing = connection.execute(
+                "select id from ingestion_pipelines where id = ?",
+                (pipeline_id,),
+            ).fetchone()
+            if existing is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ingestion pipeline not found")
+            connection.execute(
+                f"update ingestion_pipelines set {', '.join(fields)} where id = ?",
+                [*values, pipeline_id],
+            )
+            connection.commit()
+            row = connection.execute(
+                """
+                select id, name, description, nodes_json, owner, created_at, updated_at
+                from ingestion_pipelines
+                where id = ?
+                """,
+                (pipeline_id,),
+            ).fetchone()
+        return self._to_pipeline(row)
+
+    def delete_pipeline(self, pipeline_id: int) -> None:
+        with get_connection() as connection:
+            row = connection.execute(
+                "select id from ingestion_pipelines where id = ?",
+                (pipeline_id,),
+            ).fetchone()
+            if row is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ingestion pipeline not found")
+            connection.execute("delete from ingestion_pipelines where id = ?", (pipeline_id,))
+            connection.commit()
+
+    def _get_pipeline_or_404(self, pipeline_id: int) -> IngestionPipelineItem:
+        with get_connection() as connection:
+            row = connection.execute(
+                """
+                select id, name, description, nodes_json, owner, created_at, updated_at
+                from ingestion_pipelines
+                where id = ?
+                """,
+                (pipeline_id,),
+            ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ingestion pipeline not found")
         return self._to_pipeline(row)
 
     def list_tasks(self, *, document_id: int | None = None) -> IngestionTaskListResponse:

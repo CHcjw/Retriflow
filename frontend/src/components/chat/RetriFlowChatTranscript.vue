@@ -1,5 +1,6 @@
 ﻿<script setup lang="ts">
 import { computed, shallowRef } from "vue";
+import MarkdownIt from "markdown-it";
 
 import type { ChatMessage } from "../../composables/useRetriFlowChat";
 import type { ChatMcpCallItem, ChatSourceItem, ChatWorkflow } from "../../services/api";
@@ -22,7 +23,7 @@ const emit = defineEmits<{
 const defaultVisibleSourceCount = 3;
 const sourcesExpanded = shallowRef(false);
 const mcpExpanded = shallowRef(true);
-const expandedSourceChunkId = shallowRef<number | null>(null);
+const expandedSourceKey = shallowRef<string | null>(null);
 
 const sourceToggleLabel = computed(() => {
   if (props.latestSources.length <= defaultVisibleSourceCount) {
@@ -36,265 +37,140 @@ const visibleSources = computed(() =>
   sourcesExpanded.value ? props.latestSources : props.latestSources.slice(0, defaultVisibleSourceCount)
 );
 const visibleMcpCalls = computed(() => (mcpExpanded.value ? props.latestMcpCalls : []));
-const imagePattern = /!\[([^\]]*)\]\(([^)\s]+)\)/g;
-const urlPattern = /\[([^\]]+)\]\(([^)\s]+)\)/g;
 
-function escapeHtml(value: string): string {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
+const markdown = new MarkdownIt({
+  html: false,
+  linkify: true,
+  breaks: false,
+  typographer: false
+});
+
+const defaultLinkOpen =
+  markdown.renderer.rules.link_open ||
+  ((tokens, index, options, _env, self) => self.renderToken(tokens, index, options));
+markdown.renderer.rules.link_open = (tokens, index, options, env, self) => {
+  const token = tokens[index];
+  const hrefIndex = token.attrIndex("href");
+  if (hrefIndex >= 0) {
+    const href = token.attrs?.[hrefIndex]?.[1] ?? "";
+    if (!isSafeUrl(href)) {
+      token.attrSet("href", "#");
+    }
+  }
+  token.attrSet("target", "_blank");
+  token.attrSet("rel", "noopener noreferrer");
+  return defaultLinkOpen(tokens, index, options, env, self);
+};
+
+function isSafeUrl(value: string): boolean {
+  return /^(https?:\/\/|\/)/i.test(value.trim());
 }
 
 function normalizeMessage(value: string): string {
-  return value
+  const normalized = value
     .replace(/\r\n/g, "\n")
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\u00a0/g, " ")
+    .replace(/\|\s*\|(?=\s*-{3,})/g, "|\n|")
+    .replace(/\|\s*(?=\|\s*[^|\n]+?\s*\|)/g, "|\n")
     .replace(/([。！？；，]\s*)([-*+]\s+\*\*?)/g, "$1\n\n$2")
     .replace(/([。！？；，]\s*)([-*+]\s+)/g, "$1\n\n$2")
+    .replace(/([。！？；]\s*)(\d+\.\s+)/g, "$1\n\n$2")
     .replace(/(\[[0-9]+\]\s*)([-*+]\s+)/g, "$1\n\n$2")
     .replace(/([^\n])\s+(#{1,6}\s+)/g, "$1\n\n$2")
-    .replace(/([^\n])\s+(\d+\.\s+)/g, "$1\n\n$2")
-    .replace(/([^\n])\s+([-*+]\s+)/g, "$1\n\n$2")
     .replace(/\n{4,}/g, "\n\n\n")
     .replace(/(^|\n)---(?=#{1,6}\s)/g, "$1---\n")
     .trim();
+  return normalizeInlineMarkdownTables(normalized);
 }
 
-function sanitizeUrl(value: string): string {
-  const url = value.trim();
-  if (/^(https?:\/\/|\/)/i.test(url)) {
-    return escapeHtml(url);
+function isTableSeparatorLine(line: string): boolean {
+  return /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(line.trim());
+}
+
+function normalizeInlineMarkdownTables(value: string): string {
+  const lines = value.split("\n");
+  const normalizedLines: string[] = [];
+  for (const rawLine of lines) {
+    normalizedLines.push(...splitInlineTableSegments(rawLine));
   }
-  return "#";
+  return normalizedLines.join("\n");
 }
 
-function renderInlineMarkdown(value: string): string {
-  const linkTokens: string[] = [];
-  let escaped = escapeHtml(value)
-    .replace(/\*\*\s+([^*]+?)\s+\*\*/g, "**$1**")
-    .replace(/__\s+([^_]+?)\s+__/g, "__$1__");
-
-  escaped = escaped.replace(imagePattern, (_, alt: string, url: string) => {
-    const token = `__RETRIFLOW_LINK_${linkTokens.length}__`;
-    linkTokens.push(
-      `<img src="${sanitizeUrl(url)}" alt="${escapeHtml(alt)}" class="message-image" loading="lazy" />`
-    );
-    return token;
-  });
-
-  escaped = escaped.replace(urlPattern, (_, label: string, url: string) => {
-    const token = `__RETRIFLOW_LINK_${linkTokens.length}__`;
-    linkTokens.push(
-      `<a href="${sanitizeUrl(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`
-    );
-    return token;
-  });
-
-  escaped = escaped
-    .replace(/`([^`]+)`/g, "<code>$1</code>")
-    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/__([^_]+)__/g, "<strong>$1</strong>")
-    .replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, "<em>$1</em>")
-    .replace(/(?<!_)_([^_]+)_(?!_)/g, "<em>$1</em>")
-    .replace(/\[(\d+)\]/g, '<span class="citation">[$1]</span>');
-
-  return linkTokens.reduce(
-    (html, tokenHtml, index) => html.replace(`__RETRIFLOW_LINK_${index}__`, tokenHtml),
-    escaped
-  );
-}
-
-function renderBlockquote(lines: string[]): string {
-  const content = lines.map((line) => line.replace(/^>\s?/, "")).join("\n");
-  return `<blockquote>${renderMessageHtml(content)}</blockquote>`;
-}
-
-function renderList(lines: string[], ordered: boolean): string {
-  const tag = ordered ? "ol" : "ul";
-  const itemPattern = ordered ? /^\d+\.\s+/ : /^[-*+]\s+/;
-  const items = lines
-    .map((line) => line.replace(itemPattern, "").trim())
-    .filter(Boolean)
-    .map((item) => `<li>${renderInlineMarkdown(item)}</li>`)
-    .join("");
-  return `<${tag}>${items}</${tag}>`;
-}
-
-function renderCodeBlock(lines: string[]): string {
-  const code = escapeHtml(lines.join("\n"));
-  return `<pre><code>${code}</code></pre>`;
-}
-
-function renderParagraph(lines: string[]): string {
-  const content = renderInlineMarkdown(lines.join(" ").replace(/\s+/g, " ").trim());
-  return `<p>${content}</p>`;
-}
-
-function splitInlineListMarkers(value: string): string[] {
-  if (!value.trim()) {
-    return [""];
+function splitInlineTableSegments(rawLine: string): string[] {
+  const line = rawLine.trim();
+  if (!line.includes("|")) {
+    return [rawLine];
   }
-  return value
-    .replace(/\s+([-*+]\s+)/g, "\n$1")
-    .replace(/\s+(\d+\.\s+)/g, "\n$1")
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
+
+  const titledHeaderMatch = line.match(/^(.+?[:：])\s*(\|?\s*日期\s*\|\s*天气\s*\|\s*温度\s*\|\s*湿度\s*\|\s*风向\s*\|?.*)$/);
+  if (titledHeaderMatch) {
+    return [titledHeaderMatch[1].trim(), ...splitInlineTableSegments(titledHeaderMatch[2].trim())].filter(Boolean);
+  }
+
+  const doublePipeIndex = line.indexOf("||");
+  if (doublePipeIndex >= 0) {
+    const before = line.slice(0, doublePipeIndex).trim();
+    const after = line.slice(doublePipeIndex + 1).trim();
+    return [before, ...splitInlineTableSegments(after)].filter(Boolean);
+  }
+
+  if (!isDenseTableLine(line)) {
+    return [rawLine];
+  }
+
+  const cells = line
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => cell.trim())
+    .filter(Boolean);
+  if (cells.length < 6 || cells.length % 5 !== 0) {
+    return [rawLine];
+  }
+
+  const rows: string[] = [];
+  for (let index = 0; index < cells.length; index += 5) {
+    rows.push(`| ${cells.slice(index, index + 5).join(" | ")} |`);
+  }
+  return rows;
 }
 
-function renderTable(lines: string[]): string {
-  const rows = lines.map((line) =>
-    line
-      .trim()
-      .replace(/^\|/, "")
-      .replace(/\|$/, "")
-      .split("|")
-      .map((cell) => cell.trim())
-  );
-  const [header, , ...body] = rows;
-  const headHtml = `<thead><tr>${header
-    .map((cell) => `<th>${renderInlineMarkdown(cell)}</th>`)
-    .join("")}</tr></thead>`;
-  const bodyHtml = body.length
-    ? `<tbody>${body
-        .map(
-          (row) =>
-            `<tr>${row.map((cell) => `<td>${renderInlineMarkdown(cell)}</td>`).join("")}</tr>`
-        )
-        .join("")}</tbody>`
-    : "";
-  return `<table>${headHtml}${bodyHtml}</table>`;
+function isDenseTableLine(line: string): boolean {
+  const pipeCount = (line.match(/\|/g) ?? []).length;
+  return pipeCount >= 8 && !isTableSeparatorLine(line);
 }
 
 function renderMessageHtml(value: string): string {
   const normalized = normalizeMessage(value || "正在等待模型返回...");
-  const lines = normalized
-    .split("\n")
-    .flatMap((line) => splitInlineListMarkers(line));
-  const blocks: string[] = [];
-
-  for (let index = 0; index < lines.length; ) {
-    const line = lines[index];
-    const trimmed = line.trim();
-
-    if (!trimmed) {
-      index += 1;
-      continue;
-    }
-
-    if (trimmed.startsWith("```")) {
-      const codeLines: string[] = [];
-      index += 1;
-      while (index < lines.length && !lines[index].trim().startsWith("```")) {
-        codeLines.push(lines[index]);
-        index += 1;
-      }
-      index += 1;
-      blocks.push(renderCodeBlock(codeLines));
-      continue;
-    }
-
-    if (/^#{1,6}\s+/.test(trimmed)) {
-      const level = Math.min(trimmed.match(/^#+/)?.[0].length ?? 1, 6);
-      const content = trimmed.replace(/^#{1,6}\s+/, "");
-      blocks.push(`<h${level}>${renderInlineMarkdown(content)}</h${level}>`);
-      index += 1;
-      continue;
-    }
-
-    if (/^---+$/.test(trimmed)) {
-      blocks.push("<hr>");
-      index += 1;
-      continue;
-    }
-
-    if (trimmed.startsWith(">")) {
-      const quoteLines: string[] = [];
-      while (index < lines.length && lines[index].trim().startsWith(">")) {
-        quoteLines.push(lines[index].trim());
-        index += 1;
-      }
-      blocks.push(renderBlockquote(quoteLines));
-      continue;
-    }
-
-    if (/^[-*+]\s+/.test(trimmed)) {
-      const listLines: string[] = [];
-      while (index < lines.length && /^[-*+]\s+/.test(lines[index].trim())) {
-        listLines.push(lines[index].trim());
-        index += 1;
-      }
-      blocks.push(renderList(listLines, false));
-      continue;
-    }
-
-    if (/^\d+\.\s+/.test(trimmed)) {
-      const listLines: string[] = [];
-      while (index < lines.length && /^\d+\.\s+/.test(lines[index].trim())) {
-        listLines.push(lines[index].trim());
-        index += 1;
-      }
-      blocks.push(renderList(listLines, true));
-      continue;
-    }
-
-    if (
-      trimmed.includes("|") &&
-      index + 1 < lines.length &&
-      /^\s*\|?[:\- ]+\|[:\-| ]+\|?\s*$/.test(lines[index + 1].trim())
-    ) {
-      const tableLines = [trimmed, lines[index + 1].trim()];
-      index += 2;
-      while (index < lines.length && lines[index].includes("|") && lines[index].trim()) {
-        tableLines.push(lines[index].trim());
-        index += 1;
-      }
-      blocks.push(renderTable(tableLines));
-      continue;
-    }
-
-    const paragraphLines: string[] = [trimmed];
-    index += 1;
-    while (index < lines.length) {
-      const nextTrimmed = lines[index].trim();
-      if (
-        !nextTrimmed ||
-        nextTrimmed.startsWith("```") ||
-        /^#{1,6}\s+/.test(nextTrimmed) ||
-        /^---+$/.test(nextTrimmed) ||
-        nextTrimmed.startsWith(">") ||
-        /^[-*+]\s+/.test(nextTrimmed) ||
-        /^\d+\.\s+/.test(nextTrimmed)
-      ) {
-        break;
-      }
-      paragraphLines.push(nextTrimmed);
-      index += 1;
-    }
-    blocks.push(renderParagraph(paragraphLines));
-  }
-
-  return blocks.join("");
+  return markdown.render(normalized).replace(/\[(\d+)\]/g, '<span class="citation">[$1]</span>');
 }
-
 function formatArguments(argumentsValue: Record<string, unknown>): string {
   return JSON.stringify(argumentsValue, null, 2);
 }
 
 function formatSourceLabel(source: ChatSourceItem): string {
-  return `知识库 ${source.knowledge_base_id} / 文档 ${source.document_id} / Chunk ${source.chunk_id}`;
+  const chunkLabel = source.chunk_id < 0 ? "统计线索" : `Chunk ${source.chunk_id}`;
+  return `文档 ${source.document_id} · ${chunkLabel}`;
 }
 
-function isSourceExpanded(source: ChatSourceItem): boolean {
-  return expandedSourceChunkId.value === source.chunk_id;
+function formatSourceScore(source: ChatSourceItem): string {
+  if (!Number.isFinite(source.score)) {
+    return "";
+  }
+  return `相关度 ${source.score.toFixed(3)}`;
 }
 
-function toggleSourceDetail(source: ChatSourceItem) {
-  expandedSourceChunkId.value = isSourceExpanded(source) ? null : source.chunk_id;
+function sourceIdentity(source: ChatSourceItem, index = 0): string {
+  return `${source.knowledge_base_id}:${source.document_id}:${source.chunk_id}:${index}`;
+}
+
+function isSourceExpanded(source: ChatSourceItem, index = 0): boolean {
+  return expandedSourceKey.value === sourceIdentity(source, index);
+}
+
+function toggleSourceDetail(source: ChatSourceItem, index = 0) {
+  expandedSourceKey.value = isSourceExpanded(source, index) ? null : sourceIdentity(source, index);
 }
 
 function openSourceLink(source: ChatSourceItem) {
@@ -373,9 +249,36 @@ function buildSourcePreview(content: string): string {
             <svg class="chevron" :class="{'open': sourcesExpanded}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 9l-7 7-7-7" /></svg>
          </div>
          <div v-if="sourcesExpanded" class="ref-list">
-            <div v-for="(source, index) in visibleSources" :key="source.chunk_id" class="ref-item">
-               <span class="ref-index">[{{index + 1}}]</span>
-               <span class="ref-title">{{ source.document_title }}</span>
+            <div
+              v-for="(source, index) in visibleSources"
+              :key="sourceIdentity(source, index)"
+              class="ref-item"
+              :class="{ expanded: isSourceExpanded(source, index) }"
+              role="button"
+              tabindex="0"
+              @click="toggleSourceDetail(source, index)"
+              @keydown.enter.prevent="toggleSourceDetail(source, index)"
+              @keydown.space.prevent="toggleSourceDetail(source, index)"
+            >
+               <div class="ref-title-row">
+                 <span class="ref-index">[{{index + 1}}]</span>
+                 <span class="ref-title">{{ source.document_title }}</span>
+                 <span v-if="source.chunk_id < 0" class="ref-badge">统计</span>
+               </div>
+               <div class="ref-meta">
+                 <span>{{ formatSourceLabel(source) }}</span>
+                 <span v-if="formatSourceScore(source)">{{ formatSourceScore(source) }}</span>
+               </div>
+               <div class="ref-preview">{{ buildSourcePreview(source.content) }}</div>
+               <div v-if="isSourceExpanded(source, index)" class="ref-detail">{{ source.content || "该来源暂无完整片段。" }}</div>
+               <button
+                 v-if="source.source_link"
+                 class="ref-open"
+                 type="button"
+                 @click.stop="openSourceLink(source)"
+               >
+                 打开原文
+               </button>
             </div>
          </div>
       </div>
@@ -697,7 +600,7 @@ function buildSourcePreview(content: string): string {
 
 .ref-list {
   margin-top: 8px;
-  padding: 16px;
+  padding: 10px;
   background: var(--sidebar-bg);
   border-radius: 12px;
   display: flex;
@@ -707,14 +610,98 @@ function buildSourcePreview(content: string): string {
 
 .ref-item {
   display: flex;
-  gap: 8px;
+  flex-direction: column;
+  gap: 5px;
+  padding: 10px 12px;
+  background: white;
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
   font-size: 13px;
   color: var(--text-main);
+  cursor: pointer;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.ref-item:hover,
+.ref-item:focus-visible,
+.ref-item.expanded {
+  border-color: rgba(37, 99, 235, 0.28);
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.06);
+  outline: none;
+}
+
+.ref-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
 }
 
 .ref-index {
   color: var(--primary);
   font-weight: 600;
+  flex: 0 0 auto;
+}
+
+.ref-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.ref-badge {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(37, 99, 235, 0.1);
+  color: var(--primary);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.ref-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  color: var(--text-light);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.ref-preview,
+.ref-detail {
+  color: var(--text-muted);
+  line-height: 1.55;
+  word-break: break-word;
+}
+
+.ref-preview {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.ref-detail {
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border-light);
+  color: var(--text-main);
+  white-space: pre-wrap;
+}
+
+.ref-open {
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--primary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
 }
 
 .status-indicator {
@@ -748,3 +735,4 @@ function buildSourcePreview(content: string): string {
   40% { transform: scale(1); }
 }
 </style>
+

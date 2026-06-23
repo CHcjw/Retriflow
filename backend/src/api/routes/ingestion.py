@@ -6,6 +6,7 @@ from schemas.knowledge import (
     IngestionPipelineCreateRequest,
     IngestionPipelineItem,
     IngestionPipelineListResponse,
+    IngestionPipelineUpdateRequest,
     IngestionTaskListResponse,
     IngestionTaskNodeListResponse,
 )
@@ -26,6 +27,20 @@ def list_pipelines(user: AdminUser) -> IngestionPipelineListResponse:
 @router.post("/pipelines", response_model=IngestionPipelineItem, status_code=201)
 def create_pipeline(request: IngestionPipelineCreateRequest, user: AdminUser) -> IngestionPipelineItem:
     return _service().create_pipeline(request)
+
+
+@router.patch("/pipelines/{pipeline_id}", response_model=IngestionPipelineItem)
+def update_pipeline(
+    pipeline_id: int,
+    request: IngestionPipelineUpdateRequest,
+    user: AdminUser,
+) -> IngestionPipelineItem:
+    return _service().update_pipeline(pipeline_id, request)
+
+
+@router.delete("/pipelines/{pipeline_id}", status_code=204)
+def delete_pipeline(pipeline_id: int, user: AdminUser) -> None:
+    _service().delete_pipeline(pipeline_id)
 
 
 @router.get("/tasks", response_model=IngestionTaskListResponse)
