@@ -1,0 +1,45 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e5]:
+    - generic [ref=e6]:
+      - generic [ref=e7]: R
+      - generic [ref=e8]:
+        - strong [ref=e9]: RetriFlow
+        - generic [ref=e10]: Agentic RAG Platform
+    - generic [ref=e11]:
+      - heading "欢迎回来" [level=1] [ref=e12]
+      - paragraph [ref=e13]: 登录后继续你的检索增强对话。
+    - generic [ref=e14]:
+      - generic [ref=e15]:
+        - text: 用户名
+        - generic [ref=e16]:
+          - generic [ref=e17]: ⌾
+          - textbox "用户名 ⌾" [ref=e18]:
+            - /placeholder: 请输入用户名
+            - text: admin
+      - generic [ref=e19]:
+        - text: 密码
+        - generic [ref=e20]:
+          - generic [ref=e21]: ⌘
+          - textbox "密码 ⌘ 显示" [ref=e22]:
+            - /placeholder: 请输入密码
+            - text: admin
+          - button "显示" [ref=e23] [cursor=pointer]
+      - generic [ref=e24]: 管理员可创建用户，也可以自助注册普通账户。
+      - button "登录" [ref=e25] [cursor=pointer]
+    - generic [ref=e26]:
+      - text: 还没有账户？
+      - button "注册" [ref=e27] [cursor=pointer]
+  - generic [ref=e30]:
+    - generic [ref=e31]: "[plugin:vite:import-analysis] Failed to parse source for import analysis because the content contains invalid JS syntax. If you are using JSX, make sure to name the file with the .jsx or .tsx extension."
+    - generic [ref=e32]: D:/code/program/RetriFlow/frontend/src/views/AdminView.vue:1679:10
+    - generic [ref=e33]: "1677| return parts.join(\" · \") || \"正文分块\"; 1678| } 1679| </script> | ^ 1680| 1681| <template>"
+    - generic [ref=e34]: at TransformPluginContext._formatLog (file:///D:/code/program/RetriFlow/frontend/node_modules/vite/dist/node/chunks/dep-Dq2t6Dq0.js:42553:41) at TransformPluginContext.error (file:///D:/code/program/RetriFlow/frontend/node_modules/vite/dist/node/chunks/dep-Dq2t6Dq0.js:42550:16) at TransformPluginContext.transform (file:///D:/code/program/RetriFlow/frontend/node_modules/vite/dist/node/chunks/dep-Dq2t6Dq0.js:40480:14) at async EnvironmentPluginContainer.transform (file:///D:/code/program/RetriFlow/frontend/node_modules/vite/dist/node/chunks/dep-Dq2t6Dq0.js:42348:18) at async loadAndTransform (file:///D:/code/program/RetriFlow/frontend/node_modules/vite/dist/node/chunks/dep-Dq2t6Dq0.js:35740:27
+    - generic [ref=e35]:
+      - text: Click outside, press Esc key, or fix the code to dismiss.
+      - text: You can also disable this overlay by setting
+      - code [ref=e36]: server.hmr.overlay
+      - text: to
+      - code [ref=e37]: "false"
+      - text: in
+      - code [ref=e38]: vite.config.ts
+      - text: .

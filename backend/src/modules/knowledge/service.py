@@ -213,6 +213,18 @@ class RetriFlowKnowledgeService:
         request: KnowledgeDocumentUpdateRequest,
     ) -> KnowledgeDocumentItem:
         self._ensure_document_exists(knowledge_base_id, document_id)
+        processing_fields = {
+            "document_type",
+            "process_mode",
+            "pipeline_id",
+            "chunk_strategy",
+            "chunk_size",
+            "chunk_overlap",
+            "recursive_separators",
+            "chunk_config",
+        }
+        update_payload = request.model_dump(exclude_unset=True)
+        has_processing_update = any(field in update_payload for field in processing_fields)
         with get_connection() as connection:
             if request.title is not None:
                 connection.execute(
@@ -224,6 +236,78 @@ class RetriFlowKnowledgeService:
                     (request.title.strip(), knowledge_base_id, document_id),
                 )
                 self._sync_knowledge_base_route_profile(connection, knowledge_base_id)
+            if has_processing_update:
+                row = connection.execute(
+                    """
+                    select processing_config_json
+                    from knowledge_documents
+                    where knowledge_base_id = ? and id = ?
+                    """,
+                    (knowledge_base_id, document_id),
+                ).fetchone()
+                current_config = self._parse_json_field(row["processing_config_json"] if row else None, default={})
+                processing_config = self._build_processing_config(
+                    document_type=request.document_type
+                    if request.document_type is not None
+                    else current_config.get("documentType", "knowledge_base"),
+                    process_mode=request.process_mode
+                    if request.process_mode is not None
+                    else current_config.get("processMode", "chunk_strategy"),
+                    pipeline_id=request.pipeline_id
+                    if "pipeline_id" in update_payload
+                    else current_config.get("pipelineId"),
+                    chunk_strategy=request.chunk_strategy
+                    if request.chunk_strategy is not None
+                    else current_config.get("chunkStrategy", "structure_aware"),
+                    chunk_size=request.chunk_size
+                    if request.chunk_size is not None
+                    else int(current_config.get("chunkSize") or 1400),
+                    chunk_overlap=request.chunk_overlap
+                    if request.chunk_overlap is not None
+                    else int(current_config.get("chunkOverlap") or 0),
+                    recursive_separators=request.recursive_separators
+                    if request.recursive_separators is not None
+                    else list(current_config.get("recursiveSeparators") or []),
+                    chunk_config=request.chunk_config
+                    if request.chunk_config is not None
+                    else dict(current_config.get("chunkConfig") or {}),
+                )
+                try:
+                    self.vector_store.delete_document_records(document_id)
+                except Exception:
+                    pass
+                connection.execute(
+                    """
+                    delete from knowledge_chunks
+                    where knowledge_base_id = ? and document_id = ?
+                    """,
+                    (knowledge_base_id, document_id),
+                )
+                connection.execute(
+                    """
+                    delete from ingestion_tasks
+                    where knowledge_base_id = ? and document_id = ?
+                    """,
+                    (knowledge_base_id, document_id),
+                )
+                connection.execute(
+                    """
+                    update knowledge_documents
+                    set vector_index_status = ?,
+                        vector_chunk_count = ?,
+                        vector_indexed_at = ?,
+                        processing_config_json = ?
+                    where knowledge_base_id = ? and id = ?
+                    """,
+                    (
+                        "pending",
+                        0,
+                        None,
+                        json.dumps(processing_config, ensure_ascii=False),
+                        knowledge_base_id,
+                        document_id,
+                    ),
+                )
             if request.enabled is not None:
                 connection.execute(
                     """

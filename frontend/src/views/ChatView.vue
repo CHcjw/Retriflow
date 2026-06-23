@@ -82,7 +82,7 @@ onMounted(() => {
   <div class="chat-layout">
     <RetriFlowChatSessionList
       :active-session-id="activeSessionId"
-      :loading="loading"
+      :loading="false"
       :sessions="sessions"
       @create-session="createNewSession"
       @delete-session="removeSession"

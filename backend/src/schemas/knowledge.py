@@ -118,11 +118,27 @@ class KnowledgeDocumentReindexRequest(BaseModel):
 class KnowledgeDocumentUpdateRequest(BaseModel):
     title: str | None = None
     enabled: bool | None = None
+    document_type: str | None = None
+    process_mode: str | None = None
+    pipeline_id: int | None = None
+    chunk_strategy: str | None = None
+    chunk_size: int | None = None
+    chunk_overlap: int | None = None
+    recursive_separators: list[str] | None = None
+    chunk_config: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def validate_document_update(self) -> "KnowledgeDocumentUpdateRequest":
         if self.title is not None and not self.title.strip():
             raise ValueError("title is required")
+        if self.process_mode is not None and self.process_mode not in {"chunk_strategy", "data_channel"}:
+            raise ValueError("process_mode is invalid")
+        if self.chunk_size is not None and self.chunk_size < 1:
+            raise ValueError("chunk_size must be positive")
+        if self.chunk_overlap is not None and self.chunk_overlap < 0:
+            raise ValueError("chunk_overlap must be non-negative")
+        if self.chunk_size is not None and self.chunk_overlap is not None and self.chunk_overlap >= self.chunk_size:
+            raise ValueError("chunk_overlap must be smaller than chunk_size")
         return self
 
 

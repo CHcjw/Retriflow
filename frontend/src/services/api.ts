@@ -690,6 +690,11 @@ export interface KnowledgeChunkingOptions {
   chunkConfig?: Record<string, unknown>;
 }
 
+export type KnowledgeDocumentUpdatePayload = {
+  title?: string;
+  enabled?: boolean;
+} & KnowledgeChunkingOptions;
+
 export function fetchMeta(): Promise<MetaResponse> {
   return request<MetaResponse>({ url: "/api/v1/meta" });
 }
@@ -873,12 +878,23 @@ export function deleteKnowledgeDocument(knowledgeBaseId: string, documentId: num
 export function updateKnowledgeDocument(
   knowledgeBaseId: string,
   documentId: number,
-  payload: { title?: string; enabled?: boolean }
+  payload: KnowledgeDocumentUpdatePayload
 ): Promise<KnowledgeDocumentItem> {
   return request<KnowledgeDocumentItem>({
     url: `/api/v1/knowledge-bases/${knowledgeBaseId}/documents/${documentId}`,
     method: "PATCH",
-    data: payload
+    data: {
+      title: payload.title,
+      enabled: payload.enabled,
+      document_type: payload.documentType,
+      process_mode: payload.processMode,
+      pipeline_id: payload.pipelineId,
+      chunk_strategy: payload.chunkStrategy,
+      chunk_size: payload.chunkSize,
+      chunk_overlap: payload.chunkOverlap,
+      recursive_separators: payload.recursiveSeparators,
+      chunk_config: payload.chunkConfig
+    }
   });
 }
 

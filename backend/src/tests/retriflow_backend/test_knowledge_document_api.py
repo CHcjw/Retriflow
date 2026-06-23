@@ -298,6 +298,55 @@ class RetriFlowKnowledgeDocumentApiTests(unittest.TestCase):
         self.assertEqual(updated_chunk["char_count"], len("Edited chunk content"))
         self.assertTrue(updated_chunk["enabled"])
 
+    def test_update_document_processing_config_resets_chunks(self) -> None:
+        create_response = self.client.post(
+            "/api/v1/knowledge-bases/kb-demo-1/documents",
+            headers=self._auth_headers(self.admin_token),
+            json={
+                "title": "Before config edit",
+                "source_type": "manual",
+                "content": "RetriFlow edit tests need enough content for a chunk.",
+                "chunk_strategy": "fixed_size",
+                "chunk_size": 80,
+                "chunk_overlap": 0,
+            },
+        )
+        self.assertEqual(create_response.status_code, 201)
+        document_id = create_response.json()["id"]
+
+        document_update = self.client.patch(
+            f"/api/v1/knowledge-bases/kb-demo-1/documents/{document_id}",
+            headers=self._auth_headers(self.admin_token),
+            json={
+                "title": "After config edit",
+                "process_mode": "chunk_strategy",
+                "chunk_strategy": "structure_aware",
+                "chunk_size": 1400,
+                "chunk_overlap": 0,
+                "recursive_separators": ["\n\n", "\n"],
+                "chunk_config": {
+                    "targetChars": 1400,
+                    "maxChars": 1800,
+                    "minChars": 600,
+                    "overlapChars": 0,
+                },
+            },
+        )
+        self.assertEqual(document_update.status_code, 200)
+        payload = document_update.json()
+        self.assertEqual(payload["title"], "After config edit")
+        self.assertEqual(payload["vector_index_status"], "pending")
+        self.assertEqual(payload["vector_chunk_count"], 0)
+        self.assertEqual(payload["processing_config"]["chunkStrategy"], "structure_aware")
+        self.assertEqual(payload["processing_config"]["chunkConfig"]["maxChars"], 1800)
+
+        chunks_response = self.client.get(
+            f"/api/v1/knowledge-bases/kb-demo-1/documents/{document_id}/chunks",
+            headers=self._auth_headers(self.admin_token),
+        )
+        self.assertEqual(chunks_response.status_code, 200)
+        self.assertEqual(chunks_response.json()["items"], [])
+
     def test_create_document_generates_chunks_and_ingestion_task(self) -> None:
         create_response = self.client.post(
             "/api/v1/knowledge-bases/kb-demo-1/documents",

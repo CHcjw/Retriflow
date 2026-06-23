@@ -194,7 +194,6 @@ const documentPreviewLoading = shallowRef(false);
 const documentPreview = shallowRef<KnowledgeDocumentPreviewResponse | null>(null);
 const activeAdminModal = shallowRef<
   | "chunkEdit"
-  | "documentEdit"
   | "documentPreview"
   | "intent"
   | "keyword"
@@ -233,8 +232,64 @@ function parseLines(value: string): string[] {
     .filter(Boolean);
 }
 
-const baseKnowledgeEmbeddingModelOptions = ["qwen-emb-8b", "Qwen/Qwen3-Embedding-8B", "BAAI/bge-m3", "text-embedding-v3"];
-const newKnowledgeEmbeddingModel = shallowRef("qwen-emb-8b");
+function parseUploadRecursiveSeparators(value: string): string[] {
+  return value
+    .split(/\r?\n/u)
+    .map((rawLine) => {
+      if (rawLine === " " || rawLine === "[space]") {
+        return " ";
+      }
+      const trimmed = rawLine.trim();
+      if (!trimmed) {
+        return null;
+      }
+      if (trimmed === "\\n\\n") {
+        return "\n\n";
+      }
+      if (trimmed === "\\n") {
+        return "\n";
+      }
+      if (trimmed === "\\t" || trimmed === "[tab]") {
+        return "\t";
+      }
+      return rawLine;
+    })
+    .filter((separator): separator is string => separator !== null);
+}
+
+function buildUploadChunkConfig() {
+  if (uploadChunkStrategy.value === "fixed_size") {
+    return {
+      chunkSize: uploadChunkSize.value,
+      overlapSize: uploadChunkOverlap.value
+    };
+  }
+  if (uploadChunkStrategy.value === "structure_aware") {
+    return {
+      targetChars: uploadChunkSize.value,
+      overlapChars: uploadChunkOverlap.value,
+      maxChars: uploadStructureMaxChars.value,
+      minChars: uploadStructureMinChars.value
+    };
+  }
+  if (["recursive", "hybrid_recursive_semantic"].includes(uploadChunkStrategy.value)) {
+    return {
+      chunk_size: uploadChunkSize.value,
+      chunk_overlap: uploadChunkOverlap.value,
+      recursive_separators: parseUploadRecursiveSeparators(uploadRecursiveSeparatorsText.value)
+    };
+  }
+  return {
+    chunk_size: uploadChunkSize.value,
+    chunk_overlap: uploadChunkOverlap.value
+  };
+}
+
+const knowledgeEmbeddingModelOptions = [
+  { label: "siliconflow · Qwen/Qwen3-Embedding-8B", value: "Qwen/Qwen3-Embedding-8B" },
+  { label: "ollama · qwen3-embedding:8b", value: "qwen3-embedding:8b" }
+] as const;
+const newKnowledgeEmbeddingModel = shallowRef("Qwen/Qwen3-Embedding-8B");
 const newKnowledgeCollectionName = shallowRef("");
 
 const uploadAccept = ".txt,.md,.pdf,.doc,.docx,.xls,.xlsx,.html,.htm,text/plain,text/markdown,application/pdf";
@@ -290,16 +345,6 @@ const filteredKnowledgeBases = computed(() => {
 });
 
 const pagedKnowledgeBases = computed(() => pageSlice(filteredKnowledgeBases.value, knowledgeBasePage.value));
-
-const knowledgeEmbeddingModelOptions = computed(() =>
-  Array.from(
-    new Set([
-      ...baseKnowledgeEmbeddingModelOptions,
-      ...knowledgeBases.value.map((item) => item.embedding_model).filter(Boolean),
-      newKnowledgeEmbeddingModel.value
-    ])
-  )
-);
 
 const filteredDocuments = computed(() => {
   const query = documentSearch.value.trim().toLowerCase();
@@ -807,7 +852,7 @@ function clearAdminError() {
 function openKnowledgeBaseModal() {
   editingKnowledgeBaseId.value = "";
   newKnowledgeBaseName.value = "";
-  newKnowledgeEmbeddingModel.value = "qwen-emb-8b";
+  newKnowledgeEmbeddingModel.value = "Qwen/Qwen3-Embedding-8B";
   newKnowledgeCollectionName.value = "";
   activeAdminModal.value = "knowledgeBase";
 }
@@ -906,10 +951,34 @@ function openDocumentEditModal(documentId: number) {
   if (!document) {
     return;
   }
+  const config = document.processing_config ?? {};
+  const chunkConfig = config.chunkConfig ?? {};
   editingDocumentId.value = document.id;
   editDocumentTitle.value = document.title;
   editDocumentEnabled.value = document.enabled;
-  uploadProcessMode.value = document.processing_mode === "data_channel" ? "data_channel" : "chunk_strategy";
+  uploadProcessMode.value = config.processMode === "data_channel" || document.processing_mode === "data_channel" ? "data_channel" : "chunk_strategy";
+  uploadPipelineId.value =
+    typeof config.pipelineId === "number"
+      ? config.pipelineId
+      : ingestionPipelines.value[0]?.id ?? null;
+  uploadChunkStrategy.value = config.chunkStrategy ?? "structure_aware";
+  uploadChunkSize.value =
+    typeof config.chunkSize === "number"
+      ? config.chunkSize
+      : typeof chunkConfig.targetChars === "number"
+        ? chunkConfig.targetChars
+        : 1400;
+  uploadChunkOverlap.value =
+    typeof config.chunkOverlap === "number"
+      ? config.chunkOverlap
+      : typeof chunkConfig.overlapChars === "number"
+        ? chunkConfig.overlapChars
+        : 0;
+  uploadStructureMaxChars.value = typeof chunkConfig.maxChars === "number" ? chunkConfig.maxChars : 1800;
+  uploadStructureMinChars.value = typeof chunkConfig.minChars === "number" ? chunkConfig.minChars : 600;
+  uploadRecursiveSeparatorsText.value = Array.isArray(config.recursiveSeparators)
+    ? config.recursiveSeparators.map((separator) => (separator === " " ? "[space]" : separator.replace(/\n/gu, "\\n").replace(/\t/gu, "\\t"))).join("\n")
+    : uploadRecursiveSeparatorsText.value;
   selectedUploadFile.value = null;
   selectedUploadFileName.value = document.source_uri || document.title;
   if (modalUploadFileInput.value) {
@@ -1172,8 +1241,14 @@ async function createKnowledgeBaseFromInput() {
     }
     return;
   }
-  await addKnowledgeBase(newKnowledgeBaseName.value);
+  await addKnowledgeBase({
+    name: newKnowledgeBaseName.value.trim(),
+    embeddingModel: newKnowledgeEmbeddingModel.value,
+    collectionName: newKnowledgeCollectionName.value.trim()
+  });
   newKnowledgeBaseName.value = "";
+  newKnowledgeEmbeddingModel.value = "Qwen/Qwen3-Embedding-8B";
+  newKnowledgeCollectionName.value = "";
   knowledgeStage.value = "knowledge-bases";
   closeAdminModal();
 }
@@ -1184,7 +1259,15 @@ async function saveDocumentEditFromModal() {
   }
   const updated = await saveDocument(editingDocumentId.value, {
     title: editDocumentTitle.value.trim(),
-    enabled: editDocumentEnabled.value
+    enabled: editDocumentEnabled.value,
+    documentType: "knowledge_base",
+    processMode: uploadProcessMode.value,
+    pipelineId: uploadProcessMode.value === "data_channel" ? uploadPipelineId.value ?? undefined : undefined,
+    chunkStrategy: uploadChunkStrategy.value,
+    chunkSize: uploadChunkSize.value,
+    chunkOverlap: uploadChunkOverlap.value,
+    recursiveSeparators: parseUploadRecursiveSeparators(uploadRecursiveSeparatorsText.value),
+    chunkConfig: buildUploadChunkConfig()
   });
   if (updated) {
     closeAdminModal();
@@ -2987,7 +3070,7 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
           <label class="modal-label">
             Embedding 模型
             <select v-model="newKnowledgeEmbeddingModel" class="ui-input modal-control">
-              <option v-for="model in knowledgeEmbeddingModelOptions" :key="model" :value="model">{{ model }}</option>
+              <option v-for="model in knowledgeEmbeddingModelOptions" :key="model.value" :value="model.value">{{ model.label }}</option>
             </select>
             <span>当前后端按全局配置入库，这里作为创建时的展示配置。</span>
           </label>
@@ -3009,7 +3092,7 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
         <header class="modal-head">
           <div>
             <h2>{{ editingDocumentId ? "修改文档" : "上传文档" }}</h2>
-            <p>{{ editingDocumentId ? "更新文档标题和启用状态。" : "上传后解析源文件用于预览；切块参数会保存到文档，点击“切块”时执行。" }}</p>
+            <p>{{ editingDocumentId ? "更新文档标题、启用状态和处理配置。" : "上传后解析源文件用于预览；切块参数会保存到文档，点击“切块”时执行。" }}</p>
           </div>
           <button class="modal-close" type="button" aria-label="关闭" @click="closeAdminModal">×</button>
         </header>
@@ -3029,7 +3112,7 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
             <input ref="modalUploadFileInput" :accept="uploadAccept" class="ui-input modal-file" type="file" :disabled="!!editingDocumentId" @change="onUploadFileSelected" />
             <span>{{ selectedUploadFileLabel() }}</span>
           </label>
-          <template v-if="!editingDocumentId">
+          <div class="modal-config-section">
             <label class="modal-label">
               处理模式
               <select v-model="uploadProcessMode" class="ui-input modal-control">
@@ -3096,7 +3179,7 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
               <p v-if="uploadShowRecursiveSeparatorControls" class="modal-hint">{{ uploadRecursiveSeparatorSummary }}</p>
               <p v-if="uploadShowSemanticNotice" class="modal-hint">语义切块会保留策略配置，后端按当前可用能力执行。</p>
             </template>
-          </template>
+          </div>
           <label v-if="editingDocumentId" class="modal-checkbox">
             <input v-model="editDocumentEnabled" type="checkbox" />
             启用文档
@@ -3162,30 +3245,6 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
           >
             {{ uploadLoading ? "创建中..." : "创建任务" }}
           </button>
-        </footer>
-      </section>
-
-      <section v-else-if="activeAdminModal === 'documentEdit'" class="admin-modal" aria-label="修改文档">
-        <header class="modal-head">
-          <div>
-            <h2>修改文档</h2>
-            <p>更新文档标题与启用状态。</p>
-          </div>
-          <button class="modal-close" type="button" aria-label="关闭" @click="closeAdminModal">×</button>
-        </header>
-        <div class="modal-form single">
-          <label class="modal-label">
-            文档标题
-            <input v-model="editDocumentTitle" class="ui-input modal-control" type="text" placeholder="请输入文档标题" />
-          </label>
-          <label class="modal-checkbox">
-            <input v-model="editDocumentEnabled" type="checkbox" />
-            启用文档
-          </label>
-        </div>
-        <footer class="modal-actions">
-          <button class="ghost-btn" type="button" @click="closeAdminModal">取消</button>
-          <button class="primary-btn" type="button" :disabled="!editDocumentTitle.trim()" @click="void saveDocumentEditFromModal()">保存</button>
         </footer>
       </section>
 
@@ -4944,6 +5003,11 @@ button:disabled {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 18px;
+}
+
+.modal-config-section {
+  display: grid;
+  gap: 20px;
 }
 
 .modal-details {

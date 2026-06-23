@@ -212,17 +212,35 @@ export function useRetriFlowChat() {
   };
 
   const createNewSession = async () => {
-    const created = await createSession(`RetriFlow 新会话 ${sessions.value.length + 1}`);
-    await loadSessions();
-    activeSessionId.value = created.id;
+    if (loading.value && activeStreamController.value) {
+      infoMessage.value = "当前回答还在生成，已保留当前会话。";
+      return;
+    }
+
+    const previousActiveSessionId = activeSessionId.value;
+    const previousMessages = messages.value;
     latestSources.value = [];
     latestWorkflow.value = null;
     latestMcpCalls.value = [];
     errorMessage.value = "";
-    infoMessage.value = "新会话已创建，可以直接开始提问。";
+    infoMessage.value = "正在创建新会话...";
     requestPhase.value = "idle";
     streamStage.value = "idle";
     messages.value = [];
+
+    try {
+      const created = await createSession(`RetriFlow 新会话 ${sessions.value.length + 1}`);
+      activeSessionId.value = created.id;
+      sessions.value = [created, ...sessions.value.filter((session) => session.id !== created.id)];
+      await loadSessions();
+      activeSessionId.value = created.id;
+      infoMessage.value = "新会话已创建，可以直接开始提问。";
+    } catch (error) {
+      activeSessionId.value = previousActiveSessionId;
+      messages.value = previousMessages;
+      infoMessage.value = "";
+      errorMessage.value = error instanceof Error ? error.message : "新建会话失败，请稍后再试。";
+    }
   };
   const removeSession = async (sessionId: string) => {
     const wasActiveSession = activeSessionId.value === sessionId;

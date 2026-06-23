@@ -43,6 +43,7 @@ import {
   type AdminUserUpdateRequest,
   type IngestionPipelineCreateRequest,
   type KnowledgeChunkingOptions,
+  type KnowledgeDocumentUpdatePayload,
   uploadKnowledgeDocument,
   fetchRouteProfile,
   updateRouteProfile,
@@ -735,7 +736,7 @@ export function useRetriFlowAdmin() {
     }
   };
 
-  const saveDocument = async (documentId: number, payload: { title?: string; enabled?: boolean }) => {
+  const saveDocument = async (documentId: number, payload: KnowledgeDocumentUpdatePayload) => {
     if (!canManageKnowledge.value) {
       denyManagementAction();
       return null;
