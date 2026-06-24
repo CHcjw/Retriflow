@@ -32,6 +32,10 @@ class Settings(BaseModel):
     sample_knowledge_dir: str = "backend/sample_data/knowledge"
     storage_backend: str = "local"
     storage_local_dir: str = "backend/data/uploads"
+    s3_endpoint: str = "http://127.0.0.1:9000"
+    s3_access_key_id: str = "rustfsadmin"
+    s3_secret_access_key: str = "rustfsadmin"
+    s3_region: str = "us-east-1"
     langsmith_tracing: bool = False
     langsmith_project: str = "retriflow"
     llm_provider: str = "auto"
@@ -173,6 +177,10 @@ def get_settings() -> Settings:
         sample_knowledge_dir=resolve("RETRIFLOW_SAMPLE_KNOWLEDGE_DIR", "backend/sample_data/knowledge"),
         storage_backend=resolve("RETRIFLOW_STORAGE_BACKEND", "local"),
         storage_local_dir=resolve("RETRIFLOW_STORAGE_LOCAL_DIR", "backend/data/uploads"),
+        s3_endpoint=resolve("RETRIFLOW_S3_ENDPOINT", "http://127.0.0.1:9000"),
+        s3_access_key_id=resolve("RETRIFLOW_S3_ACCESS_KEY_ID", "rustfsadmin"),
+        s3_secret_access_key=resolve("RETRIFLOW_S3_SECRET_ACCESS_KEY", "rustfsadmin"),
+        s3_region=resolve("RETRIFLOW_S3_REGION", "us-east-1"),
         langsmith_tracing=resolve("LANGSMITH_TRACING", "false").lower() == "true",
         langsmith_project=resolve("LANGSMITH_PROJECT", "retriflow"),
         llm_provider=resolve("RETRIFLOW_LLM_PROVIDER", "auto"),

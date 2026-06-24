@@ -59,6 +59,7 @@ const {
   adminDashboard,
   adminIntentNodes,
   adminKeywordMappings,
+  adminSampleQuestions,
   adminTraces,
   adminTraceTotal,
   adminTracePage,
@@ -119,8 +120,9 @@ const {
   saveRouteProfile,
   addKeyword,
   removeKeyword,
-  addSampleQuestion,
-  removeSampleQuestion,
+  loadSampleQuestions,
+  createSampleQuestion,
+  removeSampleQuestionConfig,
   changeUserRole,
   saveUser,
   removeUser,
@@ -562,31 +564,15 @@ const realKeywordRows = computed(() => {
 
 const pagedRealKeywordRows = computed(() => pageSlice(realKeywordRows.value, keywordPage.value));
 
-const sampleQuestionPresets: Record<string, { title: string; description: string }> = {
-  "询问助手是做什么的、是谁、能做什么等": {
-    title: "系统交互",
-    description: "关于助手"
-  },
-  "数据权限、访问控制、安全审计等相关说明": {
-    title: "业务系统",
-    description: "数据安全"
-  },
-  "销售数据统计，如：销售总额、销售量、销售占比、销售趋势、销售预测等": {
-    title: "实时数据",
-    description: "销售汇总数据统计"
-  }
-};
-
 const sampleQuestionRows = computed(() => {
-  const questions = routeProfile.value?.sample_questions ?? [];
-  return questions
-    .map((question) => {
-      const preset = sampleQuestionPresets[question];
+  return adminSampleQuestions.value
+    .map((sample) => {
       return {
-        title: preset?.title ?? selectedKnowledgeBase.value?.name ?? "知识库",
-        description: preset?.description ?? "知识库推荐问法",
-        question,
-        updatedAt: routeProfile.value?.updated_at || ""
+        id: sample.id,
+        title: sample.title,
+        description: sample.description,
+        question: sample.question,
+        updatedAt: sample.updated_at
       };
     })
     .filter((item) => {
@@ -1182,8 +1168,20 @@ async function addKeywordFromInput() {
   closeAdminModal();
 }
 
-function addSampleQuestionFromInput() {
-  addSampleQuestion(newSampleQuestion.value);
+async function addSampleQuestionFromInput() {
+  const question = newSampleQuestion.value.trim();
+  if (!question) {
+    return;
+  }
+  await createSampleQuestion({
+    title: newSampleTitle.value.trim() || "示例问题",
+    description: newSampleDescription.value.trim(),
+    question,
+    sort_order: adminSampleQuestions.value.length * 10 + 10,
+    enabled: true
+  });
+  newSampleTitle.value = "";
+  newSampleDescription.value = "";
   newSampleQuestion.value = "";
   closeAdminModal();
 }
@@ -1209,10 +1207,10 @@ function removeKeywordByValue(keyword: string) {
   }
 }
 
-function removeSampleQuestionByValue(question: string) {
-  const index = routeProfile.value?.sample_questions.findIndex((item) => item === question) ?? -1;
-  if (index >= 0) {
-    removeSampleQuestion(index);
+function removeSampleQuestionByValue(sampleId: string) {
+  const sample = adminSampleQuestions.value.find((item) => item.id === sampleId || item.question === sampleId);
+  if (sample) {
+    void removeSampleQuestionConfig(sample.id);
   }
 }
 
@@ -1894,7 +1892,7 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
             <div class="page-head">
               <div>
                 <h1>文档管理</h1>
-                <p>{{ selectedKnowledgeBase?.name }}（{{ selectedKnowledgeBase?.id }}）</p>
+                <p>{{ selectedKnowledgeBase?.name }}（{{ selectedKnowledgeBase?.collection_name || selectedKnowledgeBase?.id }}）</p>
               </div>
               <div class="page-actions">
                 <button class="ghost-btn" type="button" @click="backToKnowledgeBases">返回知识库</button>
@@ -2852,13 +2850,12 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
           <div class="page-head">
             <div>
               <h1>示例问题管理</h1>
-              <p>配置欢迎页的示例问题与推荐问法，目前按当前知识库路由配置保存。</p>
+              <p>配置欢迎页的示例问题与推荐问法。</p>
             </div>
             <div class="page-actions">
               <input v-model="sampleQuestionSearch" class="ui-input" type="text" placeholder="搜索标题/描述/问题" />
-              <button class="ghost-btn" type="button" @click="void refreshKnowledgeData()">刷新</button>
-              <button class="ghost-btn" type="button" :disabled="!routeProfile" @click="openSampleQuestionModal">新增示例问题</button>
-              <button class="primary-btn" type="button" :disabled="routeProfileLoading || !routeProfile" @click="saveRouteProfile">保存示例</button>
+              <button class="ghost-btn" type="button" @click="void loadSampleQuestions()">刷新</button>
+              <button class="ghost-btn" type="button" @click="openSampleQuestionModal">新增示例问题</button>
             </div>
           </div>
 
@@ -2866,7 +2863,7 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
             <div class="table-toolbar">
               <div>
                 <h2>示例问题</h2>
-                <p>当前知识库：{{ selectedKnowledgeBase?.name || "-" }}</p>
+                <p>用于聊天首页推荐问法展示。</p>
               </div>
             </div>
             <div v-if="false" class="inline-form mapping-form">
@@ -2885,12 +2882,12 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="item in pagedSampleQuestionRows" :key="item.question">
+                  <tr v-for="item in pagedSampleQuestionRows" :key="item.id">
                     <td>{{ item.title }}</td>
                     <td>{{ item.description }}</td>
                     <td class="wide-cell">{{ item.question }}</td>
                     <td>{{ formatDate(item.updatedAt) }}</td>
-                    <td><button class="danger-btn compact" type="button" @click="removeSampleQuestionByValue(item.question)">删除</button></td>
+                    <td><button class="danger-btn compact" type="button" @click="removeSampleQuestionByValue(item.id)">删除</button></td>
                   </tr>
                   <tr v-if="sampleQuestionRows.length === 0">
                     <td colspan="5" class="empty-cell">暂无示例问题。</td>
@@ -3462,7 +3459,7 @@ function chunkMetadataSummary(metadata: Record<string, unknown>) {
         <header class="modal-head">
           <div>
             <h2>新增示例问题</h2>
-            <p>配置欢迎页的示例问题和推荐问法，保存到当前知识库路由配置。</p>
+            <p>配置聊天欢迎页展示的推荐问法。</p>
           </div>
           <button class="modal-close" type="button" aria-label="关闭" @click="closeAdminModal">×</button>
         </header>

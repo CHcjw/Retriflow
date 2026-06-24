@@ -19,6 +19,10 @@ from schemas.admin import (
     AdminModelHealthListResponse,
     AdminModelHealthProbeRequest,
     AdminModelHealthItem,
+    AdminSampleQuestionCreateRequest,
+    AdminSampleQuestionItem,
+    AdminSampleQuestionListResponse,
+    AdminSampleQuestionUpdateRequest,
     AdminSettingListResponse,
     AdminTraceDetailResponse,
     AdminTraceListResponse,
@@ -144,6 +148,36 @@ def update_keyword_mapping(
 @router.delete("/keyword-mappings/{mapping_id}", status_code=204)
 def delete_keyword_mapping(mapping_id: str, user: AdminUser) -> None:
     _service().delete_keyword_mapping(mapping_id)
+
+
+@router.get("/sample-questions", response_model=AdminSampleQuestionListResponse)
+def list_sample_questions(
+    user: AdminUser,
+    enabled_only: bool = Query(default=False),
+) -> AdminSampleQuestionListResponse:
+    return _service().list_sample_questions(enabled_only=enabled_only)
+
+
+@router.post("/sample-questions", response_model=AdminSampleQuestionItem, status_code=201)
+def create_sample_question(
+    request: AdminSampleQuestionCreateRequest,
+    user: AdminUser,
+) -> AdminSampleQuestionItem:
+    return _service().create_sample_question(request)
+
+
+@router.patch("/sample-questions/{sample_id}", response_model=AdminSampleQuestionItem)
+def update_sample_question(
+    sample_id: str,
+    request: AdminSampleQuestionUpdateRequest,
+    user: AdminUser,
+) -> AdminSampleQuestionItem:
+    return _service().update_sample_question(sample_id, request)
+
+
+@router.delete("/sample-questions/{sample_id}", status_code=204)
+def delete_sample_question(sample_id: str, user: AdminUser) -> None:
+    _service().delete_sample_question(sample_id)
 
 
 @router.get("/message-feedback", response_model=AdminMessageFeedbackListResponse)

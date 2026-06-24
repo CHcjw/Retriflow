@@ -95,6 +95,10 @@ class RetriFlowKnowledgeService:
                     "admin",
                 ),
             )
+            try:
+                self.file_storage.ensure_bucket(collection_name)
+            except ValueError as exc:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="存储桶名称已被占用") from exc
             self._sync_knowledge_base_route_profile(connection, knowledge_base_id)
             connection.commit()
 
@@ -133,6 +137,11 @@ class RetriFlowKnowledgeService:
                 if request.collection_name is not None
                 else str(current["collection_name"] or knowledge_base_id.replace("-", ""))
             )
+            if collection_name != str(current["collection_name"] or knowledge_base_id.replace("-", "")):
+                try:
+                    self.file_storage.ensure_bucket(collection_name)
+                except ValueError as exc:
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="存储桶名称已被占用") from exc
             connection.execute(
                 """
                 update knowledge_bases
@@ -153,7 +162,7 @@ class RetriFlowKnowledgeService:
         with get_connection() as connection:
             document_rows = connection.execute(
                 """
-                select id
+                select id, source_uri
                 from knowledge_documents
                 where knowledge_base_id = ?
                 """,
@@ -166,6 +175,11 @@ class RetriFlowKnowledgeService:
                     self.vector_store.delete_document_records(document_id)
                 except Exception:
                     pass
+                if row["source_uri"]:
+                    try:
+                        self.file_storage.delete_by_uri(str(row["source_uri"]))
+                    except Exception:
+                        pass
                 self._delete_document_children(connection, knowledge_base_id, document_id)
 
             connection.execute("delete from ingestion_task_nodes where task_id in (select id from ingestion_tasks where knowledge_base_id = ?)", (knowledge_base_id,))
@@ -445,7 +459,14 @@ class RetriFlowKnowledgeService:
         pipeline_id: int | None = None,
     ) -> KnowledgeDocumentItem:
         self._ensure_knowledge_base_exists(knowledge_base_id)
-        stored_file = self.file_storage.upload_bytes(content_bytes, filename, content_type)
+        with get_connection() as connection:
+            vector_settings = self._load_knowledge_base_vector_settings(connection, knowledge_base_id)
+        collection_name = vector_settings["collection_name"]
+        try:
+            self.file_storage.ensure_bucket(collection_name)
+        except ValueError:
+            pass
+        stored_file = self.file_storage.upload_bytes(content_bytes, filename, content_type, bucket_name=collection_name)
         with self.file_storage.open_stream(stored_file.uri) as source_stream:
             stored_content_bytes = source_stream.read()
         try:
@@ -2058,7 +2079,6 @@ class RetriFlowKnowledgeService:
             values (?, ?, ?, ?, current_timestamp)
             on conflict (knowledge_base_id) do update set
                 profile_text = excluded.profile_text,
-                sample_questions_json = excluded.sample_questions_json,
                 keywords_json = excluded.keywords_json,
                 updated_at = current_timestamp
             """,

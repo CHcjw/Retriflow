@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 class ChatBootstrapResponse(BaseModel):
     product: str
     capabilities: list[str]
+    starter_prompts: list[str] = []
 
 
 class ChatMessageRequest(BaseModel):

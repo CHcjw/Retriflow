@@ -37,6 +37,10 @@ from schemas.admin import (
     AdminModelHealthItem,
     AdminModelHealthListResponse,
     AdminModelHealthProbeRequest,
+    AdminSampleQuestionCreateRequest,
+    AdminSampleQuestionItem,
+    AdminSampleQuestionListResponse,
+    AdminSampleQuestionUpdateRequest,
     AdminSettingItem,
     AdminSettingListResponse,
     AdminTraceDetailResponse,
@@ -557,6 +561,81 @@ class RetriFlowAdminService:
             connection.commit()
         QueryTermMappingCacheManager().clear_cache()
 
+    def list_sample_questions(self, *, enabled_only: bool = False) -> AdminSampleQuestionListResponse:
+        where_clause = "where enabled = 1" if enabled_only else ""
+        with get_connection() as connection:
+            rows = connection.execute(
+                f"""
+                select *
+                from admin_sample_questions
+                {where_clause}
+                order by sort_order, created_at, title
+                """
+            ).fetchall()
+        return AdminSampleQuestionListResponse(items=[self._to_sample_question(row) for row in rows])
+
+    def create_sample_question(self, request: AdminSampleQuestionCreateRequest) -> AdminSampleQuestionItem:
+        sample_id = f"sample-{uuid.uuid4().hex[:12]}"
+        title = self._normalize_required(request.title, "title")
+        question = self._normalize_required(request.question, "question")
+        with get_connection() as connection:
+            connection.execute(
+                """
+                insert into admin_sample_questions (
+                    id, title, description, question, sort_order, enabled
+                )
+                values (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    sample_id,
+                    title,
+                    request.description.strip(),
+                    question,
+                    request.sort_order,
+                    1 if request.enabled else 0,
+                ),
+            )
+            connection.commit()
+            row = self._get_sample_question_row(connection, sample_id)
+        return self._to_sample_question(row)
+
+    def update_sample_question(
+        self,
+        sample_id: str,
+        request: AdminSampleQuestionUpdateRequest,
+    ) -> AdminSampleQuestionItem:
+        mapping = request.model_dump(exclude_unset=True)
+        if "title" in mapping:
+            mapping["title"] = self._normalize_required(str(mapping["title"]), "title")
+        if "question" in mapping:
+            mapping["question"] = self._normalize_required(str(mapping["question"]), "question")
+        if "description" in mapping:
+            mapping["description"] = str(mapping["description"]).strip()
+        if "enabled" in mapping:
+            mapping["enabled"] = 1 if mapping["enabled"] else 0
+        fields = [f"{key} = ?" for key in mapping]
+        values = list(mapping.values())
+        if fields:
+            fields.append("updated_at = current_timestamp")
+        with get_connection() as connection:
+            if self._get_sample_question_row(connection, sample_id) is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="sample question not found")
+            if fields:
+                connection.execute(
+                    f"update admin_sample_questions set {', '.join(fields)} where id = ?",
+                    [*values, sample_id],
+                )
+                connection.commit()
+            row = self._get_sample_question_row(connection, sample_id)
+        return self._to_sample_question(row)
+
+    def delete_sample_question(self, sample_id: str) -> None:
+        with get_connection() as connection:
+            if self._get_sample_question_row(connection, sample_id) is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="sample question not found")
+            connection.execute("delete from admin_sample_questions where id = ?", (sample_id,))
+            connection.commit()
+
     def list_message_feedback(self) -> AdminMessageFeedbackListResponse:
         with get_connection() as connection:
             rows = connection.execute(
@@ -973,6 +1052,19 @@ class RetriFlowAdminService:
         )
 
     @staticmethod
+    def _to_sample_question(row) -> AdminSampleQuestionItem:
+        return AdminSampleQuestionItem(
+            id=str(row["id"]),
+            title=str(row["title"]),
+            description=str(row["description"] or ""),
+            question=str(row["question"]),
+            sort_order=int(row["sort_order"] or 0),
+            enabled=bool(row["enabled"]),
+            created_at=RetriFlowAdminService._serialize_timestamp(row["created_at"]),
+            updated_at=RetriFlowAdminService._serialize_timestamp(row["updated_at"]),
+        )
+
+    @staticmethod
     def _resolve_dashboard_range(range_key: str) -> tuple[str, int, str, int]:
         ranges = {
             "24h": ("24h", 24, "近 24 小时", 12),
@@ -1323,6 +1415,9 @@ class RetriFlowAdminService:
 
     def _get_keyword_mapping_row(self, connection, mapping_id: str):
         return connection.execute("select * from admin_keyword_mappings where id = ?", (mapping_id,)).fetchone()
+
+    def _get_sample_question_row(self, connection, sample_id: str):
+        return connection.execute("select * from admin_sample_questions where id = ?", (sample_id,)).fetchone()
 
     def _session_duration_ms(self, connection, session_id: str) -> int:
         duration_row = connection.execute(

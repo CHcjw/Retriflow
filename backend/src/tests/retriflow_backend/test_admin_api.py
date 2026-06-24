@@ -556,6 +556,47 @@ class RetriFlowAdminApiTests(unittest.TestCase):
         )
         self.assertEqual(delete_response.status_code, 204)
 
+    def test_admin_can_manage_welcome_sample_questions(self) -> None:
+        token = self._register_and_login("sample-admin", "admin")
+
+        create_response = self.client.post(
+            "/api/v1/admin/sample-questions",
+            json={
+                "title": "系统交互",
+                "description": "关于助手",
+                "question": "询问助手是做什么的、是谁、能做什么等",
+                "sort_order": 10,
+                "enabled": True,
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(create_response.status_code, 201)
+        created = create_response.json()
+        self.assertEqual(created["title"], "系统交互")
+        self.assertEqual(created["question"], "询问助手是做什么的、是谁、能做什么等")
+
+        list_response = self.client.get(
+            "/api/v1/admin/sample-questions",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(list_response.status_code, 200)
+        self.assertTrue(any(item["id"] == created["id"] for item in list_response.json()["items"]))
+
+        update_response = self.client.patch(
+            f"/api/v1/admin/sample-questions/{created['id']}",
+            json={"description": "关于助手能力", "enabled": False},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(update_response.status_code, 200)
+        self.assertEqual(update_response.json()["description"], "关于助手能力")
+        self.assertFalse(update_response.json()["enabled"])
+
+        delete_response = self.client.delete(
+            f"/api/v1/admin/sample-questions/{created['id']}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(delete_response.status_code, 204)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,6 +1,6 @@
 ﻿-- RetriFlow PostgreSQL seed data
 -- Usage:
--- 1. Run tools/postgres/schema_pg.sql first.
+-- 1. Run resource/database/schema_pg.sql first.
 -- 2. Then run this file to insert demo seed data.
 
 -- ============================================
@@ -19,104 +19,6 @@ SET
     username = EXCLUDED.username,
     password_hash = EXCLUDED.password_hash,
     role = EXCLUDED.role;
-
--- ============================================
--- Seed Knowledge Base
--- ============================================
-
-INSERT INTO knowledge_bases (
-    id,
-    name,
-    product,
-    document_count,
-    embedding_model,
-    collection_name,
-    owner
-)
-VALUES (
-    'kb-demo-1',
-    'RetriFlow product knowledge base',
-    'RetriFlow',
-    1,
-    'Qwen/Qwen3-Embedding-8B',
-    'kbdemo1',
-    'admin'
-)
-ON CONFLICT (id) DO NOTHING;
-
-INSERT INTO knowledge_base_route_profiles (
-    knowledge_base_id,
-    profile_text,
-    sample_questions_json,
-    keywords_json
-)
-VALUES (
-    'kb-demo-1',
-    '系统交互 业务系统 实时数据 数据安全 销售汇总数据统计',
-    '[
-      "询问助手是做什么的、是谁、能做什么等",
-      "数据权限、访问控制、安全审计等相关说明",
-      "销售数据统计，如：销售总额、销售量、销售占比、销售趋势、销售预测等"
-    ]'::jsonb,
-    '["系统交互", "业务系统", "实时数据", "数据安全", "销售汇总数据统计"]'::jsonb
-)
-ON CONFLICT (knowledge_base_id) DO NOTHING;
-
--- ============================================
--- Seed Knowledge Document
--- ============================================
-
-INSERT INTO knowledge_documents (
-    id,
-    knowledge_base_id,
-    title,
-    source_type,
-    content,
-    status,
-    vector_index_status,
-    vector_chunk_count,
-    vector_indexed_at
-)
-VALUES (
-    1,
-    'kb-demo-1',
-    'RetriFlow migration baseline',
-    'manual',
-    'RetriFlow migrates ragent capabilities into a Python and Vue stack.',
-    'indexed',
-    'indexed',
-    1,
-    '2026-06-09 10:00:00+08'
-)
-ON CONFLICT (id) DO NOTHING;
-
--- ============================================
--- Seed Knowledge Chunk
--- ============================================
-
-INSERT INTO knowledge_chunks (
-    id,
-    knowledge_base_id,
-    document_id,
-    chunk_index,
-    content,
-    char_count,
-    strategy,
-    document_type,
-    metadata_json
-)
-VALUES (
-    1,
-    'kb-demo-1',
-    1,
-    0,
-    'RetriFlow migrates ragent capabilities into a Python and Vue stack.',
-    68,
-    'recursive',
-    'manual',
-    '{}'::jsonb
-)
-ON CONFLICT (id) DO NOTHING;
 
 -- ============================================
 -- Seed Ingestion Pipeline
@@ -194,8 +96,8 @@ VALUES
         'DOMAIN',
         'KB',
         'ROOT',
-        'kb-demo-1',
-        'retriflow_chunk_vectors',
+        '',
+        '',
         '发票、票据、报销凭证等知识库检索问题。',
         '[]'::jsonb,
         '发票信息、票据、报销凭证等问题进入知识库检索。',
@@ -416,44 +318,53 @@ SET
     knowledge_base_id = EXCLUDED.knowledge_base_id,
     updated_at = NOW();
 
-UPDATE knowledge_base_route_profiles
+INSERT INTO admin_sample_questions (
+    id,
+    title,
+    description,
+    question,
+    sort_order,
+    enabled
+)
+VALUES
+    (
+        'sample-system-about',
+        '系统交互',
+        '关于助手',
+        '询问助手是做什么的、是谁、能做什么等',
+        10,
+        1
+    ),
+    (
+        'sample-business-security',
+        '业务系统',
+        '数据安全',
+        '数据权限、访问控制、安全审计等相关说明',
+        20,
+        1
+    ),
+    (
+        'sample-realtime-sales',
+        '实时数据',
+        '销售汇总数据统计',
+        '销售数据统计，如：销售总额、销售量、销售占比、销售趋势、销售预测等',
+        30,
+        1
+    )
+ON CONFLICT (id) DO UPDATE
 SET
-    sample_questions_json = '[
-      "询问助手是做什么的、是谁、能做什么等",
-      "数据权限、访问控制、安全审计等相关说明",
-      "销售数据统计，如：销售总额、销售量、销售占比、销售趋势、销售预测等"
-    ]'::jsonb,
-    keywords_json = '["系统交互", "业务系统", "实时数据", "数据安全", "销售汇总数据统计"]'::jsonb
-WHERE knowledge_base_id = 'kb-demo-1';
-
--- ============================================
--- Refresh Aggregates
--- ============================================
-
-UPDATE knowledge_bases
-SET document_count = (
-    SELECT COUNT(*)
-    FROM knowledge_documents
-    WHERE knowledge_documents.knowledge_base_id = knowledge_bases.id
-);
+    title = EXCLUDED.title,
+    description = EXCLUDED.description,
+    question = EXCLUDED.question,
+    sort_order = EXCLUDED.sort_order,
+    enabled = EXCLUDED.enabled,
+    updated_at = NOW();
 
 -- ============================================
 -- Refresh Identity Sequences
 -- ============================================
 -- PostgreSQL identity sequences are not advanced by explicit id values in seed
 -- inserts. Keep them aligned so the backend can insert new rows after seeding.
-
-SELECT setval(
-    pg_get_serial_sequence('knowledge_documents', 'id'),
-    COALESCE((SELECT MAX(id) FROM knowledge_documents), 1),
-    (SELECT MAX(id) IS NOT NULL FROM knowledge_documents)
-);
-
-SELECT setval(
-    pg_get_serial_sequence('knowledge_chunks', 'id'),
-    COALESCE((SELECT MAX(id) FROM knowledge_chunks), 1),
-    (SELECT MAX(id) IS NOT NULL FROM knowledge_chunks)
-);
 
 SELECT setval(
     pg_get_serial_sequence('ingestion_pipelines', 'id'),

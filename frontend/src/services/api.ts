@@ -573,9 +573,33 @@ export interface AdminKeywordMappingListResponse {
   items: AdminKeywordMappingItem[];
 }
 
+export interface AdminSampleQuestionItem {
+  id: string;
+  title: string;
+  description: string;
+  question: string;
+  sort_order: number;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AdminSampleQuestionUpsertRequest {
+  title?: string;
+  description?: string;
+  question?: string;
+  sort_order?: number;
+  enabled?: boolean;
+}
+
+export interface AdminSampleQuestionListResponse {
+  items: AdminSampleQuestionItem[];
+}
+
 export interface ChatBootstrapResponse {
   product: string;
   capabilities: string[];
+  starter_prompts: string[];
 }
 
 export interface ChatSourceItem {
@@ -1191,6 +1215,41 @@ export function updateAdminKeywordMapping(
 export function deleteAdminKeywordMapping(mappingId: string): Promise<void> {
   return request<void>({
     url: `/api/v1/admin/keyword-mappings/${mappingId}`,
+    method: "DELETE"
+  });
+}
+
+export function fetchAdminSampleQuestions(enabledOnly = false): Promise<AdminSampleQuestionListResponse> {
+  return request<AdminSampleQuestionListResponse>({
+    url: "/api/v1/admin/sample-questions",
+    params: enabledOnly ? { enabled_only: true } : undefined
+  });
+}
+
+export function createAdminSampleQuestion(
+  payload: AdminSampleQuestionUpsertRequest
+): Promise<AdminSampleQuestionItem> {
+  return request<AdminSampleQuestionItem>({
+    url: "/api/v1/admin/sample-questions",
+    method: "POST",
+    data: payload as Record<string, unknown>
+  });
+}
+
+export function updateAdminSampleQuestion(
+  sampleId: string,
+  payload: AdminSampleQuestionUpsertRequest
+): Promise<AdminSampleQuestionItem> {
+  return request<AdminSampleQuestionItem>({
+    url: `/api/v1/admin/sample-questions/${sampleId}`,
+    method: "PATCH",
+    data: payload as Record<string, unknown>
+  });
+}
+
+export function deleteAdminSampleQuestion(sampleId: string): Promise<void> {
+  return request<void>({
+    url: `/api/v1/admin/sample-questions/${sampleId}`,
     method: "DELETE"
   });
 }

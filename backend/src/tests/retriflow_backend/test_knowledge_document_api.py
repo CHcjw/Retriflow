@@ -152,6 +152,25 @@ class RetriFlowKnowledgeDocumentApiTests(unittest.TestCase):
         )
         self.assertEqual(invalid_response.status_code, 422)
 
+    def test_create_knowledge_base_ensures_storage_bucket_from_collection_name(self) -> None:
+        from modules.knowledge.service import RetriFlowKnowledgeService
+        from schemas.knowledge import KnowledgeBaseCreateRequest
+
+        service = RetriFlowKnowledgeService()
+        ensured_buckets: list[str] = []
+        service.file_storage.ensure_bucket = ensured_buckets.append
+
+        created = service.create_knowledge_base(
+            KnowledgeBaseCreateRequest(
+                name="Bucket Policy KB",
+                embedding_model="qwen3-embedding:8b",
+                collection_name="bucketpolicykb",
+            )
+        )
+
+        self.assertEqual(created.collection_name, "bucketpolicykb")
+        self.assertEqual(ensured_buckets, ["bucketpolicykb"])
+
     def test_create_document_returns_vector_index_status(self) -> None:
         create_response = self.client.post(
             "/api/v1/knowledge-bases/kb-demo-1/documents",

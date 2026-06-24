@@ -5,6 +5,7 @@ import {
   changeAdminUserPassword,
   createAdminIntentNode,
   createAdminKeywordMapping,
+  createAdminSampleQuestion,
   createKnowledgeBase,
   createAdminUser,
   createIngestionPipeline,
@@ -13,12 +14,14 @@ import {
   deleteAdminUser,
   deleteAdminIntentNode,
   deleteAdminKeywordMapping,
+  deleteAdminSampleQuestion,
   deleteKnowledgeBase,
   deleteKnowledgeDocument,
   fetchAdminDashboard,
   fetchAdminIntentNodes,
   fetchAdminIntentTreeCacheStatus,
   fetchAdminKeywordMappings,
+  fetchAdminSampleQuestions,
   fetchAdminTraceDetail,
   fetchAdminTraceNodes,
   fetchAdminSettings,
@@ -49,8 +52,10 @@ import {
   updateRouteProfile,
   updateAdminIntentNode,
   updateAdminKeywordMapping,
+  updateAdminSampleQuestion,
   type AdminIntentNodeUpsertRequest,
   type AdminKeywordMappingUpsertRequest,
+  type AdminSampleQuestionUpsertRequest,
   type KnowledgeBaseRouteProfile
 } from "../services/api";
 import { useAuthStore } from "../stores/auth";
@@ -259,6 +264,7 @@ export function useRetriFlowAdmin() {
   const adminIntentNodes = ref<Awaited<ReturnType<typeof fetchAdminIntentNodes>>["items"]>([]);
   const adminIntentTreeCacheStatus = ref<Awaited<ReturnType<typeof fetchAdminIntentTreeCacheStatus>> | null>(null);
   const adminKeywordMappings = ref<Awaited<ReturnType<typeof fetchAdminKeywordMappings>>["items"]>([]);
+  const adminSampleQuestions = ref<Awaited<ReturnType<typeof fetchAdminSampleQuestions>>["items"]>([]);
   const adminTraces = ref<Awaited<ReturnType<typeof fetchAdminTraces>>["items"]>([]);
   const adminTraceTotal = shallowRef(0);
   const adminTracePage = shallowRef(1);
@@ -513,6 +519,7 @@ export function useRetriFlowAdmin() {
           intentNodeData,
           intentTreeCacheData,
           keywordMappingData,
+          sampleQuestionData,
           traceData,
           settingData
         ] = await Promise.all([
@@ -523,6 +530,7 @@ export function useRetriFlowAdmin() {
           fetchAdminIntentNodes(),
           fetchAdminIntentTreeCacheStatus(),
           fetchAdminKeywordMappings(),
+          fetchAdminSampleQuestions(),
           fetchAdminTraces({
             page: adminTracePage.value,
             pageSize: adminTracePageSize.value,
@@ -537,6 +545,7 @@ export function useRetriFlowAdmin() {
         adminIntentNodes.value = intentNodeData.items;
         adminIntentTreeCacheStatus.value = intentTreeCacheData;
         adminKeywordMappings.value = keywordMappingData.items;
+        adminSampleQuestions.value = sampleQuestionData.items;
         adminTraces.value = traceData.items;
         adminTraceTotal.value = traceData.total;
         adminTracePage.value = traceData.page;
@@ -550,6 +559,7 @@ export function useRetriFlowAdmin() {
         adminIntentNodes.value = [];
         adminIntentTreeCacheStatus.value = null;
         adminKeywordMappings.value = [];
+        adminSampleQuestions.value = [];
         adminTraces.value = [];
         adminTraceTotal.value = 0;
         adminSettings.value = [];
@@ -1035,6 +1045,55 @@ export function useRetriFlowAdmin() {
     routeProfile.value.sample_questions = arr;
   };
 
+  const loadSampleQuestions = async () => {
+    const data = await fetchAdminSampleQuestions();
+    adminSampleQuestions.value = data.items;
+  };
+
+  const createSampleQuestion = async (payload: AdminSampleQuestionUpsertRequest) => {
+    if (!isAdmin.value) {
+      denyManagementAction();
+      return;
+    }
+    error.value = "";
+    infoMessage.value = "";
+    try {
+      const created = await createAdminSampleQuestion(payload);
+      adminSampleQuestions.value = [...adminSampleQuestions.value, created];
+      infoMessage.value = "示例问题已新增。";
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : "新增示例问题失败";
+      throw err;
+    }
+  };
+
+  const updateSampleQuestion = async (sampleId: string, payload: AdminSampleQuestionUpsertRequest) => {
+    if (!isAdmin.value) {
+      denyManagementAction();
+      return;
+    }
+    error.value = "";
+    infoMessage.value = "";
+    try {
+      const updated = await updateAdminSampleQuestion(sampleId, payload);
+      adminSampleQuestions.value = adminSampleQuestions.value.map((item) => (item.id === sampleId ? updated : item));
+      infoMessage.value = "示例问题已更新。";
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : "更新示例问题失败";
+      throw err;
+    }
+  };
+
+  const removeSampleQuestionConfig = async (sampleId: string) => {
+    if (!isAdmin.value) {
+      denyManagementAction();
+      return;
+    }
+    await deleteAdminSampleQuestion(sampleId);
+    adminSampleQuestions.value = adminSampleQuestions.value.filter((item) => item.id !== sampleId);
+    infoMessage.value = "示例问题已删除。";
+  };
+
   const changeUserRole = async (userId: string, role: string) => {
     if (!isAdmin.value) {
       denyManagementAction();
@@ -1323,6 +1382,7 @@ export function useRetriFlowAdmin() {
     adminIntentNodes,
     adminIntentTreeCacheStatus,
     adminKeywordMappings,
+    adminSampleQuestions,
     adminTraces,
     adminTraceTotal,
     adminTracePage,
@@ -1406,6 +1466,10 @@ export function useRetriFlowAdmin() {
     removeKeyword,
     addSampleQuestion,
     removeSampleQuestion,
+    loadSampleQuestions,
+    createSampleQuestion,
+    updateSampleQuestion,
+    removeSampleQuestionConfig,
     changeUserRole,
     saveUser,
     removeUser,

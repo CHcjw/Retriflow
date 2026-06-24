@@ -274,6 +274,19 @@ CREATE TABLE IF NOT EXISTS admin_keyword_mappings (
 CREATE INDEX IF NOT EXISTS idx_admin_keyword_mappings_keyword
 ON admin_keyword_mappings (raw_keyword, enabled);
 
+CREATE TABLE IF NOT EXISTS admin_sample_questions (
+    id          TEXT PRIMARY KEY,
+    title       TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    question    TEXT NOT NULL,
+    sort_order  INTEGER NOT NULL DEFAULT 0,
+    enabled     INTEGER NOT NULL DEFAULT 1,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_admin_sample_questions_enabled
+ON admin_sample_questions (enabled, sort_order);
+
 CREATE TABLE IF NOT EXISTS model_health (
     capability               TEXT NOT NULL,
     provider_name            TEXT NOT NULL,

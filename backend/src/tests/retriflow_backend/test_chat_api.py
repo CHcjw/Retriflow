@@ -15,6 +15,7 @@ SRC_PATH = PROJECT_ROOT / "backend" / "src"
 sys.path.insert(0, str(SRC_PATH))
 
 from main import create_app
+from core.state import get_connection
 
 
 class RetriFlowChatApiTests(unittest.TestCase):
@@ -101,12 +102,25 @@ class RetriFlowChatApiTests(unittest.TestCase):
                 connection.commit()
 
     def test_chat_bootstrap_endpoint_returns_capabilities(self) -> None:
+        with get_connection() as connection:
+            connection.execute(
+                """
+                insert into admin_sample_questions (
+                    id, title, description, question, sort_order, enabled
+                )
+                values (?, ?, ?, ?, ?, ?)
+                """,
+                ("sample-chat-bootstrap", "系统交互", "关于助手", "询问助手是做什么的、是谁、能做什么等", 10, 1),
+            )
+            connection.commit()
+
         response = self.client.get("/api/v1/chat/bootstrap")
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertEqual(payload["product"], "RetriFlow")
         self.assertIn("stream_chat", payload["capabilities"])
+        self.assertIn("询问助手是做什么的、是谁、能做什么等", payload["starter_prompts"])
 
     def test_chat_message_returns_retrieved_sources(self) -> None:
         document_response = self.client.post(

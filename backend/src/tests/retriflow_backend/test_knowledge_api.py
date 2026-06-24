@@ -24,6 +24,8 @@ class RetriFlowKnowledgeApiTests(unittest.TestCase):
         os.environ["RETRIFLOW_DATABASE_DSN"] = ""
         os.environ["RETRIFLOW_PGVECTOR_DSN"] = ""
         os.environ["RETRIFLOW_VECTOR_STORE_TYPE"] = "memory"
+        os.environ["RETRIFLOW_STORAGE_BACKEND"] = "local"
+        os.environ["RETRIFLOW_STORAGE_LOCAL_DIR"] = str(Path(self.temp_dir.name) / "uploads")
         from core.config import get_settings
 
         get_settings.cache_clear()
@@ -42,6 +44,8 @@ class RetriFlowKnowledgeApiTests(unittest.TestCase):
         os.environ.pop("RETRIFLOW_DATABASE_DSN", None)
         os.environ.pop("RETRIFLOW_PGVECTOR_DSN", None)
         os.environ.pop("RETRIFLOW_VECTOR_STORE_TYPE", None)
+        os.environ.pop("RETRIFLOW_STORAGE_BACKEND", None)
+        os.environ.pop("RETRIFLOW_STORAGE_LOCAL_DIR", None)
         from core.config import get_settings
 
         get_settings.cache_clear()
@@ -197,6 +201,38 @@ class RetriFlowKnowledgeApiTests(unittest.TestCase):
         self.assertEqual(profile2["profile_text"], "Updated profile text description")
         self.assertEqual(profile2["sample_questions"], ["What is updated?", "How to update route profile?"])
         self.assertEqual(profile2["keywords"], ["update", "route", "profile"])
+
+    def test_document_changes_do_not_overwrite_route_profile_sample_questions(self) -> None:
+        created = self.client.post(
+            "/api/v1/knowledge-bases",
+            json={"name": "Insurance System", "collection_name": "insurance"},
+        ).json()
+        kb_id = created["id"]
+        saved_questions = ["保险系统登录失败怎么办？", "保险系统保单查询入口在哪里？"]
+
+        update_resp = self.client.put(
+            f"/api/v1/knowledge-bases/{kb_id}/route-profile",
+            json={
+                "profile_text": "保险系统示例问题由用户维护",
+                "sample_questions": saved_questions,
+                "keywords": ["insurance"],
+            },
+        )
+        self.assertEqual(update_resp.status_code, 200)
+
+        create_doc_resp = self.client.post(
+            f"/api/v1/knowledge-bases/{kb_id}/documents",
+            json={
+                "title": "互联网保险系统数据安全规范",
+                "source_type": "manual",
+                "content": "pii 相关流程与数据安全说明。",
+            },
+        )
+        self.assertEqual(create_doc_resp.status_code, 201)
+
+        profile = self.client.get(f"/api/v1/knowledge-bases/{kb_id}/route-profile").json()
+        self.assertEqual(profile["sample_questions"], saved_questions)
+        self.assertIn("互联网保险系统数据安全规范", profile["profile_text"])
 
 
 if __name__ == "__main__":

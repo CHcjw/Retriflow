@@ -33,7 +33,24 @@ class RetriFlowChatService:
                 "mcp_tools",
                 "trace_observability",
             ],
+            starter_prompts=self._load_starter_prompts(),
         )
+
+    def _load_starter_prompts(self) -> list[str]:
+        try:
+            with get_connection() as connection:
+                rows = connection.execute(
+                    """
+                    select question
+                    from admin_sample_questions
+                    where enabled = 1
+                    order by sort_order, created_at, title
+                    limit 6
+                    """
+                ).fetchall()
+        except Exception:
+            return []
+        return [str(row["question"]).strip() for row in rows if str(row["question"]).strip()]
 
     def send_message(self, request: ChatMessageRequest, user_id: str) -> ChatMessageWithSourcesResponse:
         self._ensure_session_access(request.session_id, user_id, claim_unowned=True)

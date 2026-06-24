@@ -322,3 +322,34 @@ class AdminKeywordMappingUpdateRequest(BaseModel):
     enabled: bool | None = None
     remark: str | None = None
     knowledge_base_id: str | None = None
+
+
+class AdminSampleQuestionItem(BaseModel):
+    id: str
+    title: str
+    description: str = ""
+    question: str
+    sort_order: int = 0
+    enabled: bool = True
+    created_at: str = ""
+    updated_at: str = ""
+
+
+class AdminSampleQuestionListResponse(BaseModel):
+    items: list[AdminSampleQuestionItem]
+
+
+class AdminSampleQuestionCreateRequest(BaseModel):
+    title: str
+    description: str = ""
+    question: str
+    sort_order: int = 0
+    enabled: bool = True
+
+
+class AdminSampleQuestionUpdateRequest(BaseModel):
+    title: str | None = None
+    description: str | None = None
+    question: str | None = None
+    sort_order: int | None = None
+    enabled: bool | None = None

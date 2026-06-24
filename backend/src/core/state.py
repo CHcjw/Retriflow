@@ -398,6 +398,20 @@ def _initialize_sqlite_database() -> None:
         )
         connection.execute(
             """
+            create table if not exists admin_sample_questions (
+                id text primary key,
+                title text not null,
+                description text not null default '',
+                question text not null,
+                sort_order integer not null default 0,
+                enabled integer not null default 1,
+                created_at text not null default current_timestamp,
+                updated_at text not null default current_timestamp
+            )
+            """
+        )
+        connection.execute(
+            """
             create table if not exists model_health (
                 capability text not null,
                 provider_name text not null,
@@ -507,6 +521,7 @@ def _initialize_sqlite_database() -> None:
         )
         connection.execute("create index if not exists idx_admin_intent_nodes_parent on admin_intent_nodes (parent_id, sort_order)")
         connection.execute("create index if not exists idx_admin_keyword_mappings_keyword on admin_keyword_mappings (raw_keyword, enabled)")
+        connection.execute("create index if not exists idx_admin_sample_questions_enabled on admin_sample_questions (enabled, sort_order)")
         connection.execute("create index if not exists idx_model_health_state on model_health (state, provider_name)")
         connection.execute("create index if not exists idx_rag_trace_nodes_session on rag_trace_nodes (session_id, started_at)")
         connection.execute("create index if not exists idx_rag_trace_nodes_parent on rag_trace_nodes (parent_id)")
@@ -800,6 +815,20 @@ def _initialize_postgres_database() -> None:
             )
             cursor.execute(
                 """
+                create table if not exists admin_sample_questions (
+                    id text primary key,
+                    title text not null,
+                    description text not null default '',
+                    question text not null,
+                    sort_order integer not null default 0,
+                    enabled integer not null default 1,
+                    created_at timestamptz not null default now(),
+                    updated_at timestamptz not null default now()
+                )
+                """
+            )
+            cursor.execute(
+                """
                 create table if not exists model_health (
                     capability text not null,
                     provider_name text not null,
@@ -915,6 +944,7 @@ def _initialize_postgres_database() -> None:
             cursor.execute("create index if not exists idx_ingestion_task_nodes_task on ingestion_task_nodes (task_id, node_order)")
             cursor.execute("create index if not exists idx_admin_intent_nodes_parent on admin_intent_nodes (parent_id, sort_order)")
             cursor.execute("create index if not exists idx_admin_keyword_mappings_keyword on admin_keyword_mappings (raw_keyword, enabled)")
+            cursor.execute("create index if not exists idx_admin_sample_questions_enabled on admin_sample_questions (enabled, sort_order)")
             cursor.execute("create index if not exists idx_model_health_state on model_health (state, provider_name)")
             cursor.execute("create index if not exists idx_conversation_messages_session on conversation_messages (session_id, id)")
             cursor.execute("create index if not exists idx_rag_trace_nodes_session on rag_trace_nodes (session_id, started_at)")

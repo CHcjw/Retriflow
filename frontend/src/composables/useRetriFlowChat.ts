@@ -4,8 +4,7 @@ import {
   cancelChatStreamTask,
   createSession,
   deleteSession,
-  fetchKnowledgeBases,
-  fetchRouteProfile,
+  fetchChatBootstrap,
   fetchSessionMessages,
   fetchSessions,
   streamChatMessage,
@@ -276,12 +275,8 @@ export function useRetriFlowChat() {
 
   const loadStarterPrompts = async () => {
     try {
-      const knowledgeBaseData = await fetchKnowledgeBases();
-      const profiles = await Promise.all(
-        knowledgeBaseData.items.slice(0, 8).map((item) => fetchRouteProfile(item.id))
-      );
-      const configuredPrompts = profiles
-        .flatMap((profile) => profile.sample_questions)
+      const bootstrap = await fetchChatBootstrap();
+      const configuredPrompts = (bootstrap.starter_prompts ?? [])
         .map((prompt) => prompt.trim())
         .filter(Boolean);
       starterPrompts.value = Array.from(new Set(configuredPrompts)).slice(0, 6);
