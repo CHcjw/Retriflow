@@ -597,6 +597,45 @@ class RetriFlowAdminApiTests(unittest.TestCase):
         )
         self.assertEqual(delete_response.status_code, 204)
 
+    def test_admin_sample_question_rejects_duplicate_question(self) -> None:
+        token = self._register_and_login("sample-duplicate-admin", "admin")
+        payload = {
+            "title": "系统交互",
+            "description": "关于助手",
+            "question": "询问助手是做什么的、是谁、能做什么等",
+            "sort_order": 10,
+            "enabled": True,
+        }
+
+        first_response = self.client.post(
+            "/api/v1/admin/sample-questions",
+            json=payload,
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(first_response.status_code, 201)
+
+        duplicate_response = self.client.post(
+            "/api/v1/admin/sample-questions",
+            json={**payload, "title": "重复问题"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(duplicate_response.status_code, 409)
+        self.assertIn("示例问题已存在", duplicate_response.json()["detail"])
+
+        second_response = self.client.post(
+            "/api/v1/admin/sample-questions",
+            json={**payload, "title": "业务系统", "question": "数据权限、访问控制、安全审计等相关说明"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(second_response.status_code, 201)
+
+        update_duplicate_response = self.client.patch(
+            f"/api/v1/admin/sample-questions/{second_response.json()['id']}",
+            json={"question": payload["question"]},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(update_duplicate_response.status_code, 409)
+
 
 if __name__ == "__main__":
     unittest.main()

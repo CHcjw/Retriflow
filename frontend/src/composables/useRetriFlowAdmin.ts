@@ -27,37 +27,47 @@ import {
   fetchAdminSettings,
   fetchAdminTraces,
   fetchAdminUsers,
+  updateAdminIntentNode,
+  updateAdminKeywordMapping,
+  updateAdminSampleQuestion,
+  updateAdminUser,
+  updateAdminUserRole,
+  type AdminIntentNodeUpsertRequest,
+  type AdminKeywordMappingUpsertRequest,
+  type AdminSampleQuestionUpsertRequest,
+  type AdminUserCreateRequest,
+  type AdminUserPasswordChangeRequest,
+  type AdminUserUpdateRequest
+} from "../services/adminApi";
+import {
+  createKnowledgeBase,
+  createKnowledgeDocument,
+  deleteKnowledgeBase,
+  deleteKnowledgeDocument,
   fetchIngestionTaskNodes,
-  fetchIngestionPipelines,
   fetchIngestionTasks,
   fetchKnowledgeBases,
   fetchKnowledgeChunks,
   fetchKnowledgeDocuments,
-  fetchMeta,
   reindexKnowledgeDocument,
   updateKnowledgeBase,
-  updateKnowledgeDocument,
   updateKnowledgeChunk,
-  updateIngestionPipeline,
-  updateAdminUser,
-  updateAdminUserRole,
-  type AdminUserCreateRequest,
-  type AdminUserPasswordChangeRequest,
-  type AdminUserUpdateRequest,
-  type IngestionPipelineCreateRequest,
-  type KnowledgeChunkingOptions,
-  type KnowledgeDocumentUpdatePayload,
+  updateKnowledgeDocument,
   uploadKnowledgeDocument,
   fetchRouteProfile,
   updateRouteProfile,
-  updateAdminIntentNode,
-  updateAdminKeywordMapping,
-  updateAdminSampleQuestion,
-  type AdminIntentNodeUpsertRequest,
-  type AdminKeywordMappingUpsertRequest,
-  type AdminSampleQuestionUpsertRequest,
+  type KnowledgeChunkingOptions,
+  type KnowledgeDocumentUpdatePayload,
   type KnowledgeBaseRouteProfile
-} from "../services/api";
+} from "../services/knowledgeApi";
+import {
+  createIngestionPipeline,
+  deleteIngestionPipeline,
+  fetchIngestionPipelines,
+  updateIngestionPipeline,
+  type IngestionPipelineCreateRequest
+} from "../services/pipelineApi";
+import { fetchMeta } from "../services/metaApi";
 import { useAuthStore } from "../stores/auth";
 
 const DEFAULT_CHUNK_SIZE = 512;

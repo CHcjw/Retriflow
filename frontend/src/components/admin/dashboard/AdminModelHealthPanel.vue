@@ -5,7 +5,7 @@ import {
   fetchAdminModelHealth,
   probeAdminModelHealth,
   type AdminModelHealthItem
-} from "../../services/api";
+} from "../../../services/adminApi";
 
 const loading = shallowRef(false);
 const probing = shallowRef(false);

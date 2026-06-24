@@ -2,7 +2,7 @@
 import { onBeforeUnmount, onMounted } from "vue";
 import { useRouter } from "vue-router";
 
-import { getUnauthorizedEventName } from "./services/api";
+import { getUnauthorizedEventName } from "./services/authApi";
 import { useAuthStore } from "./stores/auth";
 
 const authStore = useAuthStore();

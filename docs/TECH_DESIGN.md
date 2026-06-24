@@ -10,6 +10,7 @@
 - 向量存储：pgvector，测试和降级场景支持 memory vector store。
 - 文档解析：Apache Tika，OCR 服务可选。
 - 队列依赖：Redis，使用 `docker-compose.services.yml` 提供本地服务。
+- 对象存储：本地文件系统或 RustFS/S3，使用同一 `infra/storage` 抽象。
 - 外部模型：支持 OpenAI-compatible provider、Ollama embedding 和 reranker。
 
 ## 项目结构
@@ -26,14 +27,14 @@ RetriFlow/
       tests/            # pytest 回归测试
   frontend/
     src/
-      components/       # 通用组件和后台组件，后台逐步拆成独立面板
-      composables/      # 复用状态与业务编排
+      components/       # 通用组件；后台组件按 chunks/common/dashboard/documents/intent/keyword/knowledge/pipeline/samples/settings/trace/users 拆分
+      composables/      # 复用状态与业务编排；后台 composable 按 common/documents/intent/keyword/knowledge/pipeline/users 拆分
       router/           # 前端路由
-      services/         # API 类型和请求函数
+      services/         # HTTP client、API 类型和按 auth/chat/knowledge/admin/pipeline/meta 拆分的请求函数
       stores/           # Pinia 状态
       views/            # 页面
-  docx/                 # PRD、技术设计、AI 开发指令
-  tools/postgres/       # PostgreSQL schema、seed、inspect 脚本
+  docs/                 # PRD、技术设计、AI 开发指令
+  resource/database/    # PostgreSQL schema、seed、清库脚本和说明
   docker-compose.services.yml
 ```
 
@@ -55,7 +56,7 @@ RetriFlow/
 
 - `knowledge_bases`：知识库基础信息、embedding model、collection name。
 - `knowledge_base_route_profiles`：知识库路由画像、示例问题和关键词。
-- `knowledge_documents`：文档元数据、上传源文件 `source_uri`、解析文本、索引状态、分块配置。
+- `knowledge_documents`：文档元数据、上传源文件 `source_uri`、源文件 `source_hash`、解析文本、索引状态、分块配置。
 - `knowledge_chunks`：chunk 内容、策略、文档类型、元数据和启停状态。
 - `knowledge_document_blocks`：结构化段落、标题、表格、图片说明和页码。
 - `knowledge_document_table_cells`：表格 row、col、header 关系。
@@ -73,6 +74,7 @@ RetriFlow/
 - `model_health`：provider/model/capability 健康快照，支持重启恢复。
 - `admin_intent_nodes`：后台意图树节点。
 - `admin_keyword_mappings`：关键词映射配置。
+- `admin_sample_questions`：聊天欢迎页示例问题与推荐问法配置，不绑定具体知识库。
 
 ## 核心流程
 
@@ -101,14 +103,16 @@ RetriFlow/
 ### 文档入库流程
 
 1. 上传或修改文档时选择分块策略和数据通道。
-2. 上传源文件通过 `infra/storage` 写入可替换文件存储，当前本地实现返回 `local://` URI。
-3. 从存储重新打开源文件后交给 Tika 检测 MIME 并解析正文、metadata 和结构化块。
-4. OCR 和图片说明服务可用时补充图片文本，不可用时降级。
-5. 标准化清洗文本、表格和空值。
-6. 根据 pipeline 节点配置生成 `RetriFlowIngestionPipeline`。
-7. 根据策略生成 source documents、chunk documents 和 chunk metadata。
-8. 写入 `knowledge_documents.source_uri`、`knowledge_chunks` 和 pgvector。
-9. 写入 `ingestion_tasks` 和 `ingestion_task_nodes`，保留节点输出。
+2. 上传源文件先计算 SHA-256，按同一知识库内 `source_hash` 判重，重复时返回 409 业务错误。
+3. 上传源文件通过 `infra/storage` 写入可替换文件存储，本地返回 `local://` URI，RustFS/S3 返回 `s3://bucket/key` URI。
+4. 对象 key 使用内容 hash 前缀加保留中文的原始文件名，避免随机乱码名并保持相同内容稳定命名。
+5. 从存储重新打开源文件后交给 Tika 检测 MIME 并解析正文、metadata 和结构化块。
+6. OCR 和图片说明服务可用时补充图片文本，不可用时降级。
+7. 标准化清洗文本、表格和空值。
+8. 根据 pipeline 节点配置生成 `RetriFlowIngestionPipeline`。
+9. 根据策略生成 source documents、chunk documents 和 chunk metadata。
+10. 写入 `knowledge_documents.source_uri/source_hash`、`knowledge_chunks` 和 pgvector。
+11. 写入 `ingestion_tasks` 和 `ingestion_task_nodes`，保留节点输出。
 
 ### 队列限流流程
 
@@ -128,13 +132,14 @@ RetriFlow/
 5. 意图树 Redis 缓存只缓存真实后台节点，admin create/update/delete 后必须清理；路由时按分数排序保留阈值以上的多个 KB 候选，最多 3 个目标，保留 parent -> child fallback 路径；workflow 会对 rewrite 后的多个 query 分别路由并合并 KB 范围。
 6. MCP trace 节点命名为 `mcp.tool.<tool_id>`，metadata 保留 tool、server、transport 和 schema version；远程 server 注册按 ragent 自动配置语义逐个初始化，失败 server 记录 unhealthy/error/tool_count=0 并跳过，不影响内置工具和其他远程 server。
 7. 非流式 LLM 调用通过 `_post_json_with_fallback()` 对齐 ragent `ModelRoutingExecutor`，按候选 provider 顺序调用；单个 provider 失败由 `_post_json()` 记录模型健康失败，再继续尝试下一个可用候选。
-8. 后台 `AdminView` 继续承担路由级编排，模型健康等独立区域下沉到 `components/admin/`，子组件必须自带局部控件样式，避免父组件 scoped CSS 无法穿透导致原生控件裸露。
+8. 后台 `AdminView` 继续承担路由级编排，业务面板已按功能下沉到 `components/admin/*`，表单状态已按功能下沉到 `composables/admin/*`；公共弹窗、分页、通知和 toast 统一放在 `components/admin/common`，子组件必须自带局部控件样式或使用明确的全局后台样式。
 9. Ingestion pipeline 对齐 ragent 链式执行语义：先校验 `nextNodeId` 是否存在和是否成环，再从第一个起点节点沿链执行，断开的节点不会被记为已执行。
 10. Ingestion 条件执行对齐 ragent `ConditionEvaluator`，支持 boolean、JSON `all/any/not/field`、嵌套字段路径和基础比较。
 11. Ingestion 输出抽取对齐 ragent `NodeOutputExtractor`，parser/fetcher 暴露文本与来源，enhancer 暴露增强文本、关键词和问题，chunker/enricher 暴露 chunk count 和 chunks，indexer 暴露 settings 和 chunk count。
 12. 数据通道执行时如果 pipeline 配置无效，API 返回 `400 Invalid ingestion pipeline`，不让底层校验异常冒成 500。
 13. Prompt 模板服务使用 `PromptScene` 和 `PromptBuildPlan` 组织 rewrite、intent、guidance、answer 场景，LLM answer 构建不再散落在调用层硬编码。
-14. 文件存储使用 `StoredFile` 和 `LocalFileStorageService` 抽象，业务只依赖 `upload_bytes/open_stream/delete_by_uri`；当前不实现没有真实依赖的 S3 管理后台。
+14. 文件存储使用 `StoredFile`、`LocalFileStorageService` 和 `S3FileStorageService` 抽象，业务只依赖 `upload_bytes/open_stream/delete_by_uri/delete_bucket`；RustFS/S3 删除 bucket 前会先列举并清空对象。
+15. 前端 HTTP 核心集中在 `services/httpClient.ts`，负责 Axios 实例、Bearer Token、401 事件、通用 `request` 和 `requestBlob`；`api.ts` 保留类型和 endpoint 实现，`adminApi/authApi/chatApi/knowledgeApi/metaApi/pipelineApi` 作为领域化导出入口。
 
 ## 配置与外部服务
 
@@ -142,10 +147,15 @@ RetriFlow/
 - 文件存储配置：
   - `RETRIFLOW_STORAGE_BACKEND=local`
   - `RETRIFLOW_STORAGE_LOCAL_DIR=backend/data/uploads`
-- PostgreSQL 脚本位于 `tools/postgres/`：
+- RustFS/S3 配置：
+  - `RETRIFLOW_STORAGE_BACKEND=rustfs`
+  - `RETRIFLOW_S3_ENDPOINT`
+  - `RETRIFLOW_S3_ACCESS_KEY_ID`
+  - `RETRIFLOW_S3_SECRET_ACCESS_KEY`
+- PostgreSQL 脚本位于 `resource/database/`：
   - `schema_pg.sql`：建表、索引、扩展和兼容字段。
-  - `init_data_pg.sql`：默认管理员、示例知识库、示例文档、默认 pipeline、意图节点和关键词映射。
-  - `inspect_pg.sql`：用于 DBeaver、HeidiSQL、pgAdmin 等工具检查结构和数据。
+  - `init_data_pg.sql`：默认管理员、默认 pipeline、意图节点、关键词映射和欢迎页示例问题，不初始化知识库。
+  - `drop_all_tables_pg.sql`：用于 HeidiSQL 等客户端清理当前 schema 内业务表。
 - 默认管理员：`admin / admin`。
 
 ## 验证命令
@@ -167,11 +177,10 @@ cmd /c npm.cmd run build
 
 ## 剩余技术差距
 
-- Trace 数据已落表且后台可按 root trace 字段分页筛选，但还需要更完整的实时覆盖和后台独立可视化。
 - Redis 队列已支持取消清理、快照和拒绝持久化，但缺更细队列位置遥测。
 - Ingestion 已有节点结果、条件和输出，但还不是 ragent 那样完整的节点执行引擎。
 - 意图树已有 Redis 缓存、基础 fallback、多 KB 候选保留、多 query 路由合并和最小歧义引导，但缺 ragent 完整候选置信度传播和节点级检索参数。
-- 检索已抽象 channel/postprocessor，并暴露 stage metrics；ES、缓存、版本过滤和更细治理仍需真实后端支撑。
+- 检索已抽象 channel/postprocessor，并暴露 stage metrics；缓存、版本过滤和更细治理仍需真实后端支撑。
 - MCP 已有工具 trace、schema version 和远程 server 注册健康状态，但缺原生 function calling 与后台治理展示。
-- 模型健康已有后端能力、手动 probe 和非流式当次请求 fallback，但缺后台面板、定时探测、启动预热和流式首包探针 fallback。
-- 后台已拆出 Dashboard、Trace 和模型健康面板；仍需继续把知识库、文档、分块、意图、关键词和数据通道从 `AdminView` 拆成更清晰的 ragent 式管理面板。
+- 模型健康已有后端能力、独立后台面板、手动 probe 和非流式当次请求 fallback，但缺定时探测、启动预热和流式首包探针 fallback。
+- 后台已拆出 Dashboard、Trace、模型健康、知识库、文档、分块、意图、关键词、数据通道、示例问题、用户和设置面板；后续重点是继续压缩 `AdminView` 的编排代码、补浏览器自动化 UI 回归，并把更多纯状态/表单逻辑下沉到 feature composable。

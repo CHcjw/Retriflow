@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, nextTick } from "vue";
 import { useRouter } from "vue-router";
-import type { SessionItem } from "../../services/api";
+import type { SessionItem } from "../../services/chatApi";
 import { useAuthStore } from "../../stores/auth";
 
 const props = defineProps<{

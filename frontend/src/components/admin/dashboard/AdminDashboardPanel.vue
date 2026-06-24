@@ -7,7 +7,7 @@ import type {
   AdminDashboardResponse,
   AdminDashboardSeries,
   AdminDashboardTrendPanel
-} from "../../services/api";
+} from "../../../services/adminApi";
 
 const props = defineProps<{
   dashboard: AdminDashboardResponse | null;

@@ -13,7 +13,7 @@ import {
   type ChatMcpCallItem,
   type ChatSourceItem,
   type ChatWorkflow
-} from "../services/api";
+} from "../services/chatApi";
 
 export interface ChatMessage {
   id: string;

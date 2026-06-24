@@ -579,6 +579,7 @@ class RetriFlowAdminService:
         title = self._normalize_required(request.title, "title")
         question = self._normalize_required(request.question, "question")
         with get_connection() as connection:
+            self._ensure_unique_sample_question(connection, question)
             connection.execute(
                 """
                 insert into admin_sample_questions (
@@ -620,6 +621,8 @@ class RetriFlowAdminService:
         with get_connection() as connection:
             if self._get_sample_question_row(connection, sample_id) is None:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="sample question not found")
+            if "question" in mapping:
+                self._ensure_unique_sample_question(connection, str(mapping["question"]), exclude_id=sample_id)
             if fields:
                 connection.execute(
                     f"update admin_sample_questions set {', '.join(fields)} where id = ?",
@@ -1418,6 +1421,24 @@ class RetriFlowAdminService:
 
     def _get_sample_question_row(self, connection, sample_id: str):
         return connection.execute("select * from admin_sample_questions where id = ?", (sample_id,)).fetchone()
+
+    def _ensure_unique_sample_question(self, connection, question: str, *, exclude_id: str = "") -> None:
+        normalized = question.strip()
+        if not normalized:
+            return
+        row = connection.execute(
+            """
+            select id, title
+            from admin_sample_questions
+            where trim(question) = ?
+              and (? = '' or id <> ?)
+            limit 1
+            """,
+            (normalized, exclude_id, exclude_id),
+        ).fetchone()
+        if row is not None:
+            title = str(row["title"] or normalized)
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"示例问题已存在：{title}")
 
     def _session_duration_ms(self, connection, session_id: str) -> int:
         duration_row = connection.execute(

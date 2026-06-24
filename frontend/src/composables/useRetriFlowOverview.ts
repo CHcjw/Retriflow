@@ -1,6 +1,8 @@
 import { onMounted, ref, shallowRef, watch } from "vue";
 
-import { fetchChatBootstrap, fetchKnowledgeBases, fetchMeta, fetchSessions } from "../services/api";
+import { fetchChatBootstrap, fetchSessions } from "../services/chatApi";
+import { fetchKnowledgeBases } from "../services/knowledgeApi";
+import { fetchMeta } from "../services/metaApi";
 import { useAuthStore } from "../stores/auth";
 
 export function useRetriFlowOverview() {

@@ -16,7 +16,7 @@ RetriFlow 是一个对齐 ragent 的企业知识问答系统，后端使用 Pyth
 - API 层保持薄，只处理路由、鉴权、参数和 service 调用。
 - 配置集中在 `backend/src/core/config.py`。
 - 数据库连接、初始化、自动补表和 seed 集中在 `backend/src/core/state.py`。
-- 修改接口、数据库、RAG 链路、后台功能或配置后，必须同步更新 `docx/` 对应主题。
+- 修改接口、数据库、RAG 链路、后台功能或配置后，必须同步更新 `docs/` 对应主题。
 - 文档更新不要写日期流水账，要把新状态融入 PRD、技术设计或开发指令的对应章节。
 
 ## 代码风格
@@ -36,10 +36,10 @@ RetriFlow 是一个对齐 ragent 的企业知识问答系统，后端使用 Pyth
 - 前端 UI 或 API 类型变化至少运行 `cmd /c npm.cmd run build`。
 - 涉及数据库结构时同步检查：
   - `backend/src/core/state.py`
-  - `tools/postgres/schema_pg.sql`
+  - `resource/database/schema_pg.sql`
   - 相关测试
 - 涉及 seed 数据时同步检查：
-  - `tools/postgres/init_data_pg.sql`
+  - `resource/database/init_data_pg.sql`
   - 相关测试
 - 测试使用 SQLite 时显式设置：
   - `RETRIFLOW_DATABASE_BACKEND=sqlite`
@@ -117,10 +117,14 @@ RetriFlow 是一个对齐 ragent 的企业知识问答系统，后端使用 Pyth
    - 侧边栏入口必须有 icon。
    - 列表统一展示“共 x 条”。
    - 搜索下拉只在 focus 且有输入时显示，点击结果后跳转。
-   - 知识库、文档、分块需要真实修改功能。
+   - 知识库、文档、分块已具备真实修改入口；后续调整必须继续走真实后端接口，不要退化成前端假状态。
    - 下拉框样式要统一，不使用突兀原生样式。
    - Trace 详情保持 ragent 风格的执行耗时表，不恢复杂乱树详情卡片。
-   - 新后台面板优先放到 `components/admin/`，`AdminView` 只负责组合；子组件如果使用按钮、输入框、表格，要自带 scoped 样式或明确使用全局样式，不能依赖父组件 scoped CSS 穿透。
+   - 欢迎页示例问题与推荐问法使用 `admin_sample_questions` 独立配置，不要再绑定到当前知识库 route profile。
+   - 新建知识库、上传文档等操作遇到后端 409/400 业务错误时，前端必须显示后端 `detail`，不要静默失败。
+   - 新后台面板优先放到 `components/admin/<feature>/`，公共控件放到 `components/admin/common/`；`AdminView` 只负责路由级组合和跨面板编排。
+   - 后台表单状态和纯 UI 状态优先放到 `composables/admin/<feature>/`；通用分页、格式化和 toast 放到 `composables/admin/common/`。
+   - 子组件如果使用按钮、输入框、表格，要自带 scoped 样式或明确使用全局样式，不能依赖父组件 scoped CSS 穿透。
 
 ## 模块边界
 
@@ -134,11 +138,12 @@ RetriFlow 是一个对齐 ragent 的企业知识问答系统，后端使用 Pyth
 - `modules/mcp`：MCP 工具注册、参数提取、远程客户端和执行编排。
 - `modules/rag`：意图识别、查询改写、歧义引导、Prompt 模板、检索、rerank、答案后处理、workflow、trace。
 - `modules/admin`：Dashboard、用户、意图树、关键词、流水线、trace、系统设置。
+- `frontend/src/services/httpClient.ts`：前端 Axios 实例、Bearer Token、401 事件、通用 `request` 和 `requestBlob`；业务入口通过 `adminApi/authApi/chatApi/knowledgeApi/metaApi/pipelineApi` 导出。
 - `infra/llm`：模型调用、模型路由、模型健康。
 - `infra/embeddings`：embedding provider。
 - `infra/vector_store`：pgvector 和 memory vector store。
 - `infra/document_parser`：Tika、OCR、结构化提取和标准化。
-- `infra/storage`：上传源文件存储抽象，当前只实现本地 `local://` URI，不伪造 S3 后台能力。
+- `infra/storage`：上传源文件存储抽象，支持本地 `local://` 与 RustFS/S3 `s3://bucket/key`；对象 key 保留中文文件名并用内容 hash 前缀稳定命名。
 
 ## 推荐验证命令
 
@@ -161,6 +166,8 @@ cmd /c npm.cmd run build
 
 - 不要要求用户先选择知识库再聊天，首页必须直接可问。
 - 不要让删除、修改、搜索只在前端假生效。
+- 删除知识库必须同步清理对象存储 bucket；RustFS/S3 删除 bucket 前要先清空对象。
+- 同一知识库内重复上传同一源文件必须按 `source_hash` 拦截，并给出明确前端提示。
 - 不要在来源中暴露内部路由、冗长路径或调试字段。
 - 上传文档的 `source_uri` 是后端存储 URI，前端可用于后台诊断展示，但不要当作公开下载地址直接暴露给普通用户。
 - 不要让 Markdown 回答退化成纯文本。

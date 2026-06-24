@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import type { AdminTraceNodeItem } from "../../services/api";
+import type { AdminTraceNodeItem } from "../../../services/adminApi";
 
 type TraceTimelineNode = AdminTraceNodeItem & {
   children: TraceTimelineNode[];

@@ -9,7 +9,7 @@ import {
   type AuthLoginResponse,
   type AuthRegisterRequest,
   type AuthUser
-} from "../services/api";
+} from "../services/authApi";
 
 const ACCESS_TOKEN_STORAGE_KEY = "retriflow.access_token";
 
