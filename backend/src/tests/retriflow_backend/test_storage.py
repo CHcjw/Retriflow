@@ -42,7 +42,19 @@ class _FakeS3Client:
     def delete_object(self, Bucket: str, Key: str) -> None:
         self.objects.pop((Bucket, Key), None)
 
+    def list_objects_v2(self, Bucket: str, **kwargs) -> dict:
+        contents = [{"Key": key} for bucket, key in self.objects if bucket == Bucket]
+        return {"Contents": contents, "IsTruncated": False}
+
+    def delete_objects(self, Bucket: str, Delete: dict) -> None:
+        for item in Delete.get("Objects", []):
+            self.objects.pop((Bucket, item.get("Key")), None)
+
     def delete_bucket(self, Bucket: str) -> None:
+        if any(bucket == Bucket for bucket, _key in self.objects):
+            error = RuntimeError("bucket is not empty")
+            error.response = {"Error": {"Code": "BucketNotEmpty"}}
+            raise error
         self.buckets.discard(Bucket)
 
 
@@ -56,13 +68,13 @@ class RetriFlowStorageTests(unittest.TestCase):
 
         stored = storage.upload_bytes(
             b"hello retriflow",
-            "source file.md",
+            "互联网保险系统数据安全规范.md",
             "text/markdown",
             bucket_name="policykb",
         )
 
-        self.assertRegex(stored.uri, r"^s3://policykb/[a-f0-9]{32}-source_file\.md$")
-        self.assertEqual(stored.filename, "source_file.md")
+        self.assertRegex(stored.uri, r"^s3://policykb/[a-f0-9]{16}-互联网保险系统数据安全规范\.md$")
+        self.assertEqual(stored.filename, "互联网保险系统数据安全规范.md")
         self.assertEqual(stored.content_type, "text/markdown")
         with storage.open_stream(stored.uri) as stream:
             self.assertEqual(stream.read(), b"hello retriflow")
@@ -79,6 +91,20 @@ class RetriFlowStorageTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             storage.ensure_bucket("policykb")
+
+    def test_s3_storage_deletes_objects_before_bucket(self) -> None:
+        from infra.storage import S3FileStorageService
+
+        fake_client = _FakeS3Client()
+        storage = S3FileStorageService(client=fake_client)
+        storage.ensure_bucket("policykb")
+        storage.upload_bytes(b"one", "one.md", "text/markdown", bucket_name="policykb")
+        storage.upload_bytes(b"two", "two.md", "text/markdown", bucket_name="policykb")
+
+        storage.delete_bucket("policykb")
+
+        self.assertNotIn("policykb", fake_client.buckets)
+        self.assertEqual(fake_client.objects, {})
 
 
 if __name__ == "__main__":

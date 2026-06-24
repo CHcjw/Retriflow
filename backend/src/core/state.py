@@ -230,6 +230,7 @@ def _initialize_sqlite_database() -> None:
                 title text not null,
                 source_type text not null,
                 source_uri text not null default '',
+                source_hash text not null default '',
                 content text not null,
                 status text not null default 'indexed',
                 vector_index_status text not null default 'pending',
@@ -245,6 +246,7 @@ def _initialize_sqlite_database() -> None:
         _ensure_sqlite_column(connection, "knowledge_documents", "vector_chunk_count", "integer not null default 0")
         _ensure_sqlite_column(connection, "knowledge_documents", "vector_indexed_at", "text")
         _ensure_sqlite_column(connection, "knowledge_documents", "source_uri", "text not null default ''")
+        _ensure_sqlite_column(connection, "knowledge_documents", "source_hash", "text not null default ''")
         _ensure_sqlite_column(connection, "knowledge_documents", "processing_config_json", "text not null default '{}'")
         connection.execute(
             """
@@ -520,6 +522,7 @@ def _initialize_sqlite_database() -> None:
             """
         )
         connection.execute("create index if not exists idx_admin_intent_nodes_parent on admin_intent_nodes (parent_id, sort_order)")
+        connection.execute("create index if not exists idx_knowledge_documents_source_hash on knowledge_documents (knowledge_base_id, source_hash)")
         connection.execute("create index if not exists idx_admin_keyword_mappings_keyword on admin_keyword_mappings (raw_keyword, enabled)")
         connection.execute("create index if not exists idx_admin_sample_questions_enabled on admin_sample_questions (enabled, sort_order)")
         connection.execute("create index if not exists idx_model_health_state on model_health (state, provider_name)")
@@ -611,6 +614,7 @@ def _initialize_postgres_database() -> None:
                     title text not null,
                     source_type text not null,
                     source_uri text not null default '',
+                    source_hash text not null default '',
                     content text not null,
                     status text not null default 'indexed',
                     vector_index_status text not null default 'pending',
@@ -621,6 +625,7 @@ def _initialize_postgres_database() -> None:
                 )
                 """
             )
+            cursor.execute("alter table knowledge_documents add column if not exists source_hash text not null default ''")
             _ensure_postgres_column(
                 cursor,
                 "knowledge_documents",
@@ -937,6 +942,7 @@ def _initialize_postgres_database() -> None:
                 """
             )
             cursor.execute("create index if not exists idx_knowledge_documents_kb on knowledge_documents (knowledge_base_id)")
+            cursor.execute("create index if not exists idx_knowledge_documents_source_hash on knowledge_documents (knowledge_base_id, source_hash)")
             cursor.execute("create index if not exists idx_knowledge_chunks_doc on knowledge_chunks (document_id, chunk_index)")
             cursor.execute("create index if not exists idx_structured_blocks_doc on knowledge_document_blocks (document_id, block_index)")
             cursor.execute("create index if not exists idx_table_cells_block on knowledge_document_table_cells (block_id, row_index, column_index)")

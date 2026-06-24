@@ -576,6 +576,24 @@ class RetriFlowKnowledgeDocumentApiTests(unittest.TestCase):
         with resolve_file_storage().open_stream(created["source_uri"]) as source_stream:
             self.assertEqual(source_stream.read(), b"RetriFlow keeps the uploaded source file.")
 
+    def test_upload_rejects_duplicate_source_file_in_same_knowledge_base(self) -> None:
+        file_content = "互联网保险系统数据安全规范。".encode("utf-8")
+        first_response = self.client.post(
+            "/api/v1/knowledge-bases/kb-demo-1/documents/upload",
+            headers=self._auth_headers(self.admin_token),
+            files={"file": ("互联网保险系统数据安全规范.md", file_content, "text/markdown")},
+        )
+        self.assertEqual(first_response.status_code, 201)
+
+        duplicate_response = self.client.post(
+            "/api/v1/knowledge-bases/kb-demo-1/documents/upload",
+            headers=self._auth_headers(self.admin_token),
+            files={"file": ("互联网保险系统数据安全规范.md", file_content, "text/markdown")},
+        )
+
+        self.assertEqual(duplicate_response.status_code, 409)
+        self.assertIn("该文档已上传过", duplicate_response.json()["detail"])
+
     def test_preview_uploaded_document_returns_persisted_content(self) -> None:
         upload_response = self.client.post(
             "/api/v1/knowledge-bases/kb-demo-1/documents/upload",

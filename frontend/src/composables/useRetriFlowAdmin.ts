@@ -592,13 +592,19 @@ export function useRetriFlowAdmin() {
       return;
     }
 
-    const created =
-      typeof payload === "object"
-        ? await createKnowledgeBase(payload)
-        : await createKnowledgeBase(payload?.trim() || `RetriFlow 知识库 ${knowledgeBases.value.length + 1}`);
-    selectedKnowledgeBaseId.value = created.id;
-    infoMessage.value = "知识库已创建。";
-    await load();
+    error.value = "";
+    infoMessage.value = "";
+    try {
+      const created =
+        typeof payload === "object"
+          ? await createKnowledgeBase(payload)
+          : await createKnowledgeBase(payload?.trim() || `RetriFlow 知识库 ${knowledgeBases.value.length + 1}`);
+      selectedKnowledgeBaseId.value = created.id;
+      infoMessage.value = "知识库已创建。";
+      await load();
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : "新增知识库失败";
+    }
   };
 
   const saveKnowledgeBase = async (

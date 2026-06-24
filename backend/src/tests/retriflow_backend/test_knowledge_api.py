@@ -80,6 +80,37 @@ class RetriFlowKnowledgeApiTests(unittest.TestCase):
         listed = self.client.get("/api/v1/knowledge-bases").json()
         self.assertEqual(listed["items"], [])
 
+    def test_create_knowledge_base_rejects_duplicate_name(self) -> None:
+        first_response = self.client.post(
+            "/api/v1/knowledge-bases",
+            json={"name": "重复知识库", "collection_name": "duplicatekb"},
+        )
+        self.assertEqual(first_response.status_code, 201)
+
+        duplicate_response = self.client.post(
+            "/api/v1/knowledge-bases",
+            json={"name": "重复知识库", "collection_name": "duplicatekb2"},
+        )
+
+        self.assertEqual(duplicate_response.status_code, 409)
+        self.assertIn("知识库已存在", duplicate_response.json()["detail"])
+
+    def test_delete_knowledge_base_deletes_storage_bucket(self) -> None:
+        from modules.knowledge.service import RetriFlowKnowledgeService
+        from schemas.knowledge import KnowledgeBaseCreateRequest
+
+        service = RetriFlowKnowledgeService()
+        deleted_buckets: list[str] = []
+        service.file_storage.ensure_bucket = lambda bucket: None
+        service.file_storage.delete_bucket = deleted_buckets.append
+        created = service.create_knowledge_base(
+            KnowledgeBaseCreateRequest(name="Bucket Delete KB", collection_name="bucketdeletekb")
+        )
+
+        service.delete_knowledge_base(created.id)
+
+        self.assertEqual(deleted_buckets, ["bucketdeletekb"])
+
     def test_delete_document_removes_document_and_chunks(self) -> None:
         created = self.client.post(
             "/api/v1/knowledge-bases",

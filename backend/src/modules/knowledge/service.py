@@ -1,4 +1,5 @@
 import json
+import hashlib
 from pathlib import Path
 
 from fastapi import HTTPException, status
@@ -76,10 +77,15 @@ class RetriFlowKnowledgeService:
 
     def create_knowledge_base(self, request: KnowledgeBaseCreateRequest) -> KnowledgeBaseItem:
         with get_connection() as connection:
+            name = request.name.strip()
+            if self._knowledge_base_name_exists(connection, name):
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"知识库已存在：{name}")
             existing_ids = connection.execute("select id from knowledge_bases").fetchall()
             next_index = self._next_numeric_suffix([str(row["id"]) for row in existing_ids], prefix="kb-")
             knowledge_base_id = f"kb-{next_index}"
             collection_name = request.collection_name.strip() or knowledge_base_id.replace("-", "")
+            if self._knowledge_base_collection_exists(connection, collection_name):
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"知识库 collection 已存在：{collection_name}")
             connection.execute(
                 """
                 insert into knowledge_bases (id, name, product, document_count, embedding_model, collection_name, owner, updated_at)
@@ -87,7 +93,7 @@ class RetriFlowKnowledgeService:
                 """,
                 (
                     knowledge_base_id,
-                    request.name.strip(),
+                    name,
                     "RetriFlow",
                     0,
                     request.embedding_model.strip() or "Qwen/Qwen3-Embedding-8B",
@@ -137,6 +143,10 @@ class RetriFlowKnowledgeService:
                 if request.collection_name is not None
                 else str(current["collection_name"] or knowledge_base_id.replace("-", ""))
             )
+            if self._knowledge_base_name_exists(connection, name, exclude_id=knowledge_base_id):
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"知识库已存在：{name}")
+            if self._knowledge_base_collection_exists(connection, collection_name, exclude_id=knowledge_base_id):
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"知识库 collection 已存在：{collection_name}")
             if collection_name != str(current["collection_name"] or knowledge_base_id.replace("-", "")):
                 try:
                     self.file_storage.ensure_bucket(collection_name)
@@ -160,6 +170,11 @@ class RetriFlowKnowledgeService:
     def delete_knowledge_base(self, knowledge_base_id: str) -> None:
         self._ensure_knowledge_base_exists(knowledge_base_id)
         with get_connection() as connection:
+            kb_row = connection.execute(
+                "select collection_name from knowledge_bases where id = ?",
+                (knowledge_base_id,),
+            ).fetchone()
+            collection_name = str(kb_row["collection_name"] or knowledge_base_id.replace("-", "")) if kb_row else ""
             document_rows = connection.execute(
                 """
                 select id, source_uri
@@ -188,6 +203,11 @@ class RetriFlowKnowledgeService:
             connection.execute("delete from knowledge_base_route_profiles where knowledge_base_id = ?", (knowledge_base_id,))
             connection.execute("delete from knowledge_bases where id = ?", (knowledge_base_id,))
             connection.commit()
+        if collection_name:
+            try:
+                self.file_storage.delete_bucket(collection_name)
+            except Exception:
+                pass
 
     def delete_document(self, knowledge_base_id: str, document_id: int) -> None:
         self._ensure_document_exists(knowledge_base_id, document_id)
@@ -461,6 +481,21 @@ class RetriFlowKnowledgeService:
         self._ensure_knowledge_base_exists(knowledge_base_id)
         with get_connection() as connection:
             vector_settings = self._load_knowledge_base_vector_settings(connection, knowledge_base_id)
+            source_hash = hashlib.sha256(content_bytes).hexdigest()
+            duplicate_row = connection.execute(
+                """
+                select id, title
+                from knowledge_documents
+                where knowledge_base_id = ? and source_hash = ?
+                limit 1
+                """,
+                (knowledge_base_id, source_hash),
+            ).fetchone()
+            if duplicate_row is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"该文档已上传过：{duplicate_row['title']}",
+                )
         collection_name = vector_settings["collection_name"]
         try:
             self.file_storage.ensure_bucket(collection_name)
@@ -488,6 +523,7 @@ class RetriFlowKnowledgeService:
             structured_document=parsed_result.structured_document,
             parsed_content=parsed_result.ingestion_text,
             source_uri=stored_file.uri,
+            source_hash=source_hash,
             processing_config=self._build_processing_config(
                 document_type=document_type or "knowledge_base",
                 process_mode=process_mode,
@@ -1022,6 +1058,7 @@ class RetriFlowKnowledgeService:
         structured_document: StructuredDocument,
         parsed_content: str,
         source_uri: str,
+        source_hash: str,
         processing_config: dict,
     ) -> KnowledgeDocumentItem:
         with get_connection() as connection:
@@ -1032,6 +1069,7 @@ class RetriFlowKnowledgeService:
                     title,
                     source_type,
                     source_uri,
+                    source_hash,
                     content,
                     status,
                     vector_index_status,
@@ -1039,7 +1077,7 @@ class RetriFlowKnowledgeService:
                     vector_indexed_at,
                     processing_config_json
                 )
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 returning id
                 """,
                 (
@@ -1047,6 +1085,7 @@ class RetriFlowKnowledgeService:
                     title,
                     "upload",
                     source_uri,
+                    source_hash,
                     parsed_content,
                     "indexed",
                     "pending",
@@ -1862,6 +1901,32 @@ class RetriFlowKnowledgeService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Knowledge base not found",
             )
+
+    @staticmethod
+    def _knowledge_base_name_exists(connection, name: str, *, exclude_id: str = "") -> bool:
+        row = connection.execute(
+            """
+            select id
+            from knowledge_bases
+            where lower(name) = lower(?) and (? = '' or id <> ?)
+            limit 1
+            """,
+            (name, exclude_id, exclude_id),
+        ).fetchone()
+        return row is not None
+
+    @staticmethod
+    def _knowledge_base_collection_exists(connection, collection_name: str, *, exclude_id: str = "") -> bool:
+        row = connection.execute(
+            """
+            select id
+            from knowledge_bases
+            where collection_name = ? and (? = '' or id <> ?)
+            limit 1
+            """,
+            (collection_name, exclude_id, exclude_id),
+        ).fetchone()
+        return row is not None
 
     def _ensure_document_exists(self, knowledge_base_id: str, document_id: int) -> None:
         with get_connection() as connection:

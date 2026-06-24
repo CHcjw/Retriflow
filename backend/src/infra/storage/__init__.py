@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 from typing import BinaryIO, Protocol
-from uuid import uuid4
 import re
 
 from core.config import get_settings
@@ -60,7 +60,7 @@ class LocalFileStorageService:
         bucket_name: str | None = None,
     ) -> StoredFile:
         filename = self._safe_filename(original_filename)
-        object_name = f"{uuid4().hex}-{filename}"
+        object_name = self._generate_object_key(filename, content)
         target_path = (self.base_dir / object_name).resolve()
         self._ensure_inside_base(target_path)
         target_path.write_bytes(content)
@@ -102,7 +102,12 @@ class LocalFileStorageService:
     @staticmethod
     def _safe_filename(filename: str) -> str:
         name = Path(filename or "upload.bin").name.strip() or "upload.bin"
-        return re.sub(r"[^A-Za-z0-9._-]+", "_", name)
+        return re.sub(r"[\x00-\x1f\x7f/\\:]+", "_", name)[:180] or "upload.bin"
+
+    @staticmethod
+    def _generate_object_key(filename: str, content: bytes) -> str:
+        digest = hashlib.sha256(content).hexdigest()[:16]
+        return f"{digest}-{filename}"
 
 
 class S3FileStorageService:
@@ -150,7 +155,7 @@ class S3FileStorageService:
     ) -> StoredFile:
         bucket = self._validate_bucket_name(bucket_name)
         filename = LocalFileStorageService._safe_filename(original_filename)
-        object_key = self._generate_object_key(filename)
+        object_key = self._generate_object_key(filename, content)
         resolved_content_type = content_type or "application/octet-stream"
         self.client.put_object(
             Bucket=bucket,
@@ -191,13 +196,30 @@ class S3FileStorageService:
     def delete_bucket(self, bucket_name: str) -> None:
         bucket = self._validate_bucket_name(bucket_name)
         try:
+            self._delete_bucket_objects(bucket)
             self.client.delete_bucket(Bucket=bucket)
         except Exception:
             return None
 
+    def _delete_bucket_objects(self, bucket: str) -> None:
+        continuation_token: str | None = None
+        while True:
+            params: dict[str, object] = {"Bucket": bucket}
+            if continuation_token:
+                params["ContinuationToken"] = continuation_token
+            response = self.client.list_objects_v2(**params)
+            objects = [{"Key": item["Key"]} for item in response.get("Contents", []) if item.get("Key")]
+            if objects:
+                self.client.delete_objects(Bucket=bucket, Delete={"Objects": objects, "Quiet": True})
+            if not response.get("IsTruncated"):
+                break
+            continuation_token = str(response.get("NextContinuationToken") or "")
+            if not continuation_token:
+                break
+
     @staticmethod
-    def _generate_object_key(filename: str) -> str:
-        return f"{uuid4().hex}-{filename}"
+    def _generate_object_key(filename: str, content: bytes) -> str:
+        return LocalFileStorageService._generate_object_key(filename, content)
 
     @staticmethod
     def _validate_bucket_name(bucket_name: str | None) -> str:
