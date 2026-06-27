@@ -520,7 +520,7 @@ function canUseAssistantActions(message: ChatMessage): boolean {
 }
 
 .prose-message pre {
-  background: var(--sidebar-dark-bg);
+  background: #14202a;
   padding: 16px;
   border-radius: 12px;
   overflow-x: auto;
@@ -630,7 +630,7 @@ function canUseAssistantActions(message: ChatMessage): boolean {
   height: 28px;
   border: 1px solid var(--border-light);
   border-radius: 8px;
-  background: white;
+  background: var(--surface-strong);
   color: var(--text-light);
   display: inline-flex;
   align-items: center;
@@ -641,8 +641,8 @@ function canUseAssistantActions(message: ChatMessage): boolean {
 
 .feedback-button:hover:not(:disabled),
 .feedback-button.active {
-  background: rgba(49, 94, 251, 0.08);
-  border-color: rgba(49, 94, 251, 0.28);
+  background: rgba(15, 143, 130, 0.08);
+  border-color: rgba(15, 143, 130, 0.28);
   color: var(--primary);
 }
 
@@ -766,7 +766,7 @@ function canUseAssistantActions(message: ChatMessage): boolean {
   flex-direction: column;
   gap: 5px;
   padding: 10px 12px;
-  background: white;
+  background: rgba(255, 255, 255, 0.9);
   border: 1px solid var(--border-light);
   border-radius: 8px;
   font-size: 13px;
@@ -778,7 +778,7 @@ function canUseAssistantActions(message: ChatMessage): boolean {
 .ref-item:hover,
 .ref-item:focus-visible,
 .ref-item.expanded {
-  border-color: rgba(37, 99, 235, 0.28);
+  border-color: rgba(15, 143, 130, 0.3);
   box-shadow: 0 8px 20px rgba(15, 23, 42, 0.06);
   outline: none;
 }
@@ -808,7 +808,7 @@ function canUseAssistantActions(message: ChatMessage): boolean {
   flex: 0 0 auto;
   padding: 1px 6px;
   border-radius: 999px;
-  background: rgba(37, 99, 235, 0.1);
+  background: rgba(15, 143, 130, 0.11);
   color: var(--primary);
   font-size: 11px;
   font-weight: 600;

@@ -188,7 +188,7 @@ function handleLogout() {
 .sidebar {
   width: 280px;
   height: 100vh;
-  background: var(--sidebar-bg);
+  background: rgba(237, 243, 246, 0.92);
   border-right: 1px solid var(--border-light);
   display: flex;
   flex-direction: column;
@@ -238,7 +238,8 @@ function handleLogout() {
 }
 
 .quick-start-card {
-  background: linear-gradient(135deg, #F0F6FF 0%, #FFF8E7 100%);
+  background:
+    linear-gradient(135deg, rgba(221, 244, 239, 0.96) 0%, rgba(231, 238, 249, 0.92) 100%);
   border-radius: 16px;
   padding: 16px;
   border: 1px solid rgba(255, 255, 255, 0.5);
@@ -329,7 +330,7 @@ function handleLogout() {
 }
 
 .admin-panel-btn:hover {
-  background: rgba(90, 92, 250, 0.05);
+  background: rgba(15, 143, 130, 0.08);
 }
 
 .admin-panel-btn svg {
@@ -384,7 +385,7 @@ function handleLogout() {
 .search-input input:focus {
   outline: none;
   border-color: var(--primary);
-  box-shadow: 0 0 0 3px rgba(90, 92, 250, 0.1);
+  box-shadow: 0 0 0 3px rgba(15, 143, 130, 0.12);
 }
 
 .history-list {
@@ -419,7 +420,7 @@ function handleLogout() {
 }
 
 .history-item.active {
-  background: rgba(90, 92, 250, 0.1);
+  background: rgba(15, 143, 130, 0.12);
   color: var(--primary);
   font-weight: 500;
 }

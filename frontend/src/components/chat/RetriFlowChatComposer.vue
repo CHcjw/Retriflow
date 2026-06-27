@@ -125,9 +125,9 @@ const onKeydown = (event: KeyboardEvent) => {
 
 .composer-box {
   width: 100%;
-  background: white;
+  background: rgba(255, 255, 255, 0.94);
   border-radius: 20px;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
+  box-shadow: 0 12px 34px rgba(23, 32, 51, 0.08);
   border: 1px solid var(--border-light);
   padding: 16px 20px;
   display: flex;
@@ -137,8 +137,8 @@ const onKeydown = (event: KeyboardEvent) => {
 }
 
 .composer-box:focus-within {
-  border-color: rgba(90, 92, 250, 0.3);
-  box-shadow: 0 8px 30px rgba(90, 92, 250, 0.1);
+  border-color: rgba(15, 143, 130, 0.34);
+  box-shadow: 0 16px 42px rgba(15, 143, 130, 0.14);
 }
 
 .auto-resize-textarea {
@@ -192,7 +192,7 @@ const onKeydown = (event: KeyboardEvent) => {
 
 .mode-btn:hover,
 .mode-btn.active {
-  background: #ebf1fb;
+  background: var(--primary-soft);
   color: var(--primary);
 }
 
@@ -246,7 +246,7 @@ const onKeydown = (event: KeyboardEvent) => {
 .send-btn:not(:disabled) {
   background: var(--primary);
   color: white;
-  box-shadow: 0 4px 12px rgba(90, 92, 250, 0.3);
+  box-shadow: 0 8px 20px rgba(15, 143, 130, 0.26);
 }
 
 .send-btn:not(:disabled):hover {

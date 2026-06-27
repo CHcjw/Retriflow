@@ -256,8 +256,8 @@ const emit = defineEmits<{
 }
 
 .intent-node.active {
-  border-color: rgba(109, 61, 245, 0.55);
-  background: #f5f2ff;
+  border-color: rgba(15, 143, 130, 0.55);
+  background: #e8f6f3;
 }
 
 .child-node {

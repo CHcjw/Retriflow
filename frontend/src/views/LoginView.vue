@@ -165,9 +165,9 @@ async function submit() {
   place-items: center;
   padding: 24px;
   background:
-    radial-gradient(circle at 20% 20%, rgba(109, 61, 245, 0.16), transparent 32%),
-    radial-gradient(circle at 80% 10%, rgba(14, 165, 233, 0.12), transparent 28%),
-    linear-gradient(135deg, #f8fbff 0%, #eef4fb 100%);
+    radial-gradient(circle at 20% 20%, rgba(15, 143, 130, 0.16), transparent 32%),
+    radial-gradient(circle at 80% 10%, rgba(37, 99, 235, 0.1), transparent 28%),
+    linear-gradient(135deg, var(--bg-gradient-start) 0%, var(--bg-gradient-end) 100%);
 }
 
 .login-card {
@@ -193,7 +193,7 @@ async function submit() {
   height: 48px;
   place-items: center;
   border-radius: 16px;
-  background: #6d3df5;
+  background: var(--primary);
   color: white;
   font-weight: 800;
 }
@@ -253,8 +253,8 @@ async function submit() {
 }
 
 .input-wrapper input:focus {
-  border-color: #6d3df5;
-  box-shadow: 0 0 0 4px rgba(109, 61, 245, 0.1);
+  border-color: var(--primary);
+  box-shadow: 0 0 0 4px rgba(15, 143, 130, 0.12);
   outline: 0;
 }
 
@@ -267,7 +267,7 @@ async function submit() {
 .icon-btn {
   border: 0;
   background: transparent;
-  color: #6d3df5;
+  color: var(--primary);
   cursor: pointer;
   font-weight: 700;
 }
@@ -302,7 +302,7 @@ async function submit() {
   height: 52px;
   border: 0;
   border-radius: 14px;
-  background: #6d3df5;
+  background: var(--primary);
   color: white;
   cursor: pointer;
   font-size: 16px;
@@ -322,7 +322,7 @@ async function submit() {
 .register-link button {
   border: 0;
   background: transparent;
-  color: #009688;
+  color: var(--primary);
   cursor: pointer;
   font: inherit;
   font-weight: 800;

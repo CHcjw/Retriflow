@@ -1,21 +1,27 @@
 :root {
-  --primary: #5A5CFA;
-  --primary-hover: #4B4DEC;
-  --bg-gradient-start: #F8F9FD;
-  --bg-gradient-end: #EBF1FB;
-  --surface: #FFFFFF;
-  --text-main: #111827;
-  --text-muted: #6B7280;
-  --text-light: #9CA3AF;
-  --border-light: #E5E7EB;
-  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
-  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
-  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
-  --sidebar-bg: #F9FAFB;
-  --sidebar-dark-bg: #1F2336;
-  --sidebar-dark-active: #323755;
-  --danger: #EF4444;
-  --success: #10B981;
+  --primary: #0F8F82;
+  --primary-hover: #0B766D;
+  --primary-soft: #DDF4EF;
+  --accent: #2563EB;
+  --accent-soft: #E7EEF9;
+  --bg-gradient-start: #F5F8FA;
+  --bg-gradient-end: #E4EDF2;
+  --surface: #F5F8FA;
+  --surface-strong: #FFFFFF;
+  --surface-muted: #EDF3F6;
+  --text-main: #172033;
+  --text-muted: #5F6F83;
+  --text-light: #8A98AA;
+  --border-light: #D5E1E8;
+  --shadow-sm: 0 1px 2px 0 rgba(23, 32, 51, 0.06);
+  --shadow-md: 0 10px 24px rgba(23, 32, 51, 0.08);
+  --shadow-lg: 0 18px 46px rgba(23, 32, 51, 0.12);
+  --sidebar-bg: #EDF3F6;
+  --sidebar-dark-bg: #15202B;
+  --sidebar-dark-active: #203140;
+  --danger: #DC4446;
+  --success: #0F9F78;
+  --warning: #B7791F;
 }
 
 * {
@@ -27,7 +33,9 @@
 body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   color: var(--text-main);
-  background: var(--surface);
+  background:
+    radial-gradient(circle at 12% 8%, rgba(15, 143, 130, 0.12), transparent 30%),
+    linear-gradient(135deg, var(--bg-gradient-start) 0%, var(--bg-gradient-end) 100%);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -80,11 +88,11 @@ ul, ol {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #CBD5E1;
+  background: #B9C8D3;
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #94A3B8;
+  background: #8798A8;
 }
 
 /* Common utilities */

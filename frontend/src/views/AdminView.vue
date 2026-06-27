@@ -1732,6 +1732,7 @@ async function deletePipelineFromRow(pipelineId: number) {
         v-else-if="activeAdminModal === 'intent'"
         v-model:advanced="newIntentAdvanced"
         v-model:code="newIntentCode"
+        v-model:collection-name="newIntentCollectionName"
         v-model:description="newIntentDescription"
         v-model:knowledge-base-id="newIntentKnowledgeBaseId"
         v-model:level="newIntentLevel"
@@ -1785,14 +1786,14 @@ async function deletePipelineFromRow(pipelineId: number) {
 
 <style scoped>
 .admin-layout {
-  --admin-bg: #f4f7fb;
+  --admin-bg: #eef4f8;
   --admin-card: #ffffff;
   --admin-ink: #172033;
-  --admin-muted: #64748b;
-  --admin-border: #dbe4f0;
-  --admin-primary: #6d3df5;
-  --admin-primary-dark: #5330c6;
-  --admin-sidebar: #1d2434;
+  --admin-muted: #5f6f83;
+  --admin-border: #d5e1e8;
+  --admin-primary: #0f8f82;
+  --admin-primary-dark: #0b766d;
+  --admin-sidebar: #15202b;
   display: grid;
   flex: 1 1 auto;
   width: 100%;
@@ -1814,7 +1815,7 @@ async function deletePipelineFromRow(pipelineId: number) {
   top: 0;
   height: 100vh;
   padding: 28px 14px;
-  background: linear-gradient(180deg, #1b2132 0%, #222b3f 100%);
+  background: linear-gradient(180deg, #13202a 0%, #182734 100%);
   color: #e8eefc;
   overflow: hidden;
   transition: padding 0.2s ease;
@@ -1895,7 +1896,7 @@ async function deletePipelineFromRow(pipelineId: number) {
 }
 
 .nav-item.active {
-  background: rgba(109, 61, 245, 0.28);
+  background: rgba(15, 143, 130, 0.28);
   color: #ffffff;
 }
 
@@ -1984,7 +1985,7 @@ async function deletePipelineFromRow(pipelineId: number) {
   justify-content: space-between;
   height: 64px;
   padding: 0 28px;
-  background: rgba(255, 255, 255, 0.86);
+  background: rgba(255, 255, 255, 0.82);
   border-bottom: 1px solid var(--admin-border);
   backdrop-filter: blur(12px);
 }
@@ -2050,7 +2051,7 @@ kbd {
   height: 30px;
   place-items: center;
   border-radius: 999px;
-  background: #fff0c2;
+  background: #dff4ef;
   color: #2d3445;
   font-weight: 800;
 }
@@ -2401,7 +2402,7 @@ button:disabled {
 .link-btn {
   border: 0;
   background: transparent;
-  color: #413cff;
+  color: var(--admin-primary);
   cursor: pointer;
   font: inherit;
   font-weight: 700;
@@ -2575,7 +2576,7 @@ button:disabled {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, #1f9d8a, #6d3df5);
+  background: linear-gradient(90deg, #0f8f82, #2563eb);
   box-shadow: 0 8px 20px rgba(31, 157, 138, 0.24);
 }
 
@@ -2625,7 +2626,7 @@ button:disabled {
 }
 
 .bar-message {
-  background: linear-gradient(180deg, #6d3df5, #3b1ea8);
+  background: linear-gradient(180deg, #0f8f82, #0b766d);
 }
 
 .bar-latency {
@@ -2667,7 +2668,7 @@ button:disabled {
 }
 
 .legend-message {
-  background: #6d3df5;
+  background: #0f8f82;
 }
 
 .legend-latency {
@@ -2720,9 +2721,9 @@ button:disabled {
 .insight-item {
   margin: 0;
   padding: 12px 14px;
-  border: 1px solid rgba(109, 61, 245, 0.12);
+  border: 1px solid rgba(15, 143, 130, 0.14);
   border-radius: 14px;
-  background: rgba(109, 61, 245, 0.04);
+  background: rgba(15, 143, 130, 0.05);
   color: var(--admin-ink);
 }
 
@@ -2778,8 +2779,8 @@ button:disabled {
 }
 
 .tree-button.active {
-  border-color: rgba(109, 61, 245, 0.55);
-  background: rgba(109, 61, 245, 0.08);
+  border-color: rgba(15, 143, 130, 0.55);
+  background: rgba(15, 143, 130, 0.08);
 }
 
 .intent-detail-head {
@@ -2809,8 +2810,8 @@ button:disabled {
 .soft-tag {
   padding: 6px 10px;
   border-radius: 999px;
-  background: #eef2ff;
-  color: #3730a3;
+  background: #dff4ef;
+  color: #0b766d;
   font-size: 12px;
   font-weight: 700;
 }

@@ -34,10 +34,10 @@
 
 .table-card {
   overflow: hidden;
-  border: 1px solid #dbe4f0;
+  border: 1px solid var(--border-light);
   border-radius: 12px;
-  background: #ffffff;
-  box-shadow: 0 8px 24px rgba(34, 43, 63, 0.05);
+  background: var(--surface-strong);
+  box-shadow: var(--shadow-md);
 }
 
 .table-toolbar {
@@ -46,7 +46,7 @@
   justify-content: space-between;
   gap: 16px;
   padding: 20px 24px;
-  border-bottom: 1px solid #dbe4f0;
+  border-bottom: 1px solid var(--border-light);
 }
 
 .table-toolbar h2 {
@@ -81,7 +81,7 @@
 }
 
 .data-table th {
-  background: #fbfcff;
+  background: #f7fafb;
   color: #52627c;
   font-weight: 700;
 }
@@ -394,10 +394,10 @@
 
 .ui-input {
   min-height: 42px;
-  border: 1px solid #dbe4f0;
+  border: 1px solid var(--border-light);
   border-radius: 10px;
   padding: 0 12px;
-  background: #ffffff;
+  background: var(--surface-strong);
   color: #172033;
   font: inherit;
 }
@@ -419,17 +419,17 @@ textarea.ui-input {
 }
 
 .primary-btn {
-  background: #6d3df5;
+  background: var(--primary);
   color: #ffffff;
 }
 
 .primary-btn:hover {
-  background: #5330c6;
+  background: var(--primary-hover);
 }
 
 .ghost-btn {
-  border-color: #dbe4f0;
-  background: #ffffff;
+  border-color: var(--border-light);
+  background: var(--surface-strong);
   color: #30405b;
 }
 
@@ -453,7 +453,7 @@ button:disabled {
 .link-btn {
   border: 0;
   background: transparent;
-  color: #413cff;
+  color: var(--primary);
   cursor: pointer;
   font: inherit;
   font-weight: 700;
@@ -496,9 +496,9 @@ button:disabled {
 }
 
 .badge {
-  border: 1px solid #dce5f2;
-  background: #f0f4fa;
-  color: #52627c;
+  border: 1px solid var(--border-light);
+  background: var(--surface-muted);
+  color: #4f6073;
 }
 
 .modal-backdrop {
@@ -522,7 +522,7 @@ button:disabled {
   border: 1px solid rgba(226, 232, 240, 0.9);
   border-radius: 24px;
   padding: 26px;
-  background: #ffffff;
+  background: var(--surface-strong);
   box-shadow: 0 28px 90px rgba(15, 23, 42, 0.22);
 }
 
@@ -567,7 +567,7 @@ button:disabled {
 .modal-close {
   width: 40px;
   height: 40px;
-  border: 1px solid #dbe4f0;
+  border: 1px solid var(--border-light);
   border-radius: 999px;
   background: #ffffff;
   color: #475569;
@@ -655,10 +655,10 @@ button:disabled {
 
 .modal-details {
   overflow: hidden;
-  border: 1px solid #dbe4f0;
+  border: 1px solid var(--border-light);
   border-radius: 14px;
   padding: 0;
-  background: #fbfdff;
+  background: #f7fafb;
 }
 
 .modal-details summary {
@@ -690,9 +690,9 @@ button:disabled {
 .document-preview-box {
   max-height: min(62vh, 620px);
   overflow: auto;
-  border: 1px solid #dce5f2;
+  border: 1px solid var(--border-light);
   border-radius: 12px;
-  background: #f8fbff;
+  background: #f7fafb;
 }
 
 .document-preview-box pre {
@@ -709,19 +709,19 @@ button:disabled {
   gap: 14px;
   min-height: 0;
   overflow: auto;
-  border: 1px solid #dbe4f0;
+  border: 1px solid var(--border-light);
   border-radius: 18px;
   padding: 18px;
-  background: #f8fafc;
+  background: var(--surface-muted);
 }
 
 .pipeline-node-card {
   display: grid;
   gap: 16px;
-  border: 1px solid #dbe4f0;
+  border: 1px solid var(--border-light);
   border-radius: 16px;
   padding: 16px;
-  background: #ffffff;
+  background: var(--surface-strong);
 }
 
 .node-card-head > div {

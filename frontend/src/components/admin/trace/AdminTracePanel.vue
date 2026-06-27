@@ -274,7 +274,7 @@ function formatDate(value: string) {
   top: 0;
   bottom: 0;
   border-radius: 999px;
-  background: #6d3df5;
+  background: var(--primary);
 }
 
 .trace-message-list {

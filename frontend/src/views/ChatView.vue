@@ -115,7 +115,7 @@ onMounted(() => {
             <h1 class="hero-title">把问题变成<span class="highlight">清晰答案</span></h1>
             <p class="hero-subtitle">结构化提问、知识检索与深度思考，一次对话给出可执行方案</p>
           </div>
-          
+
           <div class="composer-container center-composer">
             <RetriFlowChatComposer
               v-model:draft="draft"
@@ -137,7 +137,7 @@ onMounted(() => {
               <span>试试这些开场</span>
               <div class="line"></div>
             </div>
-            
+
             <div class="starter-cards">
               <div
                 v-for="(prompt, index) in starterPrompts"
@@ -203,7 +203,9 @@ onMounted(() => {
   width: 100vw;
   height: 100vh;
   overflow: hidden;
-  background: var(--surface);
+  background:
+    radial-gradient(circle at 62% 8%, rgba(15, 143, 130, 0.1), transparent 28%),
+    linear-gradient(135deg, var(--bg-gradient-start) 0%, var(--bg-gradient-end) 100%);
 }
 
 .chat-main-area {
@@ -219,7 +221,9 @@ onMounted(() => {
   justify-content: space-between;
   align-items: center;
   padding: 16px 24px;
-  background: var(--surface);
+  background: rgba(245, 248, 250, 0.86);
+  border-bottom: 1px solid rgba(213, 225, 232, 0.72);
+  backdrop-filter: blur(14px);
   z-index: 10;
 }
 
@@ -239,7 +243,7 @@ onMounted(() => {
   font-size: 13px;
   font-weight: 500;
   color: var(--text-muted);
-  background: white;
+  background: var(--surface-strong);
   transition: all 0.2s;
 }
 
@@ -285,7 +289,7 @@ onMounted(() => {
   color: var(--primary);
   font-size: 13px;
   font-weight: 600;
-  margin-bottom: 24px;
+  margin-top: 10px;
 }
 
 .empty-hero .badge svg {
@@ -317,7 +321,7 @@ onMounted(() => {
 }
 
 .center-composer {
-  margin-bottom: 60px;
+  margin-bottom: 10px;
 }
 
 .cards-section {
@@ -349,7 +353,7 @@ onMounted(() => {
 }
 
 .card {
-  background: white;
+  background: rgba(255, 255, 255, 0.86);
   border: 1px solid var(--border-light);
   border-radius: 16px;
   padding: 20px;
@@ -361,7 +365,7 @@ onMounted(() => {
 
 .card:hover {
   box-shadow: var(--shadow-md);
-  border-color: rgba(90, 92, 250, 0.2);
+  border-color: rgba(15, 143, 130, 0.26);
   transform: translateY(-2px);
 }
 
@@ -380,9 +384,9 @@ onMounted(() => {
   height: 16px;
 }
 
-.card-icon.system { background: #EBF1FB; color: var(--primary); }
+.card-icon.system { background: var(--primary-soft); color: var(--primary); }
 .card-icon.realtime { background: #E6F7F2; color: var(--success); }
-.card-icon.business { background: #F3F0FF; color: #8B5CF6; }
+.card-icon.business { background: var(--accent-soft); color: var(--accent); }
 
 .card-content {
   flex: 1;
@@ -416,7 +420,7 @@ onMounted(() => {
 
 .sticky-composer {
   padding: 20px 24px 32px;
-  background: linear-gradient(to top, var(--surface) 80%, transparent);
+  background: linear-gradient(to top, rgba(245, 248, 250, 0.96) 80%, transparent);
   position: sticky;
   bottom: 0;
 }

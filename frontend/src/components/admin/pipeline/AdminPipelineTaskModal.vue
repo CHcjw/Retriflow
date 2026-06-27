@@ -41,7 +41,8 @@ const emit = defineEmits<{
           </option>
         </select>
       </label>
-      <div class="modal-field-grid">
+
+      <div class="pipeline-task-source-grid">
         <label class="modal-label">
           来源类型
           <select v-model="sourceType" class="ui-input modal-control">
@@ -51,18 +52,25 @@ const emit = defineEmits<{
             <option value="s3" disabled>S3</option>
           </select>
         </label>
+
         <label class="modal-label">
           本地文件
-          <input :accept="uploadAccept" class="ui-input modal-file" type="file" @change="emit('fileSelected', $event)" />
-          <span>{{ selectedFile?.name || "请选择文件" }}</span>
+          <div class="pipeline-file-control">
+            <input :accept="uploadAccept" type="file" @change="emit('fileSelected', $event)" />
+            <strong>{{ selectedFile?.name || "未选择文件" }}</strong>
+          </div>
+          <span>{{ selectedFile ? "文件已选择" : "请选择文件" }}</span>
         </label>
       </div>
+
       <label class="modal-label">
         任务元数据（JSON，可选）
-        <textarea v-model="metadataText" class="ui-input" rows="5" placeholder='{"source":"manual"}'></textarea>
+        <textarea v-model="metadataText" class="ui-input pipeline-metadata" rows="5" placeholder='{"source":"manual"}'></textarea>
       </label>
+
       <AdminNotice v-if="error" tone="danger" :message="error" dismissible @dismiss="emit('clearError')" />
     </div>
+
     <template #actions>
       <button class="ghost-btn" type="button" @click="emit('close')">取消</button>
       <button
@@ -76,3 +84,52 @@ const emit = defineEmits<{
     </template>
   </AdminModalShell>
 </template>
+
+<style scoped>
+.pipeline-task-source-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+
+.pipeline-file-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 54px;
+  border: 1px solid var(--border-light);
+  border-radius: 16px;
+  padding: 10px 18px;
+  background: var(--surface-strong);
+  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.04);
+}
+
+.pipeline-file-control input {
+  width: 118px;
+  flex: 0 0 auto;
+  font-size: 14px;
+}
+
+.pipeline-file-control strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #172033;
+  font-size: 14px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pipeline-metadata {
+  min-height: 164px;
+  padding: 14px 16px;
+  resize: vertical;
+}
+
+@media (max-width: 760px) {
+  .pipeline-task-source-grid {
+    grid-template-columns: 1fr;
+  }
+}
+</style>
