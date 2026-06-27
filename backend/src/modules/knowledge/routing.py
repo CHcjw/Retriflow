@@ -15,6 +15,18 @@ class KnowledgeRouteCandidate:
     name: str
     path: str
     score: float
+    top_k: int | None = None
+    min_score: float | None = None
+    mcp_tool_id: str = ""
+    param_prompt_template: str = ""
+    matched_node_path: str = ""
+    target_node_path: str = ""
+    matched_terms: list[str] = None
+    target_score: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.matched_terms is None:
+            self.matched_terms = []
 
 
 @dataclass
@@ -24,10 +36,13 @@ class KnowledgeRouteDecision:
     confidence: float
     reason: str
     candidates: list[KnowledgeRouteCandidate] = None
+    mcp_tool_ids: list[str] = None
 
     def __post_init__(self) -> None:
         if self.candidates is None:
             self.candidates = []
+        if self.mcp_tool_ids is None:
+            self.mcp_tool_ids = []
 
 
 
@@ -45,6 +60,17 @@ class RetriFlowKnowledgeRouteService:
 
     def route_question(self, question: str) -> KnowledgeRouteDecision:
         knowledge_bases = self._load_knowledge_base_profiles()
+        llm_decision: KnowledgeRouteDecision | None = None
+
+        if knowledge_bases and self.settings.route_use_llm:
+            llm_decision = self._try_llm_route(question=question, knowledge_bases=knowledge_bases)
+            if llm_decision is not None and llm_decision.mode != "global":
+                return llm_decision
+
+        intent_decision = self._route_with_intent_tree(question)
+        if intent_decision is not None:
+            return intent_decision
+
         if not knowledge_bases:
             return KnowledgeRouteDecision(
                 mode="global",
@@ -53,14 +79,8 @@ class RetriFlowKnowledgeRouteService:
                 reason="no knowledge bases available",
             )
 
-        if self.settings.route_use_llm:
-            llm_decision = self._try_llm_route(question=question, knowledge_bases=knowledge_bases)
-            if llm_decision is not None:
-                return llm_decision
-
-        intent_decision = self._route_with_intent_tree(question)
-        if intent_decision is not None:
-            return intent_decision
+        if llm_decision is not None:
+            return llm_decision
 
         return self._fallback_route(question=question, knowledge_bases=knowledge_bases)
 
@@ -77,9 +97,11 @@ class RetriFlowKnowledgeRouteService:
 
         scored: list[tuple[float, dict[str, Any], set[str]]] = []
         for node in intent_nodes:
-            node_terms = set(tokenize_text(node["match_text"]))
+            node_terms = self._node_terms(node)
             overlap = expanded_terms.intersection(node_terms)
-            score = len(overlap) / max(min(len(expanded_terms), 6), 1)
+            score = self._score_terms(expanded_terms=expanded_terms, node_terms=node_terms)
+            if str(node.get("node_type") or "").upper() == "MCP" and self._has_configured_phrase_match(question, node):
+                score += 0.25
             if self._has_domain_alignment(expanded_terms, node_terms):
                 score += 0.45
             scored.append((score, node, overlap))
@@ -88,44 +110,71 @@ class RetriFlowKnowledgeRouteService:
             return None
 
         scored.sort(key=lambda item: (-item[0], int(item[1].get("sort_order") or 0), str(item[1]["id"])))
-        selected: list[tuple[float, dict[str, Any], set[str], dict[str, Any]]] = []
+        selected: list[tuple[float, float, dict[str, Any], set[str], dict[str, Any]]] = []
         seen_knowledge_bases: set[str] = set()
+        seen_mcp_tools: set[str] = set()
         for score, node, overlap in scored:
             if score < self.settings.route_confidence_threshold:
                 continue
-            target_node = self._resolve_kb_target_node(node)
+            target_node = self._resolve_target_node(node)
             if target_node is None:
                 continue
-            knowledge_base_id = str(target_node["knowledge_base_id"])
-            if knowledge_base_id in seen_knowledge_bases:
+            target_score = max(score, self._score_intent_node(target_node, expanded_terms))
+            if str(target_node.get("node_type") or "").upper() == "MCP":
+                mcp_tool_id = str(target_node.get("mcp_tool_id") or "").strip()
+                if not mcp_tool_id or mcp_tool_id in seen_mcp_tools:
+                    continue
+                seen_mcp_tools.add(mcp_tool_id)
+            else:
+                knowledge_base_id = str(target_node["knowledge_base_id"])
+                if knowledge_base_id in seen_knowledge_bases:
+                    continue
+                seen_knowledge_bases.add(knowledge_base_id)
+            if len(selected) >= self.MAX_INTENT_COUNT:
                 continue
-            selected.append((score, node, overlap, target_node))
-            seen_knowledge_bases.add(knowledge_base_id)
+            selected.append((score, target_score, node, overlap, target_node))
             if len(selected) >= self.MAX_INTENT_COUNT:
                 break
 
         if not selected:
             return None
 
-        best_score = selected[0][0]
-        knowledge_base_ids = [str(target["knowledge_base_id"]) for _, _, _, target in selected]
+        best_score = selected[0][1]
+        knowledge_base_ids = [
+            str(target["knowledge_base_id"])
+            for _, _, _, _, target in selected
+            if str(target.get("node_type") or "").upper() != "MCP"
+        ]
+        mcp_tool_ids = [
+            str(target["mcp_tool_id"])
+            for _, _, _, _, target in selected
+            if str(target.get("node_type") or "").upper() == "MCP" and str(target.get("mcp_tool_id") or "").strip()
+        ]
         candidates = [
             KnowledgeRouteCandidate(
-                knowledge_base_id=str(target["knowledge_base_id"]),
-                name=str(target.get("name") or node.get("name") or target["knowledge_base_id"]),
-                path=str(target.get("path") or target.get("name") or target["knowledge_base_id"]),
-                score=float(score),
+                knowledge_base_id=str(target.get("knowledge_base_id") or ""),
+                name=str(target.get("name") or node.get("name") or target.get("knowledge_base_id") or target.get("mcp_tool_id") or ""),
+                path=str(target.get("path") or target.get("name") or target.get("knowledge_base_id") or target.get("mcp_tool_id") or ""),
+                score=float(target_score),
+                top_k=self._normalize_top_k(target.get("top_k")),
+                min_score=self._normalize_min_score(target.get("min_score")),
+                mcp_tool_id=str(target.get("mcp_tool_id") or ""),
+                param_prompt_template=str(target.get("param_prompt_template") or ""),
+                matched_node_path=self._best_matched_node_path(node, expanded_terms),
+                target_node_path=str(target.get("path") or target.get("name") or ""),
+                matched_terms=sorted(overlap),
+                target_score=float(target_score),
             )
-            for score, node, _, target in selected
+            for score, target_score, node, overlap, target in selected
         ]
         candidate_summaries = [
-            f"{target['path']}({score:.2f})"
-            for score, _, _, target in selected
+            f"{target['path']}(match={score:.2f}, target={target_score:.2f})"
+            for score, target_score, _, _, target in selected
         ]
-        matched_terms = sorted({term for _, _, overlap, _ in selected for term in overlap})[:6]
+        matched_terms = sorted({term for _, _, _, overlap, _ in selected for term in overlap})[:6]
 
         return KnowledgeRouteDecision(
-            mode="knowledge_base",
+            mode="mixed" if knowledge_base_ids and mcp_tool_ids else "mcp" if mcp_tool_ids else "knowledge_base",
             knowledge_base_ids=knowledge_base_ids,
             confidence=min(best_score, 0.99),
             reason=(
@@ -133,6 +182,7 @@ class RetriFlowKnowledgeRouteService:
                 f"{', '.join(matched_terms) or selected[0][1]['name']}"
             ),
             candidates=candidates,
+            mcp_tool_ids=mcp_tool_ids,
         )
 
     def _try_llm_route(
@@ -236,6 +286,49 @@ class RetriFlowKnowledgeRouteService:
                 return True
         return False
 
+    def _score_intent_node(self, node: dict[str, Any], expanded_terms: set[str]) -> float:
+        node_terms = self._node_terms(node)
+        score = self._score_terms(expanded_terms=expanded_terms, node_terms=node_terms)
+        if self._has_domain_alignment(expanded_terms, node_terms):
+            score += 0.45
+        return min(score, 0.99)
+
+    @staticmethod
+    def _score_terms(*, expanded_terms: set[str], node_terms: set[str]) -> float:
+        overlap = expanded_terms.intersection(node_terms)
+        return len(overlap) / max(min(len(expanded_terms), 6), 1)
+
+    @staticmethod
+    def _node_terms(node: dict[str, Any]) -> set[str]:
+        return set(tokenize_text(str(node.get("match_text") or "")))
+
+    def _best_matched_node_path(self, node: dict[str, Any], expanded_terms: set[str]) -> str:
+        candidates: list[tuple[float, str]] = []
+        for ancestor in node.get("ancestor_nodes") or []:
+            ancestor_terms = set(tokenize_text(str(ancestor.get("match_text") or "")))
+            candidates.append((self._score_terms(expanded_terms=expanded_terms, node_terms=ancestor_terms), str(ancestor.get("path") or "")))
+        own_terms = set(tokenize_text(str(node.get("own_match_text") or node.get("match_text") or "")))
+        candidates.append((self._score_terms(expanded_terms=expanded_terms, node_terms=own_terms), str(node.get("path") or node.get("name") or "")))
+        candidates.sort(key=lambda item: (-item[0], len(item[1])))
+        return candidates[0][1] if candidates else str(node.get("path") or node.get("name") or "")
+
+    @staticmethod
+    def _has_configured_phrase_match(question: str, node: dict[str, Any]) -> bool:
+        normalized_question = question.lower()
+        phrase_candidates = [
+            str(node.get("rule_snippet") or ""),
+            str(node.get("name") or ""),
+            str(node.get("code") or ""),
+            *[str(item or "") for item in node.get("sample_questions") or []],
+        ]
+        for phrase in phrase_candidates:
+            normalized_phrase = phrase.strip().lower()
+            if len(normalized_phrase) < 3:
+                continue
+            if normalized_phrase in normalized_question:
+                return True
+        return False
+
     @staticmethod
     def _load_knowledge_base_profiles() -> list[dict[str, Any]]:
         with get_connection() as connection:
@@ -297,12 +390,15 @@ class RetriFlowKnowledgeRouteService:
                     node_type,
                     parent_id,
                     knowledge_base_id,
+                    mcp_tool_id,
                     collection_name,
                     description,
                     sample_questions_json,
                     rule_snippet,
                     prompt_template,
+                    param_prompt_template,
                     top_k,
+                    min_score,
                     sort_order
                 from admin_intent_nodes
                 where enabled = 1
@@ -319,12 +415,15 @@ class RetriFlowKnowledgeRouteService:
             "node_type",
             "parent_id",
             "knowledge_base_id",
+            "mcp_tool_id",
             "collection_name",
             "description",
             "sample_questions_json",
             "rule_snippet",
             "prompt_template",
+            "param_prompt_template",
             "top_k",
+            "min_score",
             "sort_order",
         ]
         return [{key: row[key] for key in columns} for row in rows]
@@ -342,14 +441,18 @@ class RetriFlowKnowledgeRouteService:
                 "name": str(row["name"]),
                 "code": str(row["code"] or ""),
                 "level": str(row["level"] or ""),
+                "node_type": str(row["node_type"] or "KB"),
                 "parent_id": str(row["parent_id"] or "ROOT"),
                 "knowledge_base_id": str(row["knowledge_base_id"] or ""),
+                "mcp_tool_id": str(row["mcp_tool_id"] or ""),
                 "collection_name": str(row["collection_name"] or ""),
                 "description": str(row["description"] or ""),
                 "sample_questions": sample_questions,
                 "rule_snippet": str(row["rule_snippet"] or ""),
                 "prompt_template": str(row["prompt_template"] or ""),
+                "param_prompt_template": str(row["param_prompt_template"] or ""),
                 "top_k": row.get("top_k"),
+                "min_score": row.get("min_score"),
                 "sort_order": int(row["sort_order"] or 0),
                 "children": [],
             }
@@ -370,6 +473,17 @@ class RetriFlowKnowledgeRouteService:
 
         def visit(node: dict[str, Any], ancestors: list[dict[str, Any]]) -> None:
             path_parts = [str(item.get("name") or "").strip() for item in [*ancestors, node]]
+            own_text = " ".join(
+                str(part or "")
+                for part in [
+                    node.get("name"),
+                    node.get("code"),
+                    node.get("description"),
+                    node.get("rule_snippet"),
+                    node.get("prompt_template"),
+                    " ".join(str(question) for question in node.get("sample_questions") or []),
+                ]
+            )
             ancestor_text = " ".join(
                 " ".join(
                     str(part or "")
@@ -387,6 +501,30 @@ class RetriFlowKnowledgeRouteService:
             item = {**node}
             item["path"] = " / ".join(part for part in path_parts if part) or str(node.get("name") or "")
             item["match_text"] = ancestor_text
+            item["own_match_text"] = own_text
+            item["ancestor_nodes"] = [
+                {
+                    "path": " / ".join(
+                        part
+                        for part in [
+                            *(str(ancestor.get("name") or "").strip() for ancestor in ancestors[: index + 1])
+                        ]
+                        if part
+                    ),
+                    "match_text": " ".join(
+                        str(part or "")
+                        for part in [
+                            ancestor.get("name"),
+                            ancestor.get("code"),
+                            ancestor.get("description"),
+                            ancestor.get("rule_snippet"),
+                            ancestor.get("prompt_template"),
+                            " ".join(str(question) for question in ancestor.get("sample_questions") or []),
+                        ]
+                    ),
+                }
+                for index, ancestor in enumerate(ancestors)
+            ]
             flattened.append(item)
             for child in sorted(node.get("children") or [], key=lambda child: (child.get("sort_order") or 0, child.get("name") or "")):
                 visit(child, [*ancestors, node])
@@ -394,6 +532,12 @@ class RetriFlowKnowledgeRouteService:
         for root in sorted(roots, key=lambda item: (item.get("sort_order") or 0, item.get("name") or "")):
             visit(root, [])
         return flattened
+
+    @staticmethod
+    def _resolve_target_node(node: dict[str, Any]) -> dict[str, Any] | None:
+        if str(node.get("node_type") or "").upper() == "MCP":
+            return RetriFlowKnowledgeRouteService._resolve_mcp_target_node(node)
+        return RetriFlowKnowledgeRouteService._resolve_kb_target_node(node)
 
     @staticmethod
     def _resolve_kb_target_node(node: dict[str, Any]) -> dict[str, Any] | None:
@@ -417,6 +561,27 @@ class RetriFlowKnowledgeRouteService:
         return descendants[0]
 
     @staticmethod
+    def _resolve_mcp_target_node(node: dict[str, Any]) -> dict[str, Any] | None:
+        if str(node.get("mcp_tool_id") or "").strip():
+            return node
+
+        descendants: list[dict[str, Any]] = []
+
+        def collect(current: dict[str, Any], parent_path: str) -> None:
+            for child in current.get("children") or []:
+                child_path = " / ".join(part for part in [parent_path, str(child.get("name") or "")] if part)
+                child = {**child, "path": child_path}
+                if str(child.get("mcp_tool_id") or "").strip():
+                    descendants.append(child)
+                collect(child, child_path)
+
+        collect(node, str(node.get("path") or node.get("name") or ""))
+        if not descendants:
+            return None
+        descendants.sort(key=lambda item: (int(item.get("sort_order") or 0), str(item.get("name") or "")))
+        return descendants[0]
+
+    @staticmethod
     def _parse_json_field(value: Any, *, default: Any) -> Any:
         if value is None:
             return default
@@ -428,4 +593,24 @@ class RetriFlowKnowledgeRouteService:
                 return default
             return json.loads(text)
         return default
+
+    @staticmethod
+    def _normalize_top_k(value: Any) -> int | None:
+        if value is None:
+            return None
+        try:
+            top_k = int(value)
+        except (TypeError, ValueError):
+            return None
+        return top_k if top_k > 0 else None
+
+    @staticmethod
+    def _normalize_min_score(value: Any) -> float | None:
+        if value is None:
+            return None
+        try:
+            min_score = float(value)
+        except (TypeError, ValueError):
+            return None
+        return min_score if min_score > 0 else None
 

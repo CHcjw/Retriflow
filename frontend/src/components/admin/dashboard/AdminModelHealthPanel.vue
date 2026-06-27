@@ -17,9 +17,7 @@ const probeModelName = shallowRef("");
 
 const sortedItems = computed(() =>
   [...items.value].sort((a, b) =>
-    `${a.capability}:${a.provider_name}:${a.model}`.localeCompare(
-      `${b.capability}:${b.provider_name}:${b.model}`
-    )
+    `${a.capability}:${a.provider_name}:${a.model}`.localeCompare(`${b.capability}:${b.provider_name}:${b.model}`)
   )
 );
 
@@ -119,7 +117,7 @@ onMounted(() => {
 
     <div class="model-health-summary">
       <div class="model-health-summary-item">
-        <span>共</span>
+        <span>总数</span>
         <strong>{{ summary.total }}</strong>
       </div>
       <div class="model-health-summary-item">
@@ -150,7 +148,7 @@ onMounted(() => {
       </label>
       <label>
         <span>Provider</span>
-        <input v-model="probeProvider" class="ui-input" type="text" placeholder="留空使用当前路由" />
+        <input v-model="probeProvider" class="ui-input" type="text" placeholder="留空使用当前路由，如 lmstudio" />
       </label>
       <label>
         <span>Model</span>

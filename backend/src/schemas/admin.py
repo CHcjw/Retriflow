@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class AdminUserItem(BaseModel):
@@ -147,6 +147,41 @@ class AdminModelHealthProbeRequest(BaseModel):
     model: str = ""
 
 
+class AdminMcpParameterItem(BaseModel):
+    name: str
+    type: str = "string"
+    required: bool = False
+    description: str = ""
+    default: object | None = None
+    enum: list[object] = Field(default_factory=list)
+
+
+class AdminMcpToolItem(BaseModel):
+    tool_id: str
+    description: str = ""
+    server_name: str = "builtin"
+    transport: str = "builtin"
+    schema_version: str = "json_schema"
+    parameter_count: int = 0
+    keywords: list[str] = Field(default_factory=list)
+    parameters: list[AdminMcpParameterItem] = Field(default_factory=list)
+
+
+class AdminMcpRemoteServerItem(BaseModel):
+    name: str
+    url: str
+    healthy: bool
+    tool_count: int = 0
+    error: str = ""
+
+
+class AdminMcpStatusResponse(BaseModel):
+    tools: list[AdminMcpToolItem]
+    remote_servers: list[AdminMcpRemoteServerItem]
+    total_tools: int = 0
+    remote_enabled: bool = False
+
+
 class AdminSettingItem(BaseModel):
     key: str
     value: str
@@ -226,12 +261,15 @@ class AdminIntentNodeItem(BaseModel):
     node_type: str
     parent_id: str
     knowledge_base_id: str = ""
+    mcp_tool_id: str = ""
     collection_name: str = ""
     description: str = ""
     sample_questions: list[str] = []
     rule_snippet: str = ""
     prompt_template: str = ""
+    param_prompt_template: str = ""
     top_k: int | None = None
+    min_score: float | None = None
     sort_order: int = 0
     enabled: bool = True
     created_at: str = ""
@@ -260,12 +298,15 @@ class AdminIntentNodeCreateRequest(BaseModel):
     node_type: str = "KB"
     parent_id: str = "ROOT"
     knowledge_base_id: str = ""
+    mcp_tool_id: str = ""
     collection_name: str = ""
     description: str = ""
     sample_questions: list[str] = []
     rule_snippet: str = ""
     prompt_template: str = ""
+    param_prompt_template: str = ""
     top_k: int | None = None
+    min_score: float | None = None
     sort_order: int = 0
     enabled: bool = True
 
@@ -277,12 +318,15 @@ class AdminIntentNodeUpdateRequest(BaseModel):
     node_type: str | None = None
     parent_id: str | None = None
     knowledge_base_id: str | None = None
+    mcp_tool_id: str | None = None
     collection_name: str | None = None
     description: str | None = None
     sample_questions: list[str] | None = None
     rule_snippet: str | None = None
     prompt_template: str | None = None
+    param_prompt_template: str | None = None
     top_k: int | None = None
+    min_score: float | None = None
     sort_order: int | None = None
     enabled: bool | None = None
 

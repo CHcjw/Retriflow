@@ -347,6 +347,43 @@ class RetriFlowIngestionPipelineTests(unittest.TestCase):
         self.assertEqual(enhance_node.output["questions"], ["What is the policy?"])
         self.assertEqual(enhance_node.output["enhancedText"], "Quarterly revenue policy with generated metadata.")
 
+    def test_pipeline_node_condition_reads_ragent_context_identity_fields(self) -> None:
+        from schemas.knowledge import IngestionPipelineNodeConfig
+        from modules.ingestion import RetriFlowIngestionPipeline
+
+        nodes = [
+            IngestionPipelineNodeConfig(
+                node_id="parse",
+                node_type="parser",
+                next_node_id="index",
+            ),
+            IngestionPipelineNodeConfig(
+                node_id="index",
+                node_type="indexer",
+                condition=(
+                    '{"all":['
+                    '{"field":"taskId","operator":"eq","value":"task-100"},'
+                    '{"field":"pipelineId","operator":"eq","value":"pipeline-main"},'
+                    '{"field":"vectorSpaceId","operator":"eq","value":"insurance"}'
+                    ']}'
+                ),
+                config={"store": "pgvector"},
+            ),
+        ]
+
+        pipeline = RetriFlowIngestionPipeline.from_pipeline_nodes(nodes)
+        result = pipeline.run(
+            "Context identity should drive ingestion conditions.",
+            metadata={
+                "taskId": "task-100",
+                "pipelineId": "pipeline-main",
+                "vectorSpaceId": "insurance",
+            },
+        )
+
+        index_node = next(node for node in result.node_results if node.node_id == "index")
+        self.assertEqual(index_node.status, "success")
+
     def test_pipeline_node_output_matches_ragent_fetcher_parser_shape(self) -> None:
         from schemas.knowledge import IngestionPipelineNodeConfig
         from modules.ingestion import RetriFlowIngestionPipeline
@@ -452,6 +489,147 @@ class RetriFlowIngestionPipelineTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "cycle"):
             RetriFlowIngestionPipeline.from_pipeline_nodes(nodes)
+
+    def test_pipeline_unknown_node_type_fails_and_stops_chain(self) -> None:
+        from schemas.knowledge import IngestionPipelineNodeConfig
+        from modules.ingestion import RetriFlowIngestionPipeline
+
+        nodes = [
+            IngestionPipelineNodeConfig(
+                node_id="parse",
+                node_type="parser",
+                next_node_id="custom",
+            ),
+            IngestionPipelineNodeConfig(
+                node_id="custom",
+                node_type="custom_missing",
+                next_node_id="index",
+            ),
+            IngestionPipelineNodeConfig(
+                node_id="index",
+                node_type="indexer",
+                config={"store": "pgvector"},
+            ),
+        ]
+
+        pipeline = RetriFlowIngestionPipeline.from_pipeline_nodes(nodes)
+        result = pipeline.run("Unknown node types should fail like ragent.")
+
+        self.assertEqual([node.node_id for node in result.node_results], ["parse", "custom"])
+        custom_node = result.node_results[-1]
+        self.assertFalse(custom_node.success)
+        self.assertEqual(custom_node.status, "failed")
+        self.assertIn("Unknown ingestion node type", custom_node.error_message)
+
+    def test_pipeline_uses_registered_node_executor_by_type(self) -> None:
+        from schemas.knowledge import IngestionPipelineNodeConfig
+        from modules.ingestion.service import IngestionNodeExecutionResult, RetriFlowIngestionNodeExecutor, RetriFlowIngestionPipeline
+
+        class CustomAuditExecutor(RetriFlowIngestionNodeExecutor):
+            node_types = ("audit",)
+
+            def execute(self, *, node, context, pipeline):
+                context.metadata["audit_node"] = node.node_id
+                return IngestionNodeExecutionResult.ok("Audit node executed.")
+
+        nodes = [
+            IngestionPipelineNodeConfig(
+                node_id="parse",
+                node_type="parser",
+                next_node_id="audit",
+            ),
+            IngestionPipelineNodeConfig(
+                node_id="audit",
+                node_type="audit",
+            ),
+        ]
+
+        pipeline = RetriFlowIngestionPipeline(
+            pipeline_nodes=RetriFlowIngestionPipeline._order_pipeline_nodes(nodes),
+            node_executors=[CustomAuditExecutor()],
+        )
+        result = pipeline.run("Custom node registry should be extensible.")
+
+        audit_node = result.node_results[-1]
+        self.assertTrue(audit_node.success)
+        self.assertEqual(audit_node.message, "Audit node executed.")
+        self.assertEqual(audit_node.output["metadata"]["audit_node"], "audit")
+
+    def test_enhancer_tasks_update_ragent_runtime_context(self) -> None:
+        from schemas.knowledge import IngestionPipelineNodeConfig
+        from modules.ingestion import RetriFlowIngestionPipeline
+
+        nodes = [
+            IngestionPipelineNodeConfig(
+                node_id="parse",
+                node_type="parser",
+                next_node_id="enhance",
+            ),
+            IngestionPipelineNodeConfig(
+                node_id="enhance",
+                node_type="enhancer",
+                config={
+                    "tasks": [
+                        {"type": "context_enhance", "value": "增强: {{text}}"},
+                        {"type": "keywords", "value": '["保险", "理赔"]'},
+                        {"type": "questions", "value": "怎么理赔？\n需要哪些材料？"},
+                        {"type": "metadata", "value": '{"department":"claims","category":"policy"}'},
+                    ]
+                },
+            ),
+        ]
+
+        pipeline = RetriFlowIngestionPipeline.from_pipeline_nodes(nodes)
+        result = pipeline.run("保险理赔资料说明")
+
+        enhance_node = next(node for node in result.node_results if node.node_id == "enhance")
+        self.assertEqual(enhance_node.message, "Enhancer completed 4 tasks.")
+        self.assertEqual(enhance_node.output["enhancedText"], "增强: 保险理赔资料说明")
+        self.assertEqual(enhance_node.output["keywords"], ["保险", "理赔"])
+        self.assertEqual(enhance_node.output["questions"], ["怎么理赔？", "需要哪些材料？"])
+        self.assertEqual(enhance_node.output["metadata"]["department"], "claims")
+        self.assertEqual(enhance_node.output["metadata"]["category"], "policy")
+
+    def test_enricher_tasks_attach_document_metadata_and_chunk_metadata(self) -> None:
+        from schemas.knowledge import IngestionPipelineNodeConfig
+        from modules.ingestion import RetriFlowIngestionPipeline
+
+        nodes = [
+            IngestionPipelineNodeConfig(
+                node_id="parse",
+                node_type="parser",
+                next_node_id="chunk",
+            ),
+            IngestionPipelineNodeConfig(
+                node_id="chunk",
+                node_type="chunker",
+                next_node_id="enrich",
+                config={"strategy": "fixed_size", "chunkSize": 12, "overlapSize": 0},
+            ),
+            IngestionPipelineNodeConfig(
+                node_id="enrich",
+                node_type="enricher",
+                config={
+                    "tasks": [
+                        {"type": "keywords", "value": "chunk, metadata"},
+                        {"type": "summary", "value": "摘要 {{chunkIndex}}: {{text}}"},
+                        {"type": "metadata", "value": '{"riskLevel":"low"}'},
+                    ]
+                },
+            ),
+        ]
+
+        pipeline = RetriFlowIngestionPipeline.from_pipeline_nodes(nodes)
+        result = pipeline.run("abcdefghijklmno", metadata={"department": "claims"})
+
+        enrich_node = next(node for node in result.node_results if node.node_id == "enrich")
+        first_metadata = enrich_node.output["chunkMetadata"][0]
+        self.assertEqual(enrich_node.message, f"Enricher completed {len(result.chunk_documents) * 3} tasks for {len(result.chunk_documents)} chunks.")
+        self.assertEqual(first_metadata["department"], "claims")
+        self.assertEqual(first_metadata["keywords"], ["chunk", "metadata"])
+        self.assertTrue(first_metadata["summary"].startswith("摘要 0:"))
+        self.assertEqual(first_metadata["riskLevel"], "low")
+        self.assertEqual(result.chunk_documents[0].metadata["riskLevel"], "low")
 
     def test_postprocessing_merges_tiny_chunks_and_preserves_flags(self) -> None:
         from modules.ingestion import RetriFlowIngestionPipeline

@@ -2,6 +2,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from math import sqrt
+from time import perf_counter
 from typing import Any
 
 from fastapi import HTTPException, status
@@ -54,7 +55,13 @@ class IngestionRuntimeContext:
     chunk_count: int
     raw_text: str
     chunks: list[str]
+    chunk_documents: list[Document]
     metadata: dict[str, Any]
+    task_id: str = ""
+    pipeline_id: str = ""
+    vector_space_id: str = ""
+    status: str = ""
+    error: str = ""
     mime_type: str | None = None
     source: dict[str, Any] = field(default_factory=dict)
     enhanced_text: str | None = None
@@ -63,6 +70,14 @@ class IngestionRuntimeContext:
 
     def to_condition_context(self) -> dict[str, Any]:
         return {
+            "task_id": self.task_id,
+            "taskId": self.task_id,
+            "pipeline_id": self.pipeline_id,
+            "pipelineId": self.pipeline_id,
+            "vector_space_id": self.vector_space_id,
+            "vectorSpaceId": self.vector_space_id,
+            "status": self.status,
+            "error": self.error,
             "document_type": self.document_type,
             "documentType": self.document_type,
             "strategy": self.strategy,
@@ -79,8 +94,179 @@ class IngestionRuntimeContext:
             "enhancedText": self.enhanced_text,
             "keywords": self.keywords,
             "questions": self.questions,
+            "chunk_documents": [dict(document.metadata) for document in self.chunk_documents],
+            "chunkDocuments": [dict(document.metadata) for document in self.chunk_documents],
             "metadata": self.metadata,
         }
+
+
+@dataclass
+class IngestionNodeExecutionResult:
+    success: bool
+    should_continue: bool
+    message: str
+    error_message: str = ""
+    status: str = "success"
+
+    @classmethod
+    def ok(cls, message: str) -> "IngestionNodeExecutionResult":
+        return cls(success=True, should_continue=True, message=message)
+
+    @classmethod
+    def skip(cls, reason: str) -> "IngestionNodeExecutionResult":
+        return cls(success=True, should_continue=True, message=f"Skipped: {reason}", status="skipped")
+
+    @classmethod
+    def fail(cls, error: str) -> "IngestionNodeExecutionResult":
+        return cls(success=False, should_continue=False, message=error, error_message=error, status="failed")
+
+    @classmethod
+    def terminate(cls, reason: str) -> "IngestionNodeExecutionResult":
+        return cls(success=True, should_continue=False, message=reason)
+
+
+class RetriFlowIngestionNodeExecutor:
+    node_types: tuple[str, ...] = ()
+
+    def execute(
+        self,
+        *,
+        node: IngestionPipelineNodeConfig,
+        context: IngestionRuntimeContext,
+        pipeline: "RetriFlowIngestionPipeline",
+    ) -> IngestionNodeExecutionResult:
+        raise NotImplementedError
+
+
+class RetriFlowFetcherNodeExecutor(RetriFlowIngestionNodeExecutor):
+    node_types = ("fetcher",)
+
+    def execute(
+        self,
+        *,
+        node: IngestionPipelineNodeConfig,
+        context: IngestionRuntimeContext,
+        pipeline: "RetriFlowIngestionPipeline",
+    ) -> IngestionNodeExecutionResult:
+        return IngestionNodeExecutionResult.ok(f"Fetched source content through node {node.node_id}.")
+
+
+class RetriFlowParserNodeExecutor(RetriFlowIngestionNodeExecutor):
+    node_types = ("parser", "parse")
+
+    def execute(
+        self,
+        *,
+        node: IngestionPipelineNodeConfig,
+        context: IngestionRuntimeContext,
+        pipeline: "RetriFlowIngestionPipeline",
+    ) -> IngestionNodeExecutionResult:
+        if not context.raw_text:
+            return IngestionNodeExecutionResult.fail("Parser node requires source text.")
+        return IngestionNodeExecutionResult.ok(f"Parsed source content through node {node.node_id}.")
+
+
+class RetriFlowCleanerNodeExecutor(RetriFlowIngestionNodeExecutor):
+    node_types = ("cleaner", "extractor", "normalize", "normalizer")
+
+    def execute(
+        self,
+        *,
+        node: IngestionPipelineNodeConfig,
+        context: IngestionRuntimeContext,
+        pipeline: "RetriFlowIngestionPipeline",
+    ) -> IngestionNodeExecutionResult:
+        return IngestionNodeExecutionResult.ok(
+            f"Prepared {context.segment_count} source segments through node {node.node_id}."
+        )
+
+
+class RetriFlowEnhancerNodeExecutor(RetriFlowIngestionNodeExecutor):
+    node_types = ("enhancer",)
+
+    def execute(
+        self,
+        *,
+        node: IngestionPipelineNodeConfig,
+        context: IngestionRuntimeContext,
+        pipeline: "RetriFlowIngestionPipeline",
+    ) -> IngestionNodeExecutionResult:
+        tasks = pipeline._normalize_ingestion_tasks(node.config.get("tasks") if isinstance(node.config, dict) else None)
+        if not tasks:
+            return IngestionNodeExecutionResult.ok("No enhancer tasks configured.")
+        applied = pipeline._apply_enhancer_tasks(tasks=tasks, node=node, context=context)
+        return IngestionNodeExecutionResult.ok(f"Enhancer completed {applied} tasks.")
+
+
+class RetriFlowChunkerNodeExecutor(RetriFlowIngestionNodeExecutor):
+    node_types = ("chunker", "splitter")
+
+    def execute(
+        self,
+        *,
+        node: IngestionPipelineNodeConfig,
+        context: IngestionRuntimeContext,
+        pipeline: "RetriFlowIngestionPipeline",
+    ) -> IngestionNodeExecutionResult:
+        if context.chunk_count <= 0:
+            return IngestionNodeExecutionResult.fail("Chunker node produced no chunks.")
+        return IngestionNodeExecutionResult.ok(
+            f"Generated {context.chunk_count} chunks using {context.strategy} strategy through node {node.node_id}."
+        )
+
+
+class RetriFlowEnricherNodeExecutor(RetriFlowIngestionNodeExecutor):
+    node_types = ("enricher",)
+
+    def execute(
+        self,
+        *,
+        node: IngestionPipelineNodeConfig,
+        context: IngestionRuntimeContext,
+        pipeline: "RetriFlowIngestionPipeline",
+    ) -> IngestionNodeExecutionResult:
+        if not context.chunk_documents:
+            return IngestionNodeExecutionResult.ok("No chunks to enrich.")
+        tasks = pipeline._normalize_ingestion_tasks(node.config.get("tasks") if isinstance(node.config, dict) else None)
+        if not tasks:
+            return IngestionNodeExecutionResult.ok("No enricher tasks configured.")
+        applied = pipeline._apply_enricher_tasks(tasks=tasks, node=node, context=context)
+        return IngestionNodeExecutionResult.ok(
+            f"Enricher completed {applied} tasks for {len(context.chunk_documents)} chunks."
+        )
+
+
+class RetriFlowEmbedderNodeExecutor(RetriFlowIngestionNodeExecutor):
+    node_types = ("embedder", "embedding")
+
+    def execute(
+        self,
+        *,
+        node: IngestionPipelineNodeConfig,
+        context: IngestionRuntimeContext,
+        pipeline: "RetriFlowIngestionPipeline",
+    ) -> IngestionNodeExecutionResult:
+        provider = pipeline.embedding_provider or str(node.config.get("provider") or "default")
+        model = pipeline.embedding_model or str(node.config.get("model") or "default")
+        return IngestionNodeExecutionResult.ok(
+            f"Prepared embedding step with {provider}/{model} through node {node.node_id}."
+        )
+
+
+class RetriFlowIndexerNodeExecutor(RetriFlowIngestionNodeExecutor):
+    node_types = ("indexer", "index")
+
+    def execute(
+        self,
+        *,
+        node: IngestionPipelineNodeConfig,
+        context: IngestionRuntimeContext,
+        pipeline: "RetriFlowIngestionPipeline",
+    ) -> IngestionNodeExecutionResult:
+        if context.chunk_count <= 0:
+            return IngestionNodeExecutionResult.fail("Indexer node requires chunks.")
+        store = str(node.config.get("store") or "local")
+        return IngestionNodeExecutionResult.ok(f"Prepared index step for {store} through node {node.node_id}.")
 
 
 class RetriFlowIngestionPipeline:
@@ -110,6 +296,7 @@ class RetriFlowIngestionPipeline:
         pipeline_nodes: list[IngestionPipelineNodeConfig] | None = None,
         embedding_provider: str | None = None,
         embedding_model: str | None = None,
+        node_executors: list[RetriFlowIngestionNodeExecutor] | None = None,
     ) -> None:
         self.chunk_config = chunk_config or {}
         normalized_strategy = "fixed" if strategy == "fixed_size" else strategy
@@ -130,6 +317,30 @@ class RetriFlowIngestionPipeline:
         self.pipeline_nodes = pipeline_nodes or []
         self.embedding_provider = embedding_provider
         self.embedding_model = embedding_model
+        self.node_executors = self._build_node_executor_registry(node_executors)
+
+    @staticmethod
+    def _build_node_executor_registry(
+        custom_executors: list[RetriFlowIngestionNodeExecutor] | None = None,
+    ) -> dict[str, RetriFlowIngestionNodeExecutor]:
+        executors: list[RetriFlowIngestionNodeExecutor] = [
+            RetriFlowFetcherNodeExecutor(),
+            RetriFlowParserNodeExecutor(),
+            RetriFlowCleanerNodeExecutor(),
+            RetriFlowEnhancerNodeExecutor(),
+            RetriFlowChunkerNodeExecutor(),
+            RetriFlowEnricherNodeExecutor(),
+            RetriFlowEmbedderNodeExecutor(),
+            RetriFlowIndexerNodeExecutor(),
+            *(custom_executors or []),
+        ]
+        registry: dict[str, RetriFlowIngestionNodeExecutor] = {}
+        for executor in executors:
+            for node_type in executor.node_types:
+                normalized = node_type.strip().lower()
+                if normalized:
+                    registry[normalized] = executor
+        return registry
 
     @classmethod
     def from_pipeline_nodes(
@@ -236,6 +447,7 @@ class RetriFlowIngestionPipeline:
                 document_type=resolved_document_type,
                 normalized_text=normalized_text,
                 chunks=chunks,
+                chunk_documents=chunk_documents,
                 metadata=metadata or {},
             ),
         )
@@ -249,6 +461,7 @@ class RetriFlowIngestionPipeline:
         document_type: str,
         normalized_text: str,
         chunks: list[str],
+        chunk_documents: list[Document] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> list[IngestionPipelineNodeResult]:
         if self.pipeline_nodes:
@@ -260,37 +473,18 @@ class RetriFlowIngestionPipeline:
                 chunk_count=chunk_count,
                 normalized_text=normalized_text,
                 chunks=chunks,
+                chunk_documents=chunk_documents or [],
                 metadata=metadata or {},
             )
-            condition_context = runtime_context.to_condition_context()
             for node_order, node in enumerate(self.pipeline_nodes, start=1):
-                condition_passed = self._evaluate_node_condition(node.condition, condition_context)
-                status = "success" if condition_passed else "skipped"
-                message = (
-                    self._pipeline_node_message(
-                        node=node,
-                        segment_count=segment_count,
-                        chunk_count=chunk_count,
-                        strategy=strategy,
-                    )
-                    if condition_passed
-                    else "Skipped: condition not satisfied"
+                node_result = self._execute_pipeline_node(
+                    node=node,
+                    node_order=node_order,
+                    context=runtime_context,
                 )
-                results.append(
-                    IngestionPipelineNodeResult(
-                        node_type=node.node_type,
-                        node_order=node_order,
-                        success=True,
-                        message=message,
-                        duration_ms=1 if condition_passed else 0,
-                        node_id=node.node_id,
-                        status=status,
-                        output=self._pipeline_node_output(
-                            node=node,
-                            context=runtime_context,
-                        ),
-                    )
-                )
+                results.append(node_result)
+                if not node_result.success or node_result.status == "terminated":
+                    break
             return results
 
         return [
@@ -332,6 +526,63 @@ class RetriFlowIngestionPipeline:
             ),
         ]
 
+    def _execute_pipeline_node(
+        self,
+        *,
+        node: IngestionPipelineNodeConfig,
+        node_order: int,
+        context: IngestionRuntimeContext,
+    ) -> IngestionPipelineNodeResult:
+        if not self._evaluate_node_condition(node.condition, context.to_condition_context()):
+            execution_result = IngestionNodeExecutionResult.skip("condition not satisfied")
+            return IngestionPipelineNodeResult(
+                node_type=node.node_type,
+                node_order=node_order,
+                success=True,
+                message=execution_result.message,
+                duration_ms=0,
+                node_id=node.node_id,
+                status=execution_result.status,
+                output=self._pipeline_node_output(node=node, context=context),
+            )
+
+        executor = self.node_executors.get(node.node_type.strip().lower())
+        if executor is None:
+            message = f"Unknown ingestion node type: {node.node_type}"
+            return IngestionPipelineNodeResult(
+                node_type=node.node_type,
+                node_order=node_order,
+                success=False,
+                message=message,
+                duration_ms=0,
+                node_id=node.node_id,
+                status="failed",
+                error_message=message,
+                output=self._pipeline_node_output(node=node, context=context),
+            )
+
+        started_at = perf_counter()
+        try:
+            execution_result = executor.execute(node=node, context=context, pipeline=self)
+        except Exception as exc:
+            execution_result = IngestionNodeExecutionResult.fail(str(exc))
+
+        duration_ms = max(1, int((perf_counter() - started_at) * 1000))
+        status = execution_result.status
+        if execution_result.success and not execution_result.should_continue:
+            status = "terminated"
+        return IngestionPipelineNodeResult(
+            node_type=node.node_type,
+            node_order=node_order,
+            success=execution_result.success,
+            message=execution_result.message,
+            duration_ms=duration_ms,
+            node_id=node.node_id,
+            status=status,
+            error_message=execution_result.error_message,
+            output=self._pipeline_node_output(node=node, context=context),
+        )
+
     @staticmethod
     def _build_runtime_context(
         *,
@@ -341,6 +592,7 @@ class RetriFlowIngestionPipeline:
         chunk_count: int,
         normalized_text: str,
         chunks: list[str],
+        chunk_documents: list[Document],
         metadata: dict[str, Any],
     ) -> IngestionRuntimeContext:
         source = {
@@ -352,12 +604,18 @@ class RetriFlowIngestionPipeline:
         keywords = metadata.get("keywords") if isinstance(metadata.get("keywords"), list) else []
         questions = metadata.get("questions") if isinstance(metadata.get("questions"), list) else []
         return IngestionRuntimeContext(
+            task_id=str(metadata.get("taskId") or metadata.get("task_id") or ""),
+            pipeline_id=str(metadata.get("pipelineId") or metadata.get("pipeline_id") or ""),
+            vector_space_id=str(metadata.get("vectorSpaceId") or metadata.get("vector_space_id") or ""),
+            status=str(metadata.get("status") or ""),
+            error=str(metadata.get("error") or ""),
             document_type=document_type,
             strategy=strategy,
             segment_count=segment_count,
             chunk_count=chunk_count,
             raw_text=normalized_text,
             chunks=chunks,
+            chunk_documents=chunk_documents,
             metadata=dict(metadata),
             mime_type=metadata.get("mime_type") or metadata.get("mimeType"),
             source=source,
@@ -390,6 +648,163 @@ class RetriFlowIngestionPipeline:
             return f"Prepared index step for {store} through node {node.node_id}."
         return f"Executed pipeline node {node.node_id}."
 
+    @classmethod
+    def _normalize_ingestion_tasks(cls, tasks: Any) -> list[dict[str, Any]]:
+        if isinstance(tasks, str):
+            try:
+                tasks = json.loads(tasks)
+            except json.JSONDecodeError:
+                return [{"type": tasks}]
+        if isinstance(tasks, dict):
+            return [tasks]
+        if not isinstance(tasks, list):
+            return []
+        return [task for task in tasks if isinstance(task, dict)]
+
+    def _apply_enhancer_tasks(
+        self,
+        *,
+        tasks: list[dict[str, Any]],
+        node: IngestionPipelineNodeConfig,
+        context: IngestionRuntimeContext,
+    ) -> int:
+        applied = 0
+        for task in tasks:
+            task_type = self._normalize_task_type(task.get("type"))
+            if not task_type:
+                continue
+            input_text = context.raw_text if task_type == "context_enhance" else (context.enhanced_text or context.raw_text)
+            rendered = self._render_task_template(
+                str(task.get("value") or task.get("response") or task.get("result") or task.get("userPromptTemplate") or ""),
+                text=input_text,
+                context=context,
+            )
+            if task_type == "context_enhance":
+                context.enhanced_text = rendered or input_text
+                context.metadata["enhanced_text"] = context.enhanced_text
+                applied += 1
+                continue
+            if task_type == "keywords":
+                context.keywords = self._parse_string_list(rendered or task.get("keywords") or context.metadata.get("keywords"))
+                context.metadata["keywords"] = context.keywords
+                applied += 1
+                continue
+            if task_type == "questions":
+                context.questions = self._parse_string_list(rendered or task.get("questions") or context.metadata.get("questions"))
+                context.metadata["questions"] = context.questions
+                applied += 1
+                continue
+            if task_type == "metadata":
+                extracted = self._parse_object(rendered or task.get("metadata") or task.get("fields") or {})
+                context.metadata.update(extracted)
+                applied += 1
+        context.chunks[:] = [document.page_content for document in context.chunk_documents]
+        return applied
+
+    def _apply_enricher_tasks(
+        self,
+        *,
+        tasks: list[dict[str, Any]],
+        node: IngestionPipelineNodeConfig,
+        context: IngestionRuntimeContext,
+    ) -> int:
+        applied = 0
+        attach_metadata = bool(node.config.get("attachDocumentMetadata", node.config.get("attach_document_metadata", True)))
+        for chunk_index, document in enumerate(context.chunk_documents):
+            if attach_metadata:
+                document.metadata.update(context.metadata)
+            for task in tasks:
+                task_type = self._normalize_task_type(task.get("type"))
+                if not task_type:
+                    continue
+                rendered = self._render_task_template(
+                    str(task.get("value") or task.get("response") or task.get("result") or task.get("userPromptTemplate") or ""),
+                    text=document.page_content,
+                    context=context,
+                    chunk_index=chunk_index,
+                )
+                if task_type == "keywords":
+                    document.metadata["keywords"] = self._parse_string_list(
+                        rendered or task.get("keywords") or document.metadata.get("keywords")
+                    )
+                    applied += 1
+                    continue
+                if task_type == "summary":
+                    document.metadata["summary"] = (rendered or task.get("summary") or document.page_content[:160]).strip()
+                    applied += 1
+                    continue
+                if task_type == "metadata":
+                    document.metadata.update(self._parse_object(rendered or task.get("metadata") or task.get("fields") or {}))
+                    applied += 1
+        context.chunks[:] = [document.page_content for document in context.chunk_documents]
+        return applied
+
+    @staticmethod
+    def _normalize_task_type(value: Any) -> str:
+        return str(value or "").strip().lower().replace("-", "_")
+
+    @classmethod
+    def _render_task_template(
+        cls,
+        template: str,
+        *,
+        text: str,
+        context: IngestionRuntimeContext,
+        chunk_index: int | None = None,
+    ) -> str:
+        if not template:
+            return ""
+        rendered = template
+        variables = {
+            "text": text,
+            "content": text,
+            "mimeType": context.mime_type or "",
+            "taskId": context.task_id,
+            "pipelineId": context.pipeline_id,
+            "chunkIndex": "" if chunk_index is None else str(chunk_index),
+        }
+        for key, value in variables.items():
+            rendered = rendered.replace("{{" + key + "}}", str(value))
+        return rendered.strip()
+
+    @classmethod
+    def _parse_string_list(cls, value: Any) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return []
+            try:
+                parsed = json.loads(stripped)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, list):
+                return [str(item).strip() for item in parsed if str(item).strip()]
+            if isinstance(parsed, dict):
+                for key in ("keywords", "questions", "items", "data"):
+                    if isinstance(parsed.get(key), list):
+                        return [str(item).strip() for item in parsed[key] if str(item).strip()]
+            return [item.strip() for item in re.split(r"[,，\n;；]+", stripped) if item.strip()]
+        return [str(value).strip()] if str(value).strip() else []
+
+    @classmethod
+    def _parse_object(cls, value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return dict(value)
+        if not isinstance(value, str):
+            return {}
+        stripped = value.strip()
+        if not stripped:
+            return {}
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError:
+            return {}
+        return dict(parsed) if isinstance(parsed, dict) else {}
+
     @staticmethod
     def _pipeline_node_output(
         *,
@@ -421,8 +836,14 @@ class RetriFlowIngestionPipeline:
                 "questions": context.questions,
                 "metadata": context.metadata,
             }
-        if node_type in {"chunker", "splitter", "enricher"}:
+        if node_type in {"chunker", "splitter"}:
             return {"chunkCount": len(context.chunks), "chunks": context.chunks}
+        if node_type in {"enricher"}:
+            return {
+                "chunkCount": len(context.chunks),
+                "chunks": context.chunks,
+                "chunkMetadata": [dict(document.metadata) for document in context.chunk_documents],
+            }
         if node_type in {"indexer", "index"}:
             return {"settings": dict(node.config), "chunkCount": len(context.chunks), "chunks": context.chunks}
         if node_type in {"embedder", "embedding"}:

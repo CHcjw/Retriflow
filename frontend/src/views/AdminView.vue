@@ -21,11 +21,13 @@ import AdminPipelineNodesModal from "../components/admin/pipeline/AdminPipelineN
 import AdminPipelineTables from "../components/admin/pipeline/AdminPipelineTables.vue";
 import AdminPipelineTaskModal from "../components/admin/pipeline/AdminPipelineTaskModal.vue";
 import AdminSampleQuestionsPanel from "../components/admin/samples/AdminSampleQuestionsPanel.vue";
+import AdminMcpStatusPanel from "../components/admin/settings/AdminMcpStatusPanel.vue";
 import AdminSettingsPanel from "../components/admin/settings/AdminSettingsPanel.vue";
 import AdminTracePanel from "../components/admin/trace/AdminTracePanel.vue";
 import AdminUserModal from "../components/admin/users/AdminUserModal.vue";
 import AdminUsersPanel from "../components/admin/users/AdminUsersPanel.vue";
 import { useAdminFormatters } from "../composables/admin/common/useAdminFormatters";
+import { useAdminNavigation, type AdminTab } from "../composables/admin/common/useAdminNavigation";
 import { useAdminPagination } from "../composables/admin/common/useAdminPagination";
 import { useAdminToasts } from "../composables/admin/common/useAdminToasts";
 import {
@@ -33,7 +35,9 @@ import {
   parseUploadRecursiveSeparators,
   serializeUploadRecursiveSeparators
 } from "../composables/admin/documents/useAdminUploadConfig";
+import { useAdminDashboardSummary } from "../composables/admin/dashboard/useAdminDashboardSummary";
 import { useAdminIntentNodeForm } from "../composables/admin/intent/useAdminIntentNodeForm";
+import { useAdminIntentTree } from "../composables/admin/intent/useAdminIntentTree";
 import { useAdminKeywordMappingForm } from "../composables/admin/keyword/useAdminKeywordMappingForm";
 import { useAdminKnowledgeBaseForm } from "../composables/admin/knowledge/useAdminKnowledgeBaseForm";
 import {
@@ -41,6 +45,7 @@ import {
   stringifyPipelineNodes,
   useAdminPipelineEditor
 } from "../composables/admin/pipeline/useAdminPipelineEditor";
+import { useAdminPipelineTaskForm } from "../composables/admin/pipeline/useAdminPipelineTaskForm";
 import { useAdminUserForm } from "../composables/admin/users/useAdminUserForm";
 import { useRetriFlowAdmin } from "../composables/useRetriFlowAdmin";
 import {
@@ -54,16 +59,6 @@ import {
 import { type IngestionPipelineNodeConfig } from "../services/pipelineApi";
 import { useAuthStore } from "../stores/auth";
 
-type AdminTab =
-  | "dashboard"
-  | "knowledge"
-  | "intent"
-  | "keyword"
-  | "pipeline"
-  | "trace"
-  | "users"
-  | "sampleQuestions"
-  | "settings";
 type KnowledgeStage = "chunks" | "documents" | "knowledge-bases";
 type SettingCard = {
   title: string;
@@ -191,8 +186,6 @@ const {
   clearTraceDetail
 } = useRetriFlowAdmin();
 
-const currentTab = shallowRef<AdminTab>("knowledge");
-const knowledgeStage = shallowRef<KnowledgeStage>("knowledge-bases");
 const knowledgeSearch = shallowRef("");
 const documentSearch = shallowRef("");
 const documentStatusFilter = shallowRef("all");
@@ -202,19 +195,9 @@ const selectedUploadFileName = shallowRef("");
 const selectedUploadFile = shallowRef<File | null>(null);
 const showCreateKbPanel = shallowRef(false);
 const showUploadPanel = shallowRef(false);
-const sidebarCollapsed = shallowRef(false);
 const pipelineSearch = shallowRef("");
 const ingestionTaskStatusFilter = shallowRef("all");
-const newPipelineTaskPipelineId = shallowRef<number | null>(null);
-const newPipelineTaskSourceType = shallowRef("local_file");
-const newPipelineTaskFile = shallowRef<File | null>(null);
-const newPipelineTaskMetadataText = shallowRef('{"source":"manual"}');
-const intentSearch = shallowRef("");
-const intentMode = shallowRef<"list" | "tree">("tree");
-const selectedIntentNodeId = shallowRef("");
 const keywordSearch = shallowRef("");
-const pipelineTab = shallowRef<"pipelines" | "tasks">("pipelines");
-const pipelineMenuOpen = shallowRef(false);
 const userSearch = shallowRef("");
 const editingDocumentId = shallowRef<number | null>(null);
 const editingChunkId = shallowRef<number | null>(null);
@@ -239,8 +222,8 @@ const activeAdminModal = shallowRef<
 >(null);
 
 const knowledgeEmbeddingModelOptions = [
-  { label: "siliconflow · Qwen/Qwen3-Embedding-8B", value: "Qwen/Qwen3-Embedding-8B" },
-  { label: "ollama · qwen3-embedding:8b", value: "qwen3-embedding:8b" }
+  { label: "SiliconFlow · Qwen/Qwen3-Embedding-8B", value: "Qwen/Qwen3-Embedding-8B" },
+  { label: "LM Studio · Qwen/Qwen3-Embedding-8B-GGUF", value: "Qwen/Qwen3-Embedding-8B-GGUF" }
 ] as const;
 const {
   editingKnowledgeBaseId,
@@ -282,13 +265,16 @@ const {
   newIntentType,
   newIntentParent,
   newIntentKnowledgeBaseId,
+  newIntentMcpToolId,
   newIntentCollectionName,
   newIntentDescription,
   newIntentSampleQuestion,
   newIntentRuleSnippet,
   newIntentPrompt,
+  newIntentParamPrompt,
   newIntentAdvanced,
   newIntentTopK,
+  newIntentMinScore,
   newIntentSortOrder,
   newIntentEnabled,
   resetIntentNodeForm,
@@ -299,21 +285,29 @@ const {
 const uploadAccept = ".txt,.md,.pdf,.doc,.docx,.xls,.xlsx,.html,.htm,text/plain,text/markdown,application/pdf";
 const { pageSize: tablePageSize, pageSlice } = useAdminPagination(10);
 const { toasts, pushToast, dismissToast } = useAdminToasts();
+const {
+  currentTab,
+  knowledgeStage,
+  sidebarCollapsed,
+  pipelineTab,
+  pipelineMenuOpen,
+  navItems,
+  navIconMap,
+  pipelineNavItems,
+  breadcrumbItems,
+  activateTab,
+  activatePipelineTab,
+  toggleSidebar
+} = useAdminNavigation({ selectedKnowledgeBaseId });
 const knowledgeBasePage = shallowRef(1);
 const documentPage = shallowRef(1);
 const chunkPage = shallowRef(1);
-const realIntentPage = shallowRef(1);
 const keywordPage = shallowRef(1);
 const pipelinePage = shallowRef(1);
 const ingestionTaskPage = shallowRef(1);
 const userPage = shallowRef(1);
 
-const dashboardStats = computed(() => ({
-  knowledgeBaseCount: knowledgeBases.value.length,
-  documentCount: knowledgeBases.value.reduce((sum, item) => sum + item.document_count, 0),
-  indexedDocumentCount: documents.value.filter((item) => item.vector_index_status === "indexed").length,
-  chunkCount: documents.value.reduce((sum, item) => sum + item.vector_chunk_count, 0)
-}));
+const { dashboardStats } = useAdminDashboardSummary(knowledgeBases, documents);
 
 const filteredKnowledgeBases = computed(() => {
   const query = knowledgeSearch.value.trim().toLowerCase();
@@ -380,6 +374,17 @@ const {
   updatePipelineNodeConfigFromEvent
 } = useAdminPipelineEditor();
 
+const {
+  newPipelineTaskPipelineId,
+  newPipelineTaskSourceType,
+  newPipelineTaskFile,
+  newPipelineTaskMetadataText,
+  clearPipelineTaskFile,
+  onPipelineTaskFileSelected,
+  pipelineTaskMetadataValid,
+  resetPipelineTaskForm
+} = useAdminPipelineTaskForm({ ingestionPipelines });
+
 const pipelineRows = computed(() => {
   const query = pipelineSearch.value.trim().toLowerCase();
   return ingestionPipelines.value.map((pipeline) => ({
@@ -405,56 +410,21 @@ const filteredIngestionTasks = computed(() =>
 );
 const pagedIngestionTasks = computed(() => pageSlice(filteredIngestionTasks.value, ingestionTaskPage.value));
 
-const realIntentRows = computed(() => {
-  const query = intentSearch.value.trim().toLowerCase();
-  return adminIntentNodes.value
-    .map((node) => {
-      const kb = knowledgeBases.value.find((item) => item.id === node.knowledge_base_id);
-      const parent = adminIntentNodes.value.find((item) => item.id === node.parent_id);
-      return {
-        ...node,
-        type: node.node_type,
-        path: `${parent?.name ?? "ROOT"} / ${node.name}`,
-        resource: kb?.name || node.collection_name || node.knowledge_base_id || "-",
-        sampleCount: node.sample_questions.length,
-        status: node.enabled ? "启用" : "停用"
-      };
-    })
-    .filter((item) => {
-      return (
-        !query ||
-        item.name.toLowerCase().includes(query) ||
-        item.code.toLowerCase().includes(query) ||
-        item.id.toLowerCase().includes(query)
-      );
-    });
-});
-
-const pagedRealIntentRows = computed(() => pageSlice(realIntentRows.value, realIntentPage.value));
-
-const selectedIntentNode = computed(() =>
-  adminIntentNodes.value.find((item) => item.id === selectedIntentNodeId.value) ?? adminIntentNodes.value[0] ?? null
-);
-
-const rootIntentNodes = computed(() =>
-  adminIntentNodes.value
-    .filter((item) => item.parent_id === "ROOT")
-    .sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name))
-);
-
-function childIntentNodes(parentId: string) {
-  return adminIntentNodes.value
-    .filter((item) => item.parent_id === parentId)
-    .sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name));
-}
-
-function intentNodeLevelClass(level: string) {
-  return `level-${level.toLowerCase()}`;
-}
-
-function intentNodeTypeClass(type: string) {
-  return `type-${type.toLowerCase()}`;
-}
+const {
+  intentSearch,
+  intentMode,
+  selectedIntentNodeId,
+  realIntentPage,
+  realIntentRows,
+  pagedRealIntentRows,
+  selectedIntentNode,
+  rootIntentNodes,
+  childIntentNodes,
+  intentNodeLevelClass,
+  intentNodeTypeClass,
+  selectIntentNode,
+  selectFallbackIntentNode
+} = useAdminIntentTree({ adminIntentNodes, knowledgeBases, pageSlice });
 
 const realKeywordRows = computed(() => {
   const query = keywordSearch.value.trim().toLowerCase();
@@ -532,12 +502,13 @@ const selectedTraceRows = computed(() => {
 
 const selectedTraceStats = computed(() => {
   const messages = selectedAdminTrace.value?.messages ?? [];
+  const nodes = selectedAdminTraceNodes.value;
   const userMessages = messages.filter((message) => message.role === "user").length;
   const assistantMessages = messages.filter((message) => message.role === "assistant").length;
   return {
-    nodeCount: Math.max(messages.length, 1),
-    successCount: messages.length,
-    failedCount: 0,
+    nodeCount: nodes.length || Math.max(messages.length, 1),
+    successCount: nodes.length ? nodes.filter((node) => node.status === "success").length : messages.length,
+    failedCount: nodes.length ? nodes.filter((node) => node.status === "error").length : 0,
     userMessages,
     assistantMessages,
     totalDuration: formatDuration(selectedAdminTrace.value?.duration_ms ?? 0)
@@ -620,7 +591,8 @@ const settingCards = computed<SettingCard[]>(() => [
       { label: "Route Provider", value: settingValue("route_provider") },
       { label: "Intent Provider", value: settingValue("intent_provider") },
       { label: "Embedding Provider", value: settingValue("embedding_provider") },
-      { label: "Rerank Provider", value: settingValue("rerank_provider") }
+      { label: "Rerank Provider", value: settingValue("rerank_provider") },
+      { label: "LM Studio", value: settingValue("lmstudio_base_url") }
     ]
   },
   {
@@ -629,6 +601,8 @@ const settingCards = computed<SettingCard[]>(() => [
       { label: "Chat Model", value: settingValue("default_chat_model") },
       { label: "Deep Thinking", value: settingValue("deep_thinking_model") },
       { label: "Embedding Model", value: settingValue("default_embedding_model") },
+      { label: "LM Chat", value: settingValue("lmstudio_chat_model") },
+      { label: "LM Embedding", value: settingValue("lmstudio_embedding_model") },
       { label: "Rerank Model", value: settingValue("default_rerank_model") }
     ]
   },
@@ -637,6 +611,14 @@ const settingCards = computed<SettingCard[]>(() => [
     items: [
       { label: "Chat Endpoint", value: "/api/v1/chat/stream" },
       { label: "Render Mode", value: "SSE delta 流式输出" }
+    ]
+  },
+  {
+    title: "检索治理",
+    items: [
+      { label: "跨请求缓存", value: settingValue("retrieval_cross_request_cache_enabled") },
+      { label: "缓存 TTL", value: `${settingValue("retrieval_cross_request_cache_ttl_seconds")} 秒` },
+      { label: "缓存容量", value: settingValue("retrieval_cross_request_cache_max_entries") }
     ]
   },
   {
@@ -656,69 +638,6 @@ const settingCards = computed<SettingCard[]>(() => [
     ]
   }
 ]);
-
-const breadcrumbItems = computed(() => {
-  if (currentTab.value === "pipeline") {
-    return ["首页", "数据通道", pipelineTab.value === "pipelines" ? "流水线管理" : "流水线任务"];
-  }
-  if (currentTab.value !== "knowledge") {
-    return ["首页", navItems.value.find((item) => item.key === currentTab.value)?.label ?? "后台"];
-  }
-  if (knowledgeStage.value === "knowledge-bases") {
-    return ["首页", "知识库管理"];
-  }
-  if (knowledgeStage.value === "documents") {
-    return ["首页", "知识库管理", "文档管理"];
-  }
-  return ["首页", "知识库管理", "文档管理", "切块管理"];
-});
-
-const navItems = computed<Array<{ key: AdminTab; label: string; group: "main" | "settings" }>>(() => [
-  { key: "dashboard", label: "Dashboard", group: "main" },
-  { key: "knowledge", label: "知识库管理", group: "main" },
-  { key: "intent", label: "意图管理", group: "main" },
-  { key: "keyword", label: "关键词映射", group: "main" },
-  { key: "pipeline", label: "数据通道", group: "main" },
-  { key: "trace", label: "链路追踪", group: "main" },
-  { key: "users", label: "用户管理", group: "settings" },
-  { key: "sampleQuestions", label: "示例问题", group: "settings" },
-  { key: "settings", label: "系统设置", group: "settings" }
-]);
-
-const navIconMap: Record<AdminTab, string> = {
-  dashboard: "▦",
-  knowledge: "▣",
-  intent: "◇",
-  keyword: "⌕",
-  pipeline: "⇧",
-  trace: "⛓",
-  users: "♙",
-  sampleQuestions: "?",
-  settings: "⚙"
-};
-
-const pipelineNavItems = [
-  { key: "pipelines" as const, label: "流水线管理", icon: "▣" },
-  { key: "tasks" as const, label: "流水线任务", icon: "▤" }
-];
-
-function activateTab(tab: AdminTab) {
-  if (tab === "pipeline") {
-    pipelineMenuOpen.value = !pipelineMenuOpen.value;
-    return;
-  }
-  currentTab.value = tab;
-  pipelineMenuOpen.value = false;
-  if (tab === "knowledge" && !selectedKnowledgeBaseId.value) {
-    knowledgeStage.value = "knowledge-bases";
-  }
-}
-
-function activatePipelineTab(tab: "pipelines" | "tasks") {
-  currentTab.value = "pipeline";
-  pipelineTab.value = tab;
-  pipelineMenuOpen.value = true;
-}
 
 function closeAdminModal() {
   activeAdminModal.value = null;
@@ -759,28 +678,8 @@ function openUploadDocumentModal() {
 }
 
 function openPipelineTaskModal() {
-  newPipelineTaskPipelineId.value = ingestionPipelines.value[0]?.id ?? null;
-  newPipelineTaskSourceType.value = "local_file";
-  newPipelineTaskFile.value = null;
-  newPipelineTaskMetadataText.value = '{"source":"manual"}';
+  resetPipelineTaskForm();
   activeAdminModal.value = "pipelineTask";
-}
-
-function onPipelineTaskFileSelected(event: Event) {
-  const input = event.target as HTMLInputElement;
-  newPipelineTaskFile.value = input.files?.[0] ?? null;
-}
-
-function pipelineTaskMetadataValid() {
-  if (!newPipelineTaskMetadataText.value.trim()) {
-    return true;
-  }
-  try {
-    JSON.parse(newPipelineTaskMetadataText.value);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 async function createPipelineTaskFromModal() {
@@ -804,7 +703,7 @@ async function createPipelineTaskFromModal() {
   if (!created) {
     return;
   }
-  newPipelineTaskFile.value = null;
+  clearPipelineTaskFile();
   closeAdminModal();
   await refreshKnowledgeData();
   pipelineTab.value = "tasks";
@@ -932,7 +831,7 @@ function openIntentEditModal(nodeId: string) {
   if (!node) {
     return;
   }
-  selectedIntentNodeId.value = node.id;
+  selectIntentNode(node.id);
   fillIntentNodeForm(node);
   activeAdminModal.value = "intent";
 }
@@ -940,7 +839,7 @@ function openIntentEditModal(nodeId: string) {
 async function deleteIntentNodeFromInput(nodeId: string) {
   await removeIntentNode(nodeId);
   if (selectedIntentNodeId.value === nodeId) {
-    selectedIntentNodeId.value = adminIntentNodes.value[0]?.id ?? "";
+    selectFallbackIntentNode();
   }
 }
 
@@ -1115,7 +1014,7 @@ async function createIntentFromInput() {
     ? await updateIntentNode(editingIntentNodeId.value, payload)
     : await createIntentNode(payload);
   if (saved) {
-    selectedIntentNodeId.value = saved.id;
+    selectIntentNode(saved.id);
     intentMode.value = "tree";
     closeAdminModal();
   } else {
@@ -1284,7 +1183,7 @@ async function deletePipelineFromRow(pipelineId: number) {
         <span class="nav-label">{{ item.label }}</span>
       </button>
 
-      <button class="collapse-btn" type="button" @click="sidebarCollapsed = !sidebarCollapsed">
+      <button class="collapse-btn" type="button" @click="toggleSidebar">
         {{ sidebarCollapsed ? "展开" : "收起侧边栏" }}
       </button>
     </aside>
@@ -1682,8 +1581,10 @@ async function deletePipelineFromRow(pipelineId: number) {
             :admin-trace-total="adminTraceTotal"
             :rows="pagedTraceRows"
             :selected-admin-trace="selectedAdminTrace"
+            :selected-admin-trace-nodes="selectedAdminTraceNodes"
             :selected-trace-rows="selectedTraceRows"
             :selected-trace-stats="selectedTraceStats"
+            :format-duration="formatDuration"
             @back="clearTraceDetail"
             @load-detail="loadTraceDetail"
             @page-change="loadAdminTraces"
@@ -1720,6 +1621,7 @@ async function deletePipelineFromRow(pipelineId: number) {
 
         <template v-else-if="currentTab === 'settings'">
           <AdminSettingsPanel :cards="settingCards" @refresh="refreshKnowledgeData" />
+          <AdminMcpStatusPanel />
         </template>
       </section>
     </main>
@@ -1833,11 +1735,18 @@ async function deletePipelineFromRow(pipelineId: number) {
         v-model:description="newIntentDescription"
         v-model:knowledge-base-id="newIntentKnowledgeBaseId"
         v-model:level="newIntentLevel"
+        v-model:mcp-tool-id="newIntentMcpToolId"
         v-model:name="newIntentName"
         v-model:node-type="newIntentType"
         v-model:parent="newIntentParent"
+        v-model:param-prompt="newIntentParamPrompt"
         v-model:prompt="newIntentPrompt"
+        v-model:rule-snippet="newIntentRuleSnippet"
         v-model:sample-question="newIntentSampleQuestion"
+        v-model:top-k="newIntentTopK"
+        v-model:min-score="newIntentMinScore"
+        v-model:sort-order="newIntentSortOrder"
+        v-model:enabled="newIntentEnabled"
         :admin-intent-nodes="adminIntentNodes"
         :can-save="Boolean(routeProfile)"
         :editing-intent-node-id="editingIntentNodeId"

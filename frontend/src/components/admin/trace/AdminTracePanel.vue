@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import type { AdminTraceDetailResponse } from "../../../services/adminApi";
+import type { AdminTraceDetailResponse, AdminTraceNodeItem } from "../../../services/adminApi";
 import AdminTablePagination from "../common/AdminTablePagination.vue";
+import AdminTraceTreePanel from "./AdminTraceTreePanel.vue";
 
 type TraceRow = {
   name: string;
@@ -44,16 +45,18 @@ defineProps<{
   adminTraceTotal: number;
   rows: TraceRow[];
   selectedAdminTrace: AdminTraceDetailResponse | null;
+  selectedAdminTraceNodes: AdminTraceNodeItem[];
   selectedTraceRows: TraceTimelineRow[];
   selectedTraceStats: TraceStats;
+  formatDuration: (durationMs: number) => string;
 }>();
 
 const emit = defineEmits<{
   back: [];
-  loadDetail: [sessionId: string];
+  loadDetail: [sessionId: string, traceId: string];
   pageChange: [page: number];
   refresh: [];
-  refreshDetail: [sessionId: string];
+  refreshDetail: [sessionId: string, traceId: string];
   search: [];
 }>();
 
@@ -103,7 +106,7 @@ function formatDate(value: string) {
               <td>{{ trace.duration }}</td>
               <td><span class="status-pill" :class="{ success: trace.status === 'SUCCESS', warning: trace.status !== 'SUCCESS' }">{{ trace.status }}</span></td>
               <td>{{ formatDate(trace.executedAt) }}</td>
-              <td><button class="ghost-btn compact" type="button" @click="emit('loadDetail', trace.id)">查看链路</button></td>
+              <td><button class="ghost-btn compact" type="button" @click="emit('loadDetail', trace.id, trace.traceId)">查看链路</button></td>
             </tr>
             <tr v-if="rows.length === 0">
               <td colspan="8" class="empty-cell">暂无链路数据，开始聊天后这里会展示会话与消息链路。</td>
@@ -124,7 +127,7 @@ function formatDate(value: string) {
       </div>
       <div class="page-actions">
         <button class="ghost-btn" type="button" @click="emit('back')">返回列表</button>
-        <button class="ghost-btn" type="button" @click="emit('refreshDetail', selectedAdminTrace.id)">刷新</button>
+        <button class="ghost-btn" type="button" @click="emit('refreshDetail', selectedAdminTrace.id, selectedAdminTrace.trace_id)">刷新</button>
       </div>
     </div>
 
@@ -141,10 +144,16 @@ function formatDate(value: string) {
         <div class="table-toolbar">
           <div>
             <h2>执行时序</h2>
-            <p>当前基于会话消息构建链路视图；后续可接入 LangSmith/节点耗时后替换为真实执行耗时。</p>
+            <p>按真实 RAG 节点展示问题改写、意图识别、路由、检索、工具调用和生成耗时。</p>
           </div>
         </div>
-        <div class="trace-timeline">
+        <AdminTraceTreePanel
+          v-if="selectedAdminTraceNodes.length > 0"
+          :nodes="selectedAdminTraceNodes"
+          :format-duration="formatDuration"
+          :format-date="formatDate"
+        />
+        <div v-else class="trace-timeline">
           <div class="trace-axis">
             <span>开始</span>
             <span>检索 / 工具</span>

@@ -16,6 +16,7 @@ from schemas.admin import (
     AdminKeywordMappingListResponse,
     AdminKeywordMappingUpdateRequest,
     AdminMessageFeedbackListResponse,
+    AdminMcpStatusResponse,
     AdminModelHealthListResponse,
     AdminModelHealthProbeRequest,
     AdminModelHealthItem,
@@ -222,8 +223,12 @@ def get_trace_memory_diagnostics(session_id: str, user: AdminUser) -> AdminTrace
 
 
 @router.get("/traces/{session_id}/nodes", response_model=AdminTraceNodeListResponse)
-def get_trace_nodes(session_id: str, user: AdminUser) -> AdminTraceNodeListResponse:
-    return _service().get_trace_nodes(session_id)
+def get_trace_nodes(
+    session_id: str,
+    user: AdminUser,
+    trace_id: TraceIdQuery = "",
+) -> AdminTraceNodeListResponse:
+    return _service().get_trace_nodes(session_id, trace_id=trace_id)
 
 
 @router.get("/model-health", response_model=AdminModelHealthListResponse)
@@ -234,6 +239,11 @@ def list_model_health(user: AdminUser) -> AdminModelHealthListResponse:
 @router.post("/model-health/probe", response_model=AdminModelHealthItem)
 def probe_model_health(request: AdminModelHealthProbeRequest, user: AdminUser) -> AdminModelHealthItem:
     return _service().probe_model_health(request)
+
+
+@router.get("/mcp", response_model=AdminMcpStatusResponse)
+def get_mcp_status(user: AdminUser) -> AdminMcpStatusResponse:
+    return _service().get_mcp_status()
 
 
 @router.get("/settings", response_model=AdminSettingListResponse)

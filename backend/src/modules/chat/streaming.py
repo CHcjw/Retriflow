@@ -61,7 +61,17 @@ class RetriFlowStreamingService:
                 self.chat_service.persist_rejected_stream_result(request=request, user_id=user_id)
                 yield self._format_event(
                     "reject",
-                    json.dumps({"message": reject_message, "reason": ticket.reason}, ensure_ascii=False),
+                    json.dumps(
+                        {
+                            "message": reject_message,
+                            "reason": ticket.reason,
+                            "request_id": ticket.request_id,
+                            "queue_position": ticket.queue_position,
+                            "queued_ahead": ticket.queued_ahead,
+                            "wait_ms": ticket.wait_ms,
+                        },
+                        ensure_ascii=False,
+                    ),
                 )
                 await asyncio.sleep(0)
                 yield self._format_event(
@@ -71,6 +81,20 @@ class RetriFlowStreamingService:
                 await asyncio.sleep(0)
                 yield self._format_event("done", json.dumps({"session_id": request.session_id}, ensure_ascii=False))
                 return
+            yield self._format_event(
+                "queue",
+                json.dumps(
+                    {
+                        "status": "acquired",
+                        "request_id": ticket.request_id,
+                        "queue_position": ticket.queue_position,
+                        "queued_ahead": ticket.queued_ahead,
+                        "wait_ms": ticket.wait_ms,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+            await asyncio.sleep(0)
 
         try:
             async for event in self._stream_events(

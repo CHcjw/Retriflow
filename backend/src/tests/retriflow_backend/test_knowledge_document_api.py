@@ -1,4 +1,4 @@
-﻿import os
+import os
 import shutil
 import sys
 import tempfile
@@ -535,7 +535,7 @@ class RetriFlowKnowledgeDocumentApiTests(unittest.TestCase):
         self.assertGreaterEqual(len(chunks), 2)
         self.assertTrue(all(chunk["content"].strip() for chunk in chunks))
 
-    def test_upload_text_file_parses_preview_but_waits_for_manual_chunking(self) -> None:
+    def test_upload_text_file_parses_preview_and_waits_for_manual_chunking(self) -> None:
         upload_response = self.client.post(
             "/api/v1/knowledge-bases/kb-demo-1/documents/upload",
             headers=self._auth_headers(self.admin_token),
@@ -966,6 +966,39 @@ class RetriFlowKnowledgeDocumentApiTests(unittest.TestCase):
         self.assertEqual(upload_response.status_code, 201)
         self.assertEqual(parse_mock.call_args.args[2], "application/octet-stream")
 
+    def test_reindex_document_returns_conflict_when_lock_is_busy(self) -> None:
+        from contextlib import contextmanager
+
+        create_response = self.client.post(
+            "/api/v1/knowledge-bases/kb-demo-1/documents",
+            headers=self._auth_headers(self.admin_token),
+            json={
+                "title": "RetriFlow reindex lock target",
+                "source_type": "manual",
+                "document_type": "manual",
+                "chunk_strategy": "recursive",
+                "chunk_size": 200,
+                "chunk_overlap": 20,
+                "content": "Lock conflict target content for reindex.",
+            },
+        )
+        self.assertEqual(create_response.status_code, 201)
+        document_id = create_response.json()["id"]
+
+        @contextmanager
+        def busy_lock(*args, **kwargs):
+            yield False
+
+        with patch("modules.knowledge.service.get_distributed_lock_service") as lock_factory:
+            lock_factory.return_value.acquire.side_effect = busy_lock
+            reindex_response = self.client.post(
+                f"/api/v1/knowledge-bases/kb-demo-1/documents/{document_id}/reindex",
+                headers=self._auth_headers(self.admin_token),
+                json={"chunk_strategy": "fixed", "chunk_size": 60, "chunk_overlap": 12},
+            )
+
+        self.assertEqual(reindex_response.status_code, 409)
+
     def test_reindex_document_rebuilds_chunks_with_new_strategy(self) -> None:
         create_response = self.client.post(
             "/api/v1/knowledge-bases/kb-demo-1/documents",
@@ -1029,7 +1062,8 @@ class RetriFlowKnowledgeDocumentApiTests(unittest.TestCase):
         tasks_response = self.client.get("/api/v1/ingestion/tasks", headers=self._auth_headers(self.admin_token))
         self.assertEqual(tasks_response.status_code, 200)
         matching_tasks = [item for item in tasks_response.json()["items"] if item["document_id"] == document_id]
-        self.assertEqual(matching_tasks, [])
+        self.assertEqual(len(matching_tasks), 1)
+        self.assertEqual(matching_tasks[0]["source_type"], "manual")
 
     def test_data_channel_reindex_creates_ingestion_task(self) -> None:
         create_response = self.client.post(
@@ -1064,8 +1098,8 @@ class RetriFlowKnowledgeDocumentApiTests(unittest.TestCase):
         tasks_response = self.client.get("/api/v1/ingestion/tasks", headers=self._auth_headers(self.admin_token))
         self.assertEqual(tasks_response.status_code, 200)
         matching_tasks = [item for item in tasks_response.json()["items"] if item["document_id"] == document_id]
-        self.assertEqual(len(matching_tasks), 1)
-        self.assertEqual(matching_tasks[0]["source_type"], "manual")
+        self.assertEqual(len(matching_tasks), 2)
+        self.assertTrue(all(item["source_type"] == "manual" for item in matching_tasks))
 
     def test_import_sample_knowledge_directory_creates_documents(self) -> None:
         sample_source = PROJECT_ROOT / "ragent" / "resources" / "docs" / "knowledge"

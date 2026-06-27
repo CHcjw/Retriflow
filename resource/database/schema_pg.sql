@@ -1,4 +1,4 @@
-﻿-- RetriFlow PostgreSQL schema
+-- RetriFlow PostgreSQL schema
 -- Usage:
 -- 1. Connect to the target PostgreSQL database.
 -- 2. Execute this script to initialize the business schema.
@@ -250,12 +250,15 @@ CREATE TABLE IF NOT EXISTS admin_intent_nodes (
     node_type             TEXT NOT NULL DEFAULT 'KB',
     parent_id             TEXT NOT NULL DEFAULT 'ROOT',
     knowledge_base_id     TEXT NOT NULL DEFAULT '',
+    mcp_tool_id           TEXT NOT NULL DEFAULT '',
     collection_name       TEXT NOT NULL DEFAULT '',
     description           TEXT NOT NULL DEFAULT '',
     sample_questions_json JSONB NOT NULL DEFAULT '[]'::jsonb,
     rule_snippet          TEXT NOT NULL DEFAULT '',
     prompt_template       TEXT NOT NULL DEFAULT '',
+    param_prompt_template TEXT NOT NULL DEFAULT '',
     top_k                 INTEGER,
+    min_score             DOUBLE PRECISION,
     sort_order            INTEGER NOT NULL DEFAULT 0,
     enabled               INTEGER NOT NULL DEFAULT 1,
     created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -263,6 +266,12 @@ CREATE TABLE IF NOT EXISTS admin_intent_nodes (
 );
 CREATE INDEX IF NOT EXISTS idx_admin_intent_nodes_parent
 ON admin_intent_nodes (parent_id, sort_order);
+ALTER TABLE admin_intent_nodes
+ADD COLUMN IF NOT EXISTS mcp_tool_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE admin_intent_nodes
+ADD COLUMN IF NOT EXISTS param_prompt_template TEXT NOT NULL DEFAULT '';
+ALTER TABLE admin_intent_nodes
+ADD COLUMN IF NOT EXISTS min_score DOUBLE PRECISION;
 
 CREATE TABLE IF NOT EXISTS admin_keyword_mappings (
     id                TEXT PRIMARY KEY,
@@ -361,4 +370,5 @@ ON conversation_long_memories (owner_type, owner_id, id DESC);
 -- retriflow_chunk_vectors is created automatically by the backend when the
 -- first embedding write succeeds. The concrete vector dimension is inferred
 -- from the active embedding model at runtime.
+
 

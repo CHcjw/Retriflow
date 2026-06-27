@@ -116,15 +116,32 @@ const emit = defineEmits<{
           <dt>父节点</dt>
           <dd>{{ selectedIntentNode.parent_id }}</dd>
           <dt>知识库</dt>
-          <dd>{{ selectedIntentNode.knowledge_base_id || "-" }}</dd>
+          <dd>
+            <i v-if="selectedIntentNode.knowledge_base_id" class="intent-tag type-kb">{{ selectedIntentNode.knowledge_base_id }}</i>
+            <span v-else>-</span>
+          </dd>
+          <dt>MCP 工具</dt>
+          <dd>
+            <i v-if="selectedIntentNode.mcp_tool_id" class="intent-tag type-mcp">{{ selectedIntentNode.mcp_tool_id }}</i>
+            <span v-else>-</span>
+          </dd>
           <dt>Collection</dt>
           <dd>{{ selectedIntentNode.collection_name || "-" }}</dd>
-          <dt>TopK / 排序</dt>
-          <dd>{{ selectedIntentNode.top_k ?? "默认" }} / {{ selectedIntentNode.sort_order }}</dd>
+          <dt>TopK</dt>
+          <dd>{{ selectedIntentNode.top_k ?? "默认" }}</dd>
+          <dt>MinScore</dt>
+          <dd>{{ selectedIntentNode.min_score ?? "默认" }}</dd>
+          <dt>排序</dt>
+          <dd>{{ selectedIntentNode.sort_order }}</dd>
           <dt>描述</dt>
           <dd>{{ selectedIntentNode.description || "-" }}</dd>
           <dt>规则片段</dt>
           <dd>{{ selectedIntentNode.rule_snippet || "-" }}</dd>
+          <dt>参数 Prompt</dt>
+          <dd>
+            <i v-if="selectedIntentNode.param_prompt_template" class="intent-tag type-mcp">已配置</i>
+            <span v-else>-</span>
+          </dd>
         </dl>
         <div class="tag-row">
           <span v-for="question in selectedIntentNode.sample_questions" :key="question" class="soft-tag">{{ question }}</span>

@@ -65,6 +65,7 @@ class RetriFlowConversationMemoryServiceTests(unittest.TestCase):
             "RETRIFLOW_MEMORY_LONG_MAX_ITEMS",
             "RETRIFLOW_MEMORY_LONG_TTL_DAYS",
             "RETRIFLOW_MEMORY_LONG_PROMPT_MAX_ITEMS",
+            "RETRIFLOW_DISTRIBUTED_LOCK_BACKEND",
         ):
             os.environ.pop(key, None)
 
@@ -187,6 +188,38 @@ class RetriFlowConversationMemoryServiceTests(unittest.TestCase):
         self.assertIn("迁移问题", rows[0]["content"])
         self.assertGreater(int(rows[0]["last_message_id"]), 0)
         generate.assert_called_once()
+
+    def test_update_short_term_memory_skips_when_lock_is_busy(self) -> None:
+        from contextlib import contextmanager
+
+        from core.state import get_connection
+        from modules.memory import RetriFlowConversationMemoryService
+
+        session_id = "session-lock-busy"
+        for index in range(1, 5):
+            self._insert_message(session_id, "user", f"user question {index}")
+            self._insert_message(session_id, "assistant", f"assistant answer {index}")
+
+        @contextmanager
+        def busy_lock(*args, **kwargs):
+            yield False
+
+        with patch("modules.memory.service.get_distributed_lock_service") as lock_factory:
+            lock_factory.return_value.acquire.side_effect = busy_lock
+            with patch(
+                "modules.memory.service.RetriFlowConversationMemorySummaryGenerator.generate",
+                return_value="summary",
+            ) as generate:
+                RetriFlowConversationMemoryService().update_short_term_memory(session_id)
+
+        with get_connection() as connection:
+            count = connection.execute(
+                "select count(*) from conversation_memory_summaries where session_id = ?",
+                (session_id,),
+            ).fetchone()[0]
+
+        self.assertEqual(count, 0)
+        generate.assert_not_called()
 
     def test_update_mid_term_memory_persists_structured_items(self) -> None:
         from core.state import get_connection

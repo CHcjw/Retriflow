@@ -21,12 +21,54 @@ export interface ChatMessage {
   role: "assistant" | "user";
   content: string;
   state: "complete" | "error" | "stopped" | "streaming";
+  thinkingContent?: string;
+  thinkingState?: "complete" | "streaming";
+  thinkingStartedAt?: number;
+  thinkingEndedAt?: number;
   feedbackVote?: 1 | -1;
   feedbackState?: "idle" | "saving" | "saved" | "error";
 }
 
 type RequestPhase = "idle" | "retrieving" | "stopping" | "streaming";
 type StreamStage = "idle" | "analyzing" | "retrieving" | "organizing" | "answering" | "stopping";
+
+interface ChatSessionRuntimeState {
+  messages: ChatMessage[];
+  latestSources: ChatSourceItem[];
+  latestWorkflow: ChatWorkflow | null;
+  latestMcpCalls: ChatMcpCallItem[];
+  loading: boolean;
+  requestPhase: RequestPhase;
+  streamStage: StreamStage;
+  errorMessage: string;
+  infoMessage: string;
+  lastSubmittedQuestion: string;
+  lastSubmittedDeepThinking: boolean;
+  lastSubmittedSmartSearch: boolean;
+  activeStreamController: AbortController | null;
+  activeStreamTaskId: string;
+}
+
+function createRuntimeState(): ChatSessionRuntimeState {
+  return {
+    messages: [],
+    latestSources: [],
+    latestWorkflow: null,
+    latestMcpCalls: [],
+    loading: false,
+    requestPhase: "idle",
+    streamStage: "idle",
+    errorMessage: "",
+    infoMessage: "",
+    lastSubmittedQuestion: "",
+    lastSubmittedDeepThinking: false,
+    lastSubmittedSmartSearch: false,
+    activeStreamController: null,
+    activeStreamTaskId: ""
+  };
+}
+
+const emptyRuntimeState = createRuntimeState();
 
 function buildMessage(
   role: ChatMessage["role"],
@@ -66,13 +108,13 @@ function splitStreamingSegments(value: string): string[] {
       continue;
     }
 
-    if (/[。！？!?]/.test(current)) {
+    if (/[。！？.!?]/.test(current)) {
       segments.push(buffer);
       buffer = "";
       continue;
     }
 
-    if (/[，、；：;:]/.test(current) && buffer.trim().length >= 8) {
+    if (/[，、；;:：]/.test(current) && buffer.trim().length >= 8) {
       segments.push(buffer);
       buffer = "";
       continue;
@@ -102,16 +144,24 @@ function getSegmentDelay(segment: string, index: number): number {
   if (/\n\n$/.test(segment)) {
     return 165;
   }
-  if (/[。！？!?]$/.test(value)) {
+  if (/[。！？.!?]$/.test(value)) {
     return 96;
   }
-  if (/[；：;:]$/.test(value)) {
+  if (/[；:：;]$/.test(value)) {
     return 74;
   }
   if (/[，、]$/.test(value)) {
     return 48;
   }
   return Math.min(38, 14 + value.length * 2);
+}
+
+function splitThinkingSegments(value: string): string[] {
+  const segments: string[] = [];
+  for (const char of value) {
+    segments.push(char);
+  }
+  return segments;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -125,62 +175,74 @@ function normalizeForFinalComparison(value: string): string {
 }
 
 export function useRetriFlowChat() {
-  const loading = shallowRef(false);
-  const requestPhase = shallowRef<RequestPhase>("idle");
-  const streamStage = shallowRef<StreamStage>("idle");
-  const errorMessage = shallowRef("");
-  const infoMessage = shallowRef("");
-  const lastSubmittedQuestion = shallowRef("");
-  const lastSubmittedDeepThinking = shallowRef(false);
-  const activeStreamController = shallowRef<AbortController | null>(null);
-  const activeStreamTaskId = shallowRef("");
   const sessions = ref<Awaited<ReturnType<typeof fetchSessions>>["items"]>([]);
   const activeSessionId = shallowRef("");
-  const messages = ref<ChatMessage[]>([]);
-  const latestSources = ref<ChatSourceItem[]>([]);
-  const latestWorkflow = ref<ChatWorkflow | null>(null);
-  const latestMcpCalls = ref<ChatMcpCallItem[]>([]);
+  const sessionStates = ref<Record<string, ChatSessionRuntimeState>>({});
   const starterPrompts = ref<string[]>([
-    "RetriFlow 一期应该先做什么？",
-    "这个知识库主要覆盖什么内容？",
+    "询问助手是做什么的、是谁、能做什么等",
+    "今天广州天气如何",
     "帮我总结一下当前项目的 RAG 流程。"
   ]);
 
+  const getSessionState = (sessionId: string): ChatSessionRuntimeState => {
+    if (!sessionId) {
+      return emptyRuntimeState;
+    }
+    if (!sessionStates.value[sessionId]) {
+      sessionStates.value = {
+        ...sessionStates.value,
+        [sessionId]: createRuntimeState()
+      };
+    }
+    return sessionStates.value[sessionId];
+  };
+
+  const activeState = computed(() => sessionStates.value[activeSessionId.value] ?? emptyRuntimeState);
+  const messages = computed(() => activeState.value.messages);
+  const latestSources = computed(() => activeState.value.latestSources);
+  const latestWorkflow = computed(() => activeState.value.latestWorkflow);
+  const latestMcpCalls = computed(() => activeState.value.latestMcpCalls);
+  const loading = computed(() => activeState.value.loading);
+  const errorMessage = computed(() => activeState.value.errorMessage);
+  const requestPhase = computed(() => activeState.value.requestPhase);
+
   const statusText = computed(() => {
-    if (requestPhase.value === "stopping" || streamStage.value === "stopping") {
+    const state = activeState.value;
+    if (state.requestPhase === "stopping" || state.streamStage === "stopping") {
       return "正在停止本次回答...";
     }
-    if (loading.value) {
-      if (streamStage.value === "analyzing") {
+    if (state.loading) {
+      if (state.streamStage === "analyzing") {
         return "正在理解你的问题...";
       }
-      if (streamStage.value === "retrieving") {
+      if (state.streamStage === "retrieving") {
         return "正在检索相关资料...";
       }
-      if (streamStage.value === "organizing") {
+      if (state.streamStage === "organizing") {
         return "正在整理参考内容...";
       }
-      if (streamStage.value === "answering") {
+      if (state.streamStage === "answering") {
         return "正在生成回答...";
       }
       return "正在准备回答...";
     }
-    if (errorMessage.value) {
-      return errorMessage.value;
-    }
-    if (infoMessage.value) {
-      return infoMessage.value;
-    }
-    return "";
+    return state.errorMessage || state.infoMessage || "";
   });
 
-  const hasMessages = computed(() => messages.value.length > 0);
-  const canRetry = computed(() => Boolean(lastSubmittedQuestion.value.trim()) && !loading.value);
-  const canStop = computed(() => loading.value && activeStreamController.value !== null);
+  const hasMessages = computed(() => activeState.value.messages.length > 0);
+  const canRetry = computed(() => Boolean(activeState.value.lastSubmittedQuestion.trim()) && !activeState.value.loading);
+  const canStop = computed(() => activeState.value.loading && activeState.value.activeStreamController !== null);
+
+  const touchKnownSessionStates = () => {
+    for (const session of sessions.value) {
+      getSessionState(session.id);
+    }
+  };
 
   const loadSessions = async () => {
     const data = await fetchSessions();
     sessions.value = data.items;
+    touchKnownSessionStates();
     if (!sessions.value.find((item) => item.id === activeSessionId.value) && sessions.value[0]) {
       activeSessionId.value = sessions.value[0].id;
     }
@@ -189,79 +251,73 @@ export function useRetriFlowChat() {
     }
   };
 
-  const loadMessages = async (sessionId = activeSessionId.value) => {
+  const loadMessages = async (sessionId = activeSessionId.value, options: { force?: boolean } = {}) => {
     if (!sessionId) {
-      messages.value = [];
+      return;
+    }
+    const state = getSessionState(sessionId);
+    if (state.loading && !options.force) {
       return;
     }
     const data = await fetchSessionMessages(sessionId);
-    messages.value = data.items.map((item) => buildMessage(item.role, item.content, "complete", item.id));
+    state.messages = data.items.map((item) => buildMessage(item.role, item.content, "complete", item.id));
   };
 
   const selectSession = async (sessionId: string) => {
     activeSessionId.value = sessionId;
-    latestSources.value = [];
-    latestWorkflow.value = null;
-    latestMcpCalls.value = [];
-    errorMessage.value = "";
-    infoMessage.value = "";
-    requestPhase.value = "idle";
-    streamStage.value = "idle";
-    await loadMessages(sessionId);
+    const state = getSessionState(sessionId);
+    state.errorMessage = "";
+    if (!state.loading) {
+      state.infoMessage = "";
+      state.requestPhase = "idle";
+      state.streamStage = "idle";
+      await loadMessages(sessionId);
+    }
   };
 
   const createNewSession = async () => {
-    if (loading.value && activeStreamController.value) {
-      infoMessage.value = "当前回答还在生成，已保留当前会话。";
-      return;
-    }
-
     const previousActiveSessionId = activeSessionId.value;
-    const previousMessages = messages.value;
-    latestSources.value = [];
-    latestWorkflow.value = null;
-    latestMcpCalls.value = [];
-    errorMessage.value = "";
-    infoMessage.value = "正在创建新会话...";
-    requestPhase.value = "idle";
-    streamStage.value = "idle";
-    messages.value = [];
+    const nextTitle = `RetriFlow 新会话 ${sessions.value.length + 1}`;
 
     try {
-      const created = await createSession(`RetriFlow 新会话 ${sessions.value.length + 1}`);
+      const created = await createSession(nextTitle);
+      getSessionState(created.id);
       activeSessionId.value = created.id;
       sessions.value = [created, ...sessions.value.filter((session) => session.id !== created.id)];
+      const state = getSessionState(created.id);
+      state.messages = [];
+      state.latestSources = [];
+      state.latestWorkflow = null;
+      state.latestMcpCalls = [];
+      state.errorMessage = "";
+      state.infoMessage = "新会话已创建，可以直接开始提问。";
+      state.requestPhase = "idle";
+      state.streamStage = "idle";
       await loadSessions();
       activeSessionId.value = created.id;
-      infoMessage.value = "新会话已创建，可以直接开始提问。";
     } catch (error) {
       activeSessionId.value = previousActiveSessionId;
-      messages.value = previousMessages;
-      infoMessage.value = "";
-      errorMessage.value = error instanceof Error ? error.message : "新建会话失败，请稍后再试。";
+      const state = getSessionState(previousActiveSessionId);
+      state.errorMessage = error instanceof Error ? error.message : "新建会话失败，请稍后再试。";
     }
   };
+
   const removeSession = async (sessionId: string) => {
     const wasActiveSession = activeSessionId.value === sessionId;
     const previousSessions = sessions.value;
     sessions.value = sessions.value.filter((session) => session.id !== sessionId);
     try {
       await deleteSession(sessionId);
-      if (wasActiveSession) {
-        latestSources.value = [];
-        latestWorkflow.value = null;
-        latestMcpCalls.value = [];
-        errorMessage.value = "";
-        infoMessage.value = "??????";
-        messages.value = [];
-      }
+      const { [sessionId]: _removed, ...rest } = sessionStates.value;
+      sessionStates.value = rest;
       await loadSessions();
       if (wasActiveSession) {
         await loadMessages(activeSessionId.value);
       }
     } catch (error) {
       sessions.value = previousSessions;
-      errorMessage.value = error instanceof Error ? error.message : "?????????????";
+      const state = getSessionState(activeSessionId.value);
+      state.errorMessage = error instanceof Error ? error.message : "删除会话失败，请稍后再试。";
     }
   };
 
@@ -282,21 +338,21 @@ export function useRetriFlowChat() {
       starterPrompts.value = Array.from(new Set(configuredPrompts)).slice(0, 6);
       if (starterPrompts.value.length === 0) {
         starterPrompts.value = [
-          "RetriFlow 一期应该先做什么？",
-          "这个知识库主要覆盖什么内容？",
+          "询问助手是做什么的、是谁、能做什么等",
+          "今天广州天气如何",
           "帮我总结一下当前项目的 RAG 流程。"
         ];
       }
     } catch {
       starterPrompts.value = [
-        "RetriFlow 一期应该先做什么？",
-        "这个知识库主要覆盖什么内容？",
+        "询问助手是做什么的、是谁、能做什么等",
+        "今天广州天气如何",
         "帮我总结一下当前项目的 RAG 流程。"
       ];
     }
   };
 
-  const ask = async (question: string, options: { deepThinking?: boolean } = {}) => {
+  const ask = async (question: string, options: { deepThinking?: boolean; smartSearch?: boolean } = {}) => {
     const trimmedQuestion = question.trim();
     if (!trimmedQuestion) {
       return;
@@ -305,26 +361,70 @@ export function useRetriFlowChat() {
     if (!activeSessionId.value) {
       await createNewSession();
     }
+    const streamSessionId = activeSessionId.value;
+    if (!streamSessionId) {
+      return;
+    }
 
-    loading.value = true;
-    requestPhase.value = "retrieving";
-    streamStage.value = "analyzing";
-    errorMessage.value = "";
-    infoMessage.value = "";
-    lastSubmittedQuestion.value = trimmedQuestion;
-    lastSubmittedDeepThinking.value = Boolean(options.deepThinking);
-    latestSources.value = [];
-    latestWorkflow.value = null;
-    latestMcpCalls.value = [];
-    messages.value = [...messages.value, buildMessage("user", trimmedQuestion)];
+    const state = getSessionState(streamSessionId);
+    if (state.loading) {
+      state.infoMessage = "当前会话正在生成回答，请先停止或切换到新会话。";
+      return;
+    }
+
+    state.loading = true;
+    state.requestPhase = "retrieving";
+    state.streamStage = "analyzing";
+    state.errorMessage = "";
+    state.infoMessage = "";
+    state.lastSubmittedQuestion = trimmedQuestion;
+    state.lastSubmittedDeepThinking = Boolean(options.deepThinking);
+    state.lastSubmittedSmartSearch = Boolean(options.smartSearch);
+    state.latestSources = [];
+    state.latestWorkflow = null;
+    state.latestMcpCalls = [];
+    state.messages = [...state.messages, buildMessage("user", trimmedQuestion)];
 
     try {
       const assistantMessage = buildMessage("assistant", "", "streaming");
       const controller = new AbortController();
-      activeStreamController.value = controller;
-      messages.value = [...messages.value, assistantMessage];
+      state.activeStreamController = controller;
+      state.messages = [...state.messages, assistantMessage];
 
       let hasStreamedVisibleText = false;
+      let thinkingQueue = Promise.resolve();
+      const seenThinkingLines = new Set<string>();
+
+      const appendThinkingLine = (line: string) => {
+        if (!options.deepThinking || !line.trim() || seenThinkingLines.has(line)) {
+          return;
+        }
+        seenThinkingLines.add(line);
+        if (!assistantMessage.thinkingStartedAt) {
+          assistantMessage.thinkingStartedAt = Date.now();
+          assistantMessage.thinkingState = "streaming";
+        }
+        thinkingQueue = thinkingQueue.then(async () => {
+          for (const segment of splitThinkingSegments(`${line}\n`)) {
+            assistantMessage.thinkingContent = `${assistantMessage.thinkingContent ?? ""}${segment}`;
+            state.messages = [...state.messages];
+            await nextTick();
+            await sleep(segment === "\n" ? 120 : 16);
+          }
+        });
+      };
+
+      const finishThinking = async () => {
+        if (!options.deepThinking || assistantMessage.thinkingState !== "streaming") {
+          return;
+        }
+        await thinkingQueue;
+        assistantMessage.thinkingState = "complete";
+        assistantMessage.thinkingEndedAt = Date.now();
+        state.messages = [...state.messages];
+      };
+
+      appendThinkingLine("我先读取会话记忆，理解你的问题。");
 
       const renderStreamSegments = async (content: string) => {
         const segments = splitStreamingSegments(content);
@@ -332,8 +432,8 @@ export function useRetriFlowChat() {
           return;
         }
 
-        requestPhase.value = "streaming";
-        streamStage.value = "answering";
+        state.requestPhase = "streaming";
+        state.streamStage = "answering";
         assistantMessage.state = "streaming";
 
         if (!hasStreamedVisibleText) {
@@ -343,33 +443,49 @@ export function useRetriFlowChat() {
 
         for (const [index, segment] of segments.entries()) {
           assistantMessage.content = `${assistantMessage.content}${segment}`;
-          messages.value = [...messages.value];
+          state.messages = [...state.messages];
           await nextTick();
           await sleep(getSegmentDelay(segment, index));
         }
       };
 
       await streamChatMessage(
-        activeSessionId.value,
+        streamSessionId,
         trimmedQuestion,
         {
           onTask: async (payload) => {
-            activeStreamTaskId.value = payload.task_id;
+            state.activeStreamTaskId = payload.task_id;
           },
           onWorkflow: async (workflow) => {
-            latestWorkflow.value = workflow;
-            if (streamStage.value === "analyzing") {
-              streamStage.value = workflow.retrieval_count > 0 ? "retrieving" : "organizing";
+            state.latestWorkflow = workflow;
+            if (state.streamStage === "analyzing") {
+              state.streamStage = workflow.retrieval_count > 0 ? "retrieving" : "organizing";
+            }
+            const stages = (workflow.pipeline_stages ?? []).join(" → ");
+            appendThinkingLine(stages ? `链路阶段：${stages}。` : "正在完成问题重写、意图识别和路由判断。");
+            if (workflow.rewritten_queries?.length > 0) {
+              appendThinkingLine(`问题重写/拆分结果：${workflow.rewritten_queries.join("；")}。`);
+            }
+            if (workflow.intent) {
+              const confidence =
+                workflow.intent_confidence !== undefined ? `，置信度 ${workflow.intent_confidence.toFixed(2)}` : "";
+              appendThinkingLine(`意图识别为 ${workflow.intent}${confidence}。`);
             }
           },
           onSources: async (sources) => {
-            latestSources.value = sources;
-            streamStage.value = sources.length > 0 ? "organizing" : "answering";
+            state.latestSources = sources;
+            state.streamStage = sources.length > 0 ? "organizing" : "answering";
+            appendThinkingLine(
+              sources.length > 0 ? `知识库检索命中 ${sources.length} 个可引用片段。` : "知识库没有命中可直接引用的片段。"
+            );
           },
           onMcpCalls: async (mcpCalls) => {
-            latestMcpCalls.value = mcpCalls;
-            if (mcpCalls.length > 0 && !latestSources.value.length) {
-              streamStage.value = "organizing";
+            state.latestMcpCalls = mcpCalls;
+            if (mcpCalls.length > 0 && !state.latestSources.length) {
+              state.streamStage = "organizing";
+            }
+            if (mcpCalls.length > 0) {
+              appendThinkingLine(`调用 ${mcpCalls.length} 个 MCP 工具补充外部信息。`);
             }
           },
           onDelta: async (delta) => {
@@ -378,10 +494,12 @@ export function useRetriFlowChat() {
           onCancel: async () => {
             assistantMessage.state = "stopped";
             assistantMessage.content = assistantMessage.content || "已停止生成。";
-            messages.value = [...messages.value];
+            state.messages = [...state.messages];
             await nextTick();
           },
           onFinal: async (payload) => {
+            appendThinkingLine("正在整理上下文并生成最终回答。");
+            await finishThinking();
             if (payload?.mode === "append" && payload.content_delta) {
               await renderStreamSegments(payload.content_delta);
             } else if (payload?.mode === "replace" && typeof payload.content === "string") {
@@ -391,71 +509,74 @@ export function useRetriFlowChat() {
               if (!finalContainsCurrent) {
                 assistantMessage.content = payload.content;
               }
-              messages.value = [...messages.value];
+              state.messages = [...state.messages];
             }
             assistantMessage.state = "complete";
-            messages.value = [...messages.value];
+            state.messages = [...state.messages];
             await nextTick();
           },
           onDone: async () => {
+            await finishThinking();
             assistantMessage.state = "complete";
-            const sessionMessages = await fetchSessionMessages(activeSessionId.value);
+            const sessionMessages = await fetchSessionMessages(streamSessionId);
             const latestAssistantMessage = [...sessionMessages.items].reverse().find((item) => item.role === "assistant");
             if (latestAssistantMessage) {
               assistantMessage.backendId = latestAssistantMessage.id;
             }
-            messages.value = [...messages.value];
+            state.messages = [...state.messages];
             await nextTick();
             await loadSessions();
           }
         },
         controller.signal,
-        Boolean(options.deepThinking)
+        Boolean(options.deepThinking),
+        Boolean(options.smartSearch)
       );
     } catch (error) {
       if (error instanceof Error && error.name === "AbortError") {
-        infoMessage.value = "已停止本次生成。";
-        streamStage.value = "idle";
-        const latestMessage = messages.value[messages.value.length - 1];
+        state.infoMessage = "已停止本次生成。";
+        state.streamStage = "idle";
+        const latestMessage = state.messages[state.messages.length - 1];
         if (latestMessage?.role === "assistant" && latestMessage.state === "streaming") {
           latestMessage.state = "stopped";
           latestMessage.content = latestMessage.content || "已停止生成。";
-          messages.value = [...messages.value];
+          state.messages = [...state.messages];
         }
         return;
       }
 
       const message = error instanceof Error ? error.message : "聊天请求失败，请稍后再试。";
-      errorMessage.value = message;
-      streamStage.value = "idle";
+      state.errorMessage = message;
+      state.streamStage = "idle";
 
-      const latestMessage = messages.value[messages.value.length - 1];
+      const latestMessage = state.messages[state.messages.length - 1];
       if (latestMessage?.role === "assistant" && latestMessage.state === "streaming") {
         latestMessage.state = "error";
         latestMessage.content = latestMessage.content || `这次流式回答失败了：${message}`;
-        messages.value = [...messages.value];
+        state.messages = [...state.messages];
       } else {
-        messages.value = [...messages.value, buildMessage("assistant", `这次回答失败了：${message}`, "error")];
+        state.messages = [...state.messages, buildMessage("assistant", `这次回答失败了：${message}`, "error")];
       }
     } finally {
-      activeStreamController.value = null;
-      activeStreamTaskId.value = "";
-      loading.value = false;
-      requestPhase.value = "idle";
-      if (streamStage.value !== "stopping") {
-        streamStage.value = "idle";
+      state.activeStreamController = null;
+      state.activeStreamTaskId = "";
+      state.loading = false;
+      state.requestPhase = "idle";
+      if (state.streamStage !== "stopping") {
+        state.streamStage = "idle";
       }
     }
   };
 
   const stopStreaming = () => {
-    if (!activeStreamController.value) {
+    const state = activeState.value;
+    if (!state.activeStreamController) {
       return;
     }
-    requestPhase.value = "stopping";
-    streamStage.value = "stopping";
-    const controller = activeStreamController.value;
-    const taskId = activeStreamTaskId.value;
+    state.requestPhase = "stopping";
+    state.streamStage = "stopping";
+    const controller = state.activeStreamController;
+    const taskId = state.activeStreamTaskId;
     if (!taskId) {
       controller.abort();
       return;
@@ -466,27 +587,32 @@ export function useRetriFlowChat() {
   };
 
   const retryLastQuestion = async () => {
-    if (!lastSubmittedQuestion.value.trim()) {
+    const state = activeState.value;
+    if (!state.lastSubmittedQuestion.trim()) {
       return;
     }
-    await ask(lastSubmittedQuestion.value, { deepThinking: lastSubmittedDeepThinking.value });
+    await ask(state.lastSubmittedQuestion, {
+      deepThinking: state.lastSubmittedDeepThinking,
+      smartSearch: state.lastSubmittedSmartSearch
+    });
   };
 
   const submitFeedback = async (message: ChatMessage, vote: 1 | -1) => {
     if (message.role !== "assistant" || !message.backendId || message.state !== "complete") {
       return;
     }
+    const state = activeState.value;
     message.feedbackState = "saving";
-    messages.value = [...messages.value];
+    state.messages = [...state.messages];
     try {
       await submitMessageFeedback(message.backendId, vote);
       message.feedbackVote = vote;
       message.feedbackState = "saved";
     } catch (error) {
       message.feedbackState = "error";
-      errorMessage.value = error instanceof Error ? error.message : "反馈提交失败";
+      state.errorMessage = error instanceof Error ? error.message : "反馈提交失败";
     } finally {
-      messages.value = [...messages.value];
+      state.messages = [...state.messages];
     }
   };
 

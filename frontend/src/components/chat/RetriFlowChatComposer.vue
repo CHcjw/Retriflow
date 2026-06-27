@@ -1,6 +1,7 @@
 <script setup lang="ts">
 const draft = defineModel<string>("draft", { required: true });
 const deepThinking = defineModel<boolean>("deepThinking", { default: false });
+const smartSearch = defineModel<boolean>("smartSearch", { default: false });
 
 defineProps<{
   canStop: boolean;
@@ -25,61 +26,88 @@ const onKeydown = (event: KeyboardEvent) => {
 
 <template>
   <div class="composer-wrapper">
-    <div class="composer-box" :class="{ 'is-focused': true }">
+    <div class="composer-box">
       <textarea
         v-model="draft"
         :disabled="loading"
         placeholder="输入你的问题..."
-        @keydown="onKeydown"
         rows="1"
         class="auto-resize-textarea"
+        @keydown="onKeydown"
       ></textarea>
-      
+
       <div class="composer-footer">
         <div class="left-actions">
-          <button 
-            type="button" 
-            class="deep-think-btn" 
+          <button
+            type="button"
+            class="mode-btn"
             :class="{ active: deepThinking }"
+            title="深度思考"
             @click="deepThinking = !deepThinking"
           >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" /></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+            </svg>
             深度思考
           </button>
+          <button
+            type="button"
+            class="mode-btn"
+            :class="{ active: smartSearch }"
+            title="开启后优先使用联网搜索或天气 MCP"
+            @click="smartSearch = !smartSearch"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10" />
+              <path d="M2 12h20" />
+              <path d="M12 2a15.3 15.3 0 010 20" />
+              <path d="M12 2a15.3 15.3 0 000 20" />
+            </svg>
+            智能搜索
+          </button>
         </div>
+
         <div class="right-actions">
           <button
             v-if="canStop"
             type="button"
             class="action-btn stop-btn"
-            @click="emit('stop')"
             title="停止生成"
+            @click="emit('stop')"
           >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="6" y="6" width="12" height="12" rx="2" />
+            </svg>
           </button>
-          
+
           <button
             v-if="canRetry"
             type="button"
             class="action-btn retry-btn"
             :disabled="loading"
-            @click="emit('retry')"
             title="重试上一条"
+            @click="emit('retry')"
           >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
           </button>
-          
-          <button 
-            type="button" 
-            class="send-btn" 
-            :disabled="loading || !draft.trim()" 
+
+          <button
+            type="button"
+            class="send-btn"
+            :disabled="loading || !draft.trim()"
+            title="发送"
             @click="emit('submit')"
           >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" /></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" />
+            </svg>
           </button>
         </div>
       </div>
     </div>
+
     <div class="composer-hints">
       Enter 发送，Shift + Enter 换行
       <span v-if="statusText" class="status-text"> · {{ statusText }}</span>
@@ -133,11 +161,23 @@ const onKeydown = (event: KeyboardEvent) => {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
   margin-top: 12px;
 }
 
-.deep-think-btn {
+.left-actions,
+.right-actions {
   display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.left-actions {
+  flex-wrap: wrap;
+}
+
+.mode-btn {
+  display: inline-flex;
   align-items: center;
   gap: 6px;
   padding: 6px 12px;
@@ -146,28 +186,19 @@ const onKeydown = (event: KeyboardEvent) => {
   color: var(--text-muted);
   font-size: 13px;
   font-weight: 500;
+  white-space: nowrap;
   transition: all 0.2s;
 }
 
-.deep-think-btn:hover {
-  background: #EBF1FB;
+.mode-btn:hover,
+.mode-btn.active {
+  background: #ebf1fb;
   color: var(--primary);
 }
 
-.deep-think-btn.active {
-  background: #EBF1FB;
-  color: var(--primary);
-}
-
-.deep-think-btn svg {
+.mode-btn svg {
   width: 14px;
   height: 14px;
-}
-
-.right-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
 }
 
 .action-btn {

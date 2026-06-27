@@ -470,7 +470,7 @@ class PostgresRetriFlowVectorStore:
             document_type=str(row["document_type"]),
             strategy=str(row["strategy"]),
             collection_name=str(row["collection_name"] or row["knowledge_base_id"]).replace("-", ""),
-            embedding_model=str(row["embedding_model"] or "Qwen/Qwen3-Embedding-8B"),
+            embedding_model=str(row["embedding_model"] or "Qwen/Qwen3-Embedding-8B-GGUF"),
             metadata=PostgresRetriFlowVectorStore._parse_json_field(
                 row["metadata_json"],
                 default={},
@@ -500,6 +500,8 @@ class PostgresRetriFlowVectorStore:
         normalized = (model_name or "").strip().lower()
         if not normalized:
             return None
+        if "qwen/qwen3-embedding-8b-gguf" in normalized or normalized.startswith("lmstudio:"):
+            return "lmstudio"
         if "qwen3-embedding:8b" in normalized or normalized.startswith("ollama:"):
             return "ollama"
         if "qwen/qwen3-embedding" in normalized:

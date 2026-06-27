@@ -12,6 +12,7 @@ from infra.llm.health import ModelHealthSnapshot
 from infra.llm.health import get_model_health_service
 from modules.auth import RetriFlowAuthService
 from modules.knowledge.intent_cache import IntentTreeCacheManager
+from modules.mcp.registry import RetriFlowMcpRegistry
 from modules.rag.postprocess import RetriFlowAnswerPostprocessor
 from modules.rag.term_mapping import QueryTermMappingCacheManager
 from modules.rag.trace import RetriFlowTraceService
@@ -34,6 +35,10 @@ from schemas.admin import (
     AdminKeywordMappingUpdateRequest,
     AdminMessageFeedbackItem,
     AdminMessageFeedbackListResponse,
+    AdminMcpParameterItem,
+    AdminMcpRemoteServerItem,
+    AdminMcpStatusResponse,
+    AdminMcpToolItem,
     AdminModelHealthItem,
     AdminModelHealthListResponse,
     AdminModelHealthProbeRequest,
@@ -414,10 +419,10 @@ class RetriFlowAdminService:
                     """
                     insert into admin_intent_nodes (
                         id, name, code, level, node_type, parent_id, knowledge_base_id,
-                        collection_name, description, sample_questions_json, rule_snippet,
-                        prompt_template, top_k, sort_order, enabled
+                        mcp_tool_id, collection_name, description, sample_questions_json, rule_snippet,
+                        prompt_template, param_prompt_template, top_k, min_score, sort_order, enabled
                     )
-                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         node_id,
@@ -427,12 +432,15 @@ class RetriFlowAdminService:
                         request.node_type.strip() or "KB",
                         request.parent_id.strip() or "ROOT",
                         request.knowledge_base_id.strip(),
+                        request.mcp_tool_id.strip(),
                         request.collection_name.strip(),
                         request.description.strip(),
                         json.dumps(request.sample_questions, ensure_ascii=False),
                         request.rule_snippet.strip(),
                         request.prompt_template.strip(),
+                        request.param_prompt_template.strip(),
                         request.top_k,
+                        request.min_score,
                         request.sort_order,
                         1 if request.enabled else 0,
                     ),
@@ -899,12 +907,37 @@ class RetriFlowAdminService:
             prompt_message_count=len(prompt_messages),
         )
 
-    def get_trace_nodes(self, session_id: str) -> AdminTraceNodeListResponse:
+    def get_trace_nodes(self, session_id: str, *, trace_id: str = "") -> AdminTraceNodeListResponse:
         with get_connection() as connection:
             row = connection.execute(
                 "select id from sessions where id = ?",
                 (session_id,),
             ).fetchone()
+            normalized_trace_id = trace_id.strip()
+            if normalized_trace_id:
+                node_rows = connection.execute(
+                    """
+                    with recursive trace_tree as (
+                        select *
+                        from rag_trace_nodes
+                        where session_id = ? and id = ?
+                        union all
+                        select child.*
+                        from rag_trace_nodes child
+                        join trace_tree parent on child.parent_id = parent.id
+                        where child.session_id = ?
+                    )
+                    select *
+                    from trace_tree
+                    order by started_at, id
+                    """,
+                    (session_id, normalized_trace_id, session_id),
+                ).fetchall()
+                if not node_rows:
+                    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="trace root not found")
+                return AdminTraceNodeListResponse(
+                    items=[AdminTraceNodeItem(**RetriFlowTraceService._row_to_dict(node)) for node in node_rows]
+                )
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
 
@@ -927,6 +960,65 @@ class RetriFlowAdminService:
         )
         return self._to_model_health_item(snapshot)
 
+    def get_mcp_status(self) -> AdminMcpStatusResponse:
+        settings = get_settings()
+        registry = RetriFlowMcpRegistry()
+        tools = registry.list_tools()
+        remote_statuses = registry.remote_server_statuses()
+        return AdminMcpStatusResponse(
+            tools=[
+                AdminMcpToolItem(
+                    tool_id=tool.tool_id,
+                    description=tool.description,
+                    server_name=tool.server_name,
+                    transport=tool.transport,
+                    schema_version=tool.schema_version,
+                    parameter_count=len(tool.parameter_schema.get("properties", {}))
+                    if isinstance(tool.parameter_schema, dict)
+                    else 0,
+                    keywords=tool.keywords,
+                    parameters=self._mcp_parameter_items(tool.parameter_schema),
+                )
+                for tool in tools
+            ],
+            remote_servers=[
+                AdminMcpRemoteServerItem(
+                    name=remote_status.name,
+                    url=remote_status.url,
+                    healthy=remote_status.healthy,
+                    tool_count=remote_status.tool_count,
+                    error=remote_status.error,
+                )
+                for remote_status in remote_statuses
+            ],
+            total_tools=len(tools),
+            remote_enabled=settings.mcp_remote_enabled,
+        )
+
+    @staticmethod
+    def _mcp_parameter_items(parameter_schema: dict) -> list[AdminMcpParameterItem]:
+        if not isinstance(parameter_schema, dict):
+            return []
+        properties = parameter_schema.get("properties")
+        if not isinstance(properties, dict):
+            return []
+        required = set(parameter_schema.get("required") or [])
+        items: list[AdminMcpParameterItem] = []
+        for name, raw_schema in properties.items():
+            schema = raw_schema if isinstance(raw_schema, dict) else {}
+            enum_value = schema.get("enum")
+            items.append(
+                AdminMcpParameterItem(
+                    name=str(name),
+                    type=str(schema.get("type") or "string"),
+                    required=str(name) in required,
+                    description=str(schema.get("description") or ""),
+                    default=schema.get("default"),
+                    enum=list(enum_value) if isinstance(enum_value, list) else [],
+                )
+            )
+        return items
+
     def list_settings(self) -> AdminSettingListResponse:
         settings = get_settings()
         raw_items = [
@@ -947,11 +1039,17 @@ class RetriFlowAdminService:
             ("intent_provider", settings.intent_provider, "模型供应商"),
             ("embedding_provider", settings.embedding_provider, "模型供应商"),
             ("rerank_provider", settings.rerank_provider, "模型供应商"),
+            ("lmstudio_base_url", settings.lmstudio_base_url, "模型供应商"),
+            ("lmstudio_chat_model", settings.lmstudio_chat_model, "模型"),
+            ("lmstudio_embedding_model", settings.lmstudio_embedding_model, "模型"),
             ("retrieval_bm25_top_k", settings.retrieval_bm25_top_k, "检索"),
             ("retrieval_vector_top_k", settings.retrieval_vector_top_k, "检索"),
             ("retrieval_rrf_top_k", settings.retrieval_rrf_top_k, "检索"),
             ("retrieval_rerank_top_k", settings.retrieval_rerank_top_k, "检索"),
             ("retrieval_final_top_k", settings.retrieval_final_top_k, "检索"),
+            ("retrieval_cross_request_cache_enabled", settings.retrieval_cross_request_cache_enabled, "检索治理"),
+            ("retrieval_cross_request_cache_ttl_seconds", settings.retrieval_cross_request_cache_ttl_seconds, "检索治理"),
+            ("retrieval_cross_request_cache_max_entries", settings.retrieval_cross_request_cache_max_entries, "检索治理"),
             ("tika_enabled", settings.tika_enabled, "本地服务"),
             ("tika_endpoint", settings.tika_endpoint, "本地服务"),
             ("tika_ocr_enabled", settings.tika_ocr_enabled, "本地服务"),
@@ -1027,12 +1125,15 @@ class RetriFlowAdminService:
             node_type=str(row["node_type"]),
             parent_id=str(row["parent_id"]),
             knowledge_base_id=str(row["knowledge_base_id"] or ""),
+            mcp_tool_id=str(row["mcp_tool_id"] or ""),
             collection_name=str(row["collection_name"] or ""),
             description=str(row["description"] or ""),
             sample_questions=RetriFlowAdminService._loads_json_list(row["sample_questions_json"]),
             rule_snippet=str(row["rule_snippet"] or ""),
             prompt_template=str(row["prompt_template"] or ""),
+            param_prompt_template=str(row["param_prompt_template"] or ""),
             top_k=row["top_k"],
+            min_score=row["min_score"],
             sort_order=int(row["sort_order"] or 0),
             enabled=bool(row["enabled"]),
             created_at=RetriFlowAdminService._serialize_timestamp(row["created_at"]),

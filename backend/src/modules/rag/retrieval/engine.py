@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 import re
 
@@ -41,6 +42,9 @@ class RetriFlowHybridRetriever(BaseRetriever):
     _fusion_top_k: int = PrivateAttr(default=50)
     _rerank_top_k: int = PrivateAttr(default=10)
     _final_top_k: int = PrivateAttr(default=5)
+    _search_top_k_override: int | None = PrivateAttr(default=None)
+    _top_k_by_knowledge_base: dict[str, int] = PrivateAttr(default_factory=dict)
+    _min_score_by_knowledge_base: dict[str, float] = PrivateAttr(default_factory=dict)
     _postprocessors: list[SearchResultPostProcessor] = PrivateAttr()
     _trace_service: RetriFlowTraceService = PrivateAttr()
     _last_stage_metrics: dict[str, dict[str, object]] = PrivateAttr(default_factory=dict)
@@ -50,6 +54,9 @@ class RetriFlowHybridRetriever(BaseRetriever):
         knowledge_base_ids: list[str] | None = None,
         channels: list[RetrievalChannel] | None = None,
         postprocessors: list[SearchResultPostProcessor] | None = None,
+        search_top_k_override: int | None = None,
+        top_k_by_knowledge_base: dict[str, int] | None = None,
+        min_score_by_knowledge_base: dict[str, float] | None = None,
     ) -> None:
         super().__init__()
         settings = get_settings()
@@ -63,6 +70,17 @@ class RetriFlowHybridRetriever(BaseRetriever):
         self._rerank_top_k = settings.retrieval_rerank_top_k
         self._final_top_k = settings.retrieval_final_top_k
         self._bm25_top_k = settings.retrieval_bm25_top_k
+        self._search_top_k_override = search_top_k_override if search_top_k_override and search_top_k_override > 0 else None
+        self._top_k_by_knowledge_base = {
+            str(knowledge_base_id): int(top_k)
+            for knowledge_base_id, top_k in (top_k_by_knowledge_base or {}).items()
+            if int(top_k) > 0
+        }
+        self._min_score_by_knowledge_base = {
+            str(knowledge_base_id): float(min_score)
+            for knowledge_base_id, min_score in (min_score_by_knowledge_base or {}).items()
+            if float(min_score) > 0
+        }
         self._postprocessors = postprocessors or [
             RrfFusionPostProcessor(top_k=self._fusion_top_k),
             RerankPostProcessor(service_factory=lambda: RetriFlowRerankService(), limit=self._rerank_top_k),
@@ -137,6 +155,8 @@ class RetriFlowHybridRetriever(BaseRetriever):
                         },
                     )
                 records = deduplicate_and_rank(channel_result.records, top_k=channel_context.top_k)
+                records = self._apply_per_knowledge_base_min_score(records)
+                records = self._apply_per_knowledge_base_limit(records)
                 channel_result.records = records
                 channel_results.append(channel_result)
                 stage_counts[channel_result.channel_name] = len(records)
@@ -145,7 +165,21 @@ class RetriFlowHybridRetriever(BaseRetriever):
                     "latency_ms": channel_result.latency_ms,
                     "query_count": (channel_result.metadata or {}).get("query_count", len(channel_context.effective_queries)),
                     "top_k": channel_context.top_k,
+                    "cache_hits": (channel_result.metadata or {}).get("cache_hits", 0),
                 }
+                if (channel_result.metadata or {}).get("cross_request_cache_hits"):
+                    stage_metrics[channel_result.channel_name]["cross_request_cache_hits"] = (
+                        channel_result.metadata or {}
+                    ).get("cross_request_cache_hits", 0)
+                    stage_metrics[channel_result.channel_name]["cache_scope"] = "cross_request"
+                if self._top_k_by_knowledge_base:
+                    stage_metrics[channel_result.channel_name]["top_k_by_knowledge_base"] = dict(
+                        self._top_k_by_knowledge_base
+                    )
+                if self._min_score_by_knowledge_base:
+                    stage_metrics[channel_result.channel_name]["min_score_by_knowledge_base"] = dict(
+                        self._min_score_by_knowledge_base
+                    )
                 if (channel_result.metadata or {}).get("error"):
                     stage_metrics[channel_result.channel_name]["error"] = str(channel_result.metadata["error"])
 
@@ -183,16 +217,47 @@ class RetriFlowHybridRetriever(BaseRetriever):
             return records, stage_counts
 
     def _top_k_for_channel(self, channel_name: str) -> int:
+        if self._search_top_k_override is not None:
+            return self._search_top_k_override
         if channel_name == "bm25":
             return self._bm25_top_k
         if channel_name == "semantic":
             return self._vector_top_k
         return max(self._bm25_top_k, self._vector_top_k)
 
+    def _apply_per_knowledge_base_limit(self, records: list) -> list:
+        if not self._top_k_by_knowledge_base:
+            return records
+        counts: dict[str, int] = {}
+        limited = []
+        for record in records:
+            knowledge_base_id = str(record.knowledge_base_id)
+            limit = self._top_k_by_knowledge_base.get(knowledge_base_id)
+            if limit is None:
+                limited.append(record)
+                continue
+            if counts.get(knowledge_base_id, 0) >= limit:
+                continue
+            counts[knowledge_base_id] = counts.get(knowledge_base_id, 0) + 1
+            limited.append(record)
+        return limited
+
+    def _apply_per_knowledge_base_min_score(self, records: list) -> list:
+        if not self._min_score_by_knowledge_base:
+            return records
+        filtered = []
+        for record in records:
+            min_score = self._min_score_by_knowledge_base.get(str(record.knowledge_base_id))
+            if min_score is not None and float(record.score) < min_score:
+                continue
+            filtered.append(record)
+        return filtered
+
 
 class RetriFlowRetrievalEngine:
-    def __init__(self) -> None:
-        self._default_retriever = RetriFlowHybridRetriever()
+    def __init__(self, retriever_factory: Callable[..., RetriFlowHybridRetriever] = RetriFlowHybridRetriever) -> None:
+        self._retriever_factory = retriever_factory
+        self._default_retriever = self._retriever_factory()
         self.trace_service = RetriFlowTraceService()
 
     def retrieve(
@@ -200,16 +265,29 @@ class RetriFlowRetrievalEngine:
         question: str,
         queries: list[str] | None = None,
         knowledge_base_ids: list[str] | None = None,
+        top_k_override: int | None = None,
+        top_k_by_knowledge_base: dict[str, int] | None = None,
+        min_score_by_knowledge_base: dict[str, float] | None = None,
     ) -> RetrievalResult:
         with self.trace_service.span(
             name="retrieval-engine",
             node_type="RETRIEVE",
             input_summary=question[:120],
-            metadata={"knowledge_base_ids": knowledge_base_ids or []},
+            metadata={
+                "knowledge_base_ids": knowledge_base_ids or [],
+                "top_k_override": top_k_override,
+                "top_k_by_knowledge_base": top_k_by_knowledge_base or {},
+                "min_score_by_knowledge_base": min_score_by_knowledge_base or {},
+            },
         ) as span:
             retriever = self._default_retriever
-            if knowledge_base_ids:
-                retriever = RetriFlowHybridRetriever(knowledge_base_ids=knowledge_base_ids)
+            if knowledge_base_ids or top_k_override or top_k_by_knowledge_base or min_score_by_knowledge_base:
+                retriever = self._retriever_factory(
+                    knowledge_base_ids=knowledge_base_ids,
+                    search_top_k_override=top_k_override,
+                    top_k_by_knowledge_base=top_k_by_knowledge_base,
+                    min_score_by_knowledge_base=min_score_by_knowledge_base,
+                )
 
             channel_names = retriever.channel_names
             ranked, stage_counts = retriever.retrieve_ranked_records(question, queries=queries)
@@ -234,6 +312,15 @@ class RetriFlowRetrievalEngine:
                 sources=sources,
                 knowledge_base_ids=knowledge_base_ids,
             )
+            self.trace_service.update_node_metadata(
+                span.id,
+                self._build_retrieval_observability_metadata(
+                    channel_names=channel_names,
+                    stage_counts=stage_counts,
+                    stage_metrics=retriever._last_stage_metrics,
+                    sources=sources,
+                ),
+            )
             span.finish_success(output_summary=f"sources={len(sources)}")
             return RetrievalResult(
                 channels=channel_names,
@@ -241,6 +328,32 @@ class RetriFlowRetrievalEngine:
                 stage_counts=stage_counts,
                 stage_metrics=retriever._last_stage_metrics,
             )
+
+    @staticmethod
+    def _build_retrieval_observability_metadata(
+        *,
+        channel_names: list[str],
+        stage_counts: dict[str, int],
+        stage_metrics: dict[str, dict[str, object]],
+        sources: list[ChatSourceItem],
+    ) -> dict[str, object]:
+        return {
+            "channels": channel_names,
+            "stage_counts": stage_counts,
+            "stage_metrics": stage_metrics,
+            "source_count": len(sources),
+            "source_preview": [
+                {
+                    "chunk_id": source.chunk_id,
+                    "knowledge_base_id": source.knowledge_base_id,
+                    "document_id": source.document_id,
+                    "document_title": source.document_title,
+                    "score": source.score,
+                    "source_updated_at": source.source_updated_at,
+                }
+                for source in sources[:5]
+            ],
+        }
 
     @classmethod
     def _prepend_assessment_count_context(

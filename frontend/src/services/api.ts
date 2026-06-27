@@ -329,6 +329,31 @@ export interface AdminModelHealthProbeRequest {
   model?: string;
 }
 
+export interface AdminMcpToolItem {
+  tool_id: string;
+  description: string;
+  server_name: string;
+  transport: string;
+  schema_version: string;
+  parameter_count: number;
+  keywords: string[];
+}
+
+export interface AdminMcpRemoteServerItem {
+  name: string;
+  url: string;
+  healthy: boolean;
+  tool_count: number;
+  error: string;
+}
+
+export interface AdminMcpStatusResponse {
+  tools: AdminMcpToolItem[];
+  remote_servers: AdminMcpRemoteServerItem[];
+  total_tools: number;
+  remote_enabled: boolean;
+}
+
 export interface AdminSettingItem {
   key: string;
   value: string;
@@ -408,12 +433,15 @@ export interface AdminIntentNodeItem {
   node_type: string;
   parent_id: string;
   knowledge_base_id: string;
+  mcp_tool_id: string;
   collection_name: string;
   description: string;
   sample_questions: string[];
   rule_snippet: string;
   prompt_template: string;
+  param_prompt_template: string;
   top_k: number | null;
+  min_score: number | null;
   sort_order: number;
   enabled: boolean;
   created_at: string;
@@ -427,12 +455,15 @@ export interface AdminIntentNodeUpsertRequest {
   node_type?: string;
   parent_id?: string;
   knowledge_base_id?: string;
+  mcp_tool_id?: string;
   collection_name?: string;
   description?: string;
   sample_questions?: string[];
   rule_snippet?: string;
   prompt_template?: string;
+  param_prompt_template?: string;
   top_k?: number | null;
+  min_score?: number | null;
   sort_order?: number;
   enabled?: boolean;
 }
@@ -519,18 +550,33 @@ export interface ChatSourceItem {
   source_updated_at?: string;
 }
 
+export interface ChatMcpSourceItem {
+  title: string;
+  url: string;
+  snippet?: string;
+}
+
 export interface ChatWorkflow {
   name: string;
   adapter: string;
+  intent?: string;
+  intent_confidence?: number;
+  intent_reason?: string;
+  intent_source?: string;
   retrieval_channels: string[];
   retrieval_count: number;
   retrieval_stage_counts: Record<string, number>;
+  retrieval_stage_metrics?: Record<string, Record<string, unknown>>;
   rewritten_queries: string[];
   rewrite_query_count: number;
   pipeline_stages: string[];
   route_mode: string;
+  route_confidence?: number;
+  route_top_k?: number | null;
+  route_candidates?: Record<string, unknown>[];
   mcp_tool_count: number;
   deep_thinking?: boolean;
+  smart_search?: boolean;
 }
 
 export interface ChatMcpCallItem {
@@ -538,6 +584,7 @@ export interface ChatMcpCallItem {
   arguments: Record<string, unknown>;
   content: string;
   is_error: boolean;
+  sources?: ChatMcpSourceItem[];
 }
 
 export interface ChatMessageResponse {
@@ -1032,8 +1079,13 @@ export function fetchAdminTraceMemoryDiagnostics(sessionId: string): Promise<Adm
   return request<AdminTraceMemoryDiagnosticsResponse>({ url: `/api/v1/admin/traces/${sessionId}/memory` });
 }
 
-export function fetchAdminTraceNodes(sessionId: string): Promise<AdminTraceNodeListResponse> {
-  return request<AdminTraceNodeListResponse>({ url: `/api/v1/admin/traces/${sessionId}/nodes` });
+export function fetchAdminTraceNodes(sessionId: string, traceId = ""): Promise<AdminTraceNodeListResponse> {
+  const params = new URLSearchParams();
+  if (traceId.trim()) {
+    params.set("trace_id", traceId.trim());
+  }
+  const query = params.toString();
+  return request<AdminTraceNodeListResponse>({ url: `/api/v1/admin/traces/${sessionId}/nodes${query ? `?${query}` : ""}` });
 }
 
 export function fetchAdminModelHealth(): Promise<AdminModelHealthListResponse> {
@@ -1046,6 +1098,10 @@ export function probeAdminModelHealth(payload: AdminModelHealthProbeRequest): Pr
     method: "POST",
     data: payload
   });
+}
+
+export function fetchAdminMcpStatus(): Promise<AdminMcpStatusResponse> {
+  return request<AdminMcpStatusResponse>({ url: "/api/v1/admin/mcp" });
 }
 
 export function fetchAdminSettings(): Promise<AdminSettingListResponse> {
@@ -1164,11 +1220,16 @@ export function fetchChatBootstrap(): Promise<ChatBootstrapResponse> {
   return request<ChatBootstrapResponse>({ url: "/api/v1/chat/bootstrap" });
 }
 
-export function sendChatMessage(sessionId: string, message: string, deepThinking = false): Promise<ChatMessageResponse> {
+export function sendChatMessage(
+  sessionId: string,
+  message: string,
+  deepThinking = false,
+  smartSearch = false
+): Promise<ChatMessageResponse> {
   return request<ChatMessageResponse>({
     url: "/api/v1/chat/messages",
     method: "POST",
-    data: { session_id: sessionId, message, deep_thinking: deepThinking }
+    data: { session_id: sessionId, message, deep_thinking: deepThinking, smart_search: smartSearch }
   });
 }
 
@@ -1201,7 +1262,8 @@ export async function streamChatMessage(
   message: string,
   handlers: ChatStreamHandlers,
   signal?: AbortSignal,
-  deepThinking = false
+  deepThinking = false,
+  smartSearch = false
 ): Promise<void> {
   const response = await fetch(`${API_BASE_URL}/api/v1/chat/stream`, {
     method: "POST",
@@ -1209,7 +1271,12 @@ export async function streamChatMessage(
       "Content-Type": "application/json",
       ...(getAccessToken() ? { Authorization: `Bearer ${getAccessToken()}` } : {})
     },
-    body: JSON.stringify({ session_id: sessionId, message, deep_thinking: deepThinking }),
+    body: JSON.stringify({
+      session_id: sessionId,
+      message,
+      deep_thinking: deepThinking,
+      smart_search: smartSearch
+    }),
     signal
   });
 

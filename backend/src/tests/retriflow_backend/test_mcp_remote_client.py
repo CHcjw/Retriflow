@@ -42,6 +42,56 @@ class RetriFlowRemoteMcpClientTests(unittest.TestCase):
         self.assertEqual(tools[0].tool_id, "stock_query")
         self.assertIn("股票", tools[0].keywords)
 
+    def test_list_tools_normalizes_common_remote_schema_shapes(self) -> None:
+        from modules.mcp.client import RemoteMcpServerConfig, RetriFlowRemoteMcpClient
+
+        client = RetriFlowRemoteMcpClient(
+            RemoteMcpServerConfig(name="finance-remote", url="http://mcp.example")
+        )
+
+        with patch.object(
+            client,
+            "_post_jsonrpc",
+            return_value={
+                "tools": [
+                    {
+                        "name": "fx_query",
+                        "description": "查询汇率",
+                        "input_schema": {
+                            "properties": {
+                                "currency": {"type": "string", "default": "USD"},
+                            },
+                            "required": ["currency"],
+                        },
+                    },
+                    {
+                        "name": "fund_query",
+                        "description": "查询基金",
+                        "parameters": {
+                            "fund_code": {"type": "string", "default": "000001"},
+                        },
+                    },
+                    {
+                        "name": "bond_query",
+                        "description": "查询债券",
+                        "function": {
+                            "parameters": {
+                                "type": "object",
+                                "properties": {"bond_code": {"type": "string"}},
+                            }
+                        },
+                    },
+                ]
+            },
+        ):
+            tools = client.list_tools()
+
+        schemas = {tool.tool_id: tool.parameter_schema for tool in tools}
+        self.assertEqual(schemas["fx_query"]["type"], "object")
+        self.assertIn("currency", schemas["fx_query"]["properties"])
+        self.assertIn("fund_code", schemas["fund_query"]["properties"])
+        self.assertIn("bond_code", schemas["bond_query"]["properties"])
+
     def test_call_tool_parses_text_content(self) -> None:
         from modules.mcp.client import RemoteMcpServerConfig, RetriFlowRemoteMcpClient
 

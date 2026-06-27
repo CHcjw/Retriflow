@@ -3,7 +3,7 @@ import MarkdownIt from "markdown-it";
 const markdown = new MarkdownIt({
   html: false,
   linkify: true,
-  breaks: false,
+  breaks: true,
   typographer: false
 });
 
@@ -32,39 +32,94 @@ function isSafeUrl(value: string): boolean {
 export function normalizeMessage(value: string): string {
   const normalized = value
     .replace(/\r\n/g, "\n")
-    .replace(/[ \t]+\n/g, "\n")
     .replace(/\u00a0/g, " ")
-    .replace(/(^|\n)([ \t]*)\\(#{1,6})(?=\s*\S)/g, "$1$2$3")
-    .replace(/([^\n])\s+(\\?#{1,6})\s*(?=\S)/g, "$1\n\n$2 ")
-    .replace(/(^|\n)([ \t]*\\?#{1,6})\s*(?=\S)/g, (_match, lineStart: string, marker: string) => `${lineStart}${marker.replace("\\", "")} `)
-    .replace(/(^|\n)([ \t]*\d{1,2}[.)])(?=\S)/g, "$1$2 ")
-    .replace(/(^|\n)([ \t]*[-*+])(?![-*+])(?=\S)/g, "$1$2 ")
-    .replace(/([^\n])\s+---[ \t]*(?=\n|$)/g, "$1\n\n---")
-    .replace(/(^|\n)[ \t]*---[ \t]*(?=\S)/g, "$1---\n\n")
-    .replace(/\|\s*\|(?=\s*:?-{3,})/g, "|\n|")
-    .replace(/\|\s*(?=\|\s*[^|\n]+?\s*\|)/g, "|\n")
-    .replace(/([。！？；，：:]\s*)([-*+]\s+\*\*?)/g, "$1\n\n$2")
-    .replace(/([。！？；，：:]\s*)([-*+]\s+)/g, "$1\n\n$2")
-    .replace(/([。！？；：:]\s*)(\d+\.\s+)/g, "$1\n\n$2")
-    .replace(/(\[[0-9]+\]\s*)([-*+]\s+)/g, "$1\n\n$2")
-    .replace(/([^\n])\s+(#{1,6}\s+)/g, "$1\n\n$2")
-    .replace(/\n{4,}/g, "\n\n\n")
-    .replace(/(^|\n)---(?=#{1,6}\s)/g, "$1---\n")
+    .replace(/[ \t]+\n/g, "\n")
     .trim();
-  return normalizeInlineMarkdownTables(normalized);
+
+  return normalizeInlineMarkdownTables(normalizeMarkdownOutsideFences(normalizeFenceBoundaries(normalized)));
 }
 
-function isTableSeparatorLine(line: string): boolean {
-  return /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(line.trim());
+function normalizeFenceBoundaries(value: string): string {
+  const withOpeningFenceOnOwnLine = value.replace(/([^\n])\s*(```[A-Za-z0-9_-]*)/g, "$1\n$2");
+  const output: string[] = [];
+  let inFence = false;
+
+  for (const rawLine of withOpeningFenceOnOwnLine.split("\n")) {
+    const line = rawLine.trimStart();
+    if (!line.startsWith("```")) {
+      output.push(rawLine);
+      continue;
+    }
+
+    if (!inFence) {
+      output.push(rawLine);
+      inFence = true;
+      continue;
+    }
+
+    const indentLength = rawLine.length - line.length;
+    const indent = rawLine.slice(0, indentLength);
+    const trailing = line.slice(3);
+    output.push(`${indent}\`\`\``);
+    inFence = false;
+    if (trailing.trim()) {
+      output.push(trailing.trimStart());
+    }
+  }
+
+  return output.join("\n");
+}
+
+function normalizeMarkdownOutsideFences(value: string): string {
+  const lines = value.split("\n");
+  const output: string[] = [];
+  let inFence = false;
+
+  for (const rawLine of lines) {
+    const trimmed = rawLine.trim();
+    if (trimmed.startsWith("```")) {
+      inFence = !inFence;
+      output.push(rawLine);
+      continue;
+    }
+    output.push(inFence ? rawLine : normalizeMarkdownLine(rawLine));
+  }
+
+  return output.join("\n").replace(/\n{4,}/g, "\n\n\n").trim();
+}
+
+function normalizeMarkdownLine(line: string): string {
+  return line
+    .replace(/(^|\n)([ \t]*)\\(#{1,6})(?=\s*\S)/g, "$1$2$3")
+    .replace(/([^\n])\s+(\\?#{1,6})\s+(?=\S)/g, "$1\n\n$2 ")
+    .replace(/(^|\n)([ \t]*\\?#{1,6})\s*(?=\S)/g, (_match, lineStart: string, marker: string) => {
+      return `${lineStart}${marker.replace("\\", "")} `;
+    })
+    .replace(/([\u3002\uff01\uff1f\uff1b:：]\s*)([-*+]\s+)/g, "$1\n\n$2")
+    .replace(/([\u3002\uff01\uff1f\uff1b:：]\s*)(\d{1,2}[.)]\s+)/g, "$1\n\n$2")
+    .replace(/([^\n])\s+([-*+]\s+)(?=\S)/g, "$1\n$2")
+    .replace(/([^\n])\s+(\d{1,2}[.)]\s+)(?=\S)/g, "$1\n$2")
+    .replace(/(^|\n)([ \t]*[-*+])(?![-*+])(?=\S)/g, "$1$2 ")
+    .replace(/(^|\n)([ \t]*\d{1,2}[.)])(?=\S)/g, "$1$2 ")
+    .replace(/([^\n])\s+---[ \t]*(?=\n|$)/g, "$1\n\n---")
+    .replace(/(^|\n)[ \t]*---[ \t]*(?=\S)/g, "$1---\n\n");
 }
 
 function normalizeInlineMarkdownTables(value: string): string {
   const lines = value.split("\n");
-  const normalizedLines: string[] = [];
+  const output: string[] = [];
+  let inFence = false;
+
   for (const rawLine of lines) {
-    normalizedLines.push(...splitInlineTableSegments(rawLine));
+    if (rawLine.trim().startsWith("```")) {
+      inFence = !inFence;
+      output.push(rawLine);
+      continue;
+    }
+    output.push(...(inFence ? [rawLine] : splitInlineTableSegments(rawLine)));
   }
-  return normalizedLines.join("\n");
+
+  return output.join("\n");
 }
 
 function splitInlineTableSegments(rawLine: string): string[] {
@@ -73,54 +128,41 @@ function splitInlineTableSegments(rawLine: string): string[] {
     return [rawLine];
   }
 
-  const titledHeaderMatch = line.match(/^(.+?[:：])\s*(\|?\s*[^|\n]+\s*\|\s*[^|\n]+.*)$/);
-  if (titledHeaderMatch && !titledHeaderMatch[1].includes("|")) {
-    return [titledHeaderMatch[1].trim(), ...splitInlineTableSegments(titledHeaderMatch[2].trim())].filter(Boolean);
+  const titledTable = line.match(/^(.+?[\uff1a:])\s*(\|?\s*[^|\n]+\s*\|\s*[^|\n]+.*)$/);
+  if (titledTable && !titledTable[1].includes("|")) {
+    return [titledTable[1].trim(), ...splitInlineTableSegments(titledTable[2].trim())].filter(Boolean);
   }
 
-  const splitByRepeatedRows = splitRepeatedTableRows(line);
-  if (splitByRepeatedRows.length > 1) {
-    return splitByRepeatedRows;
-  }
-
-  const doublePipeIndex = line.indexOf("||");
-  if (doublePipeIndex >= 0) {
-    const before = line.slice(0, doublePipeIndex).trim();
-    const after = line.slice(doublePipeIndex + 1).trim();
-    return [before, ...splitInlineTableSegments(after)].filter(Boolean);
-  }
-
-  if (!isDenseTableLine(line)) {
-    return [rawLine];
+  const repeatedRows = splitRepeatedTableRows(line);
+  if (repeatedRows.length > 1) {
+    return repeatedRows;
   }
 
   const cells = tableCells(line);
-  if (cells.length < 6) {
-    return [rawLine];
-  }
-
   const separatorIndex = cells.findIndex((cell) => /^:?-{3,}:?$/.test(cell));
-  if (separatorIndex > 0 && cells.length % separatorIndex === 0) {
+  if (separatorIndex > 0) {
+    const columnCount = separatorIndex;
     const rows: string[] = [];
-    for (let index = 0; index < cells.length; index += separatorIndex) {
-      rows.push(`| ${cells.slice(index, index + separatorIndex).join(" | ")} |`);
+    for (let index = 0; index < cells.length; index += columnCount) {
+      const rowCells = cells.slice(index, index + columnCount);
+      if (rowCells.length === columnCount) {
+        rows.push(`| ${rowCells.join(" | ")} |`);
+      }
     }
-    return rows;
+    if (rows.length >= 2 && isTableSeparatorLine(rows[1])) {
+      return rows;
+    }
   }
 
   return [rawLine];
 }
 
 function splitRepeatedTableRows(line: string): string[] {
-  const rows = line
-    .replace(/\s+\|/g, "|")
-    .replace(/\|\s+/g, "|")
-    .match(/\|[^|\n]+(?:\|[^|\n]+)+\|/g);
-  if (!rows || rows.length <= 1) {
+  const rows = line.match(/\|[^|\n]+(?:\|[^|\n]+)+\|/g);
+  if (!rows || rows.length <= 1 || !rows.some((row) => isTableSeparatorLine(row))) {
     return [];
   }
-  const hasSeparator = rows.some((row) => isTableSeparatorLine(row));
-  return hasSeparator ? rows.map((row) => normalizeTableRow(row)) : [];
+  return rows.map((row) => normalizeTableRow(row));
 }
 
 function normalizeTableRow(row: string): string {
@@ -136,12 +178,15 @@ function tableCells(line: string): string[] {
     .filter(Boolean);
 }
 
-function isDenseTableLine(line: string): boolean {
-  const pipeCount = (line.match(/\|/g) ?? []).length;
-  return pipeCount >= 8 && !isTableSeparatorLine(line);
+function isTableSeparatorLine(line: string): boolean {
+  return /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(line.trim());
+}
+
+function renderCitations(html: string): string {
+  return html.replace(/\[(\d+)\](?!\()/g, '<span class="citation">[$1]</span>');
 }
 
 export function renderMessageHtml(value: string): string {
-  const normalized = normalizeMessage(value || "正在等待模型返回...");
-  return markdown.render(normalized).replace(/\[(\d+)\]/g, '<span class="citation">[$1]</span>');
+  const normalized = normalizeMessage(value || "\u6b63\u5728\u7b49\u5f85\u6a21\u578b\u8fd4\u56de...");
+  return renderCitations(markdown.render(normalized));
 }

@@ -62,7 +62,7 @@ RetriFlow 是一个面向企业知识问答的 Agentic RAG 系统，使用 Pytho
    - 支持 BM25、向量召回、RRF 融合、rerank 和 final topK。
    - 检索流程已抽象为 SearchChannel 和 SearchResultPostProcessor。
    - 意图树路由可保留多个阈值以上的 KB 候选，最多 3 个目标参与后续检索。
-   - workflow metadata 暴露检索 stage counts 和 stage metrics，包括通道耗时、query count、topK 与后处理器输入输出数量。
+   - workflow metadata 暴露检索 stage counts 和 stage metrics，包括通道耗时、query count、cache hit、topK 与后处理器输入输出数量；路由结果同步暴露候选 KB、候选路径、置信度和 route top_k。
    - 使用三段式 Prompt：System Prompt、Retrieved Context、User Query。
    - Prompt 已由场景化模板服务加载和渲染，覆盖 rewrite、intent、guidance 和 answer 场景。
    - 答案后处理包含引用补齐、来源展示、安全过滤、Markdown 格式整理和兜底回复。
@@ -70,8 +70,9 @@ RetriFlow 是一个面向企业知识问答的 Agentic RAG 系统，使用 Pytho
 
    - 支持内置工具和远程 MCP Server。
    - 支持单轮多工具顺序或并行执行。
+   - 支持意图树 MCP 节点通过 `mcp_tool_id` 直接路由到工具执行，并支持节点级 `param_prompt_template` 参与工具参数提取。
    - 远程 MCP Server 初始化失败时只标记该 server 不健康并跳过，不影响内置工具和其他远程工具注册。
-   - 保留远程 MCP Server 健康状态、注册工具数量和错误信息，便于后台后续治理展示。
+   - 保留远程 MCP Server 健康状态、注册工具数量和错误信息，并在后台 MCP 治理面板展示。
    - 工具调用失败应返回结构化错误，不应拖垮整个问答链路。
    - 工具执行接入节点级 trace，并记录 server、transport 和 schema version。
 9. 模型健康
@@ -79,7 +80,7 @@ RetriFlow 是一个面向企业知识问答的 Agentic RAG 系统，使用 Pytho
    - 支持 provider/model 级健康快照、失败计数、healthy/open/half_open 三态熔断。
    - 支持持久化恢复、主动探测接口、半开并发保护和 provider fallback。
    - 非流式 LLM 调用按 ragent 候选模型执行语义进行当次请求 fallback，首选 provider 调用失败后记录失败并继续尝试下一个健康候选。
-   - 后台已有模型健康 API 和可视化面板，后续继续补定时探测、启动预热和流式首包探针。
+   - 后台已有模型健康 API、可视化面板、定时探测、启动预热和流式首包探针。
 10. 链路 Trace
 
 - 支持 `rag_trace_nodes` 节点级 trace。
@@ -96,16 +97,6 @@ RetriFlow 是一个面向企业知识问答的 Agentic RAG 系统，使用 Pytho
 - SSE 会先发 `event: queue`，内容来自 limiter snapshot。
 - 超时拒绝会持久化用户问题和助手忙碌回复，并发送 `reject`、`final`、`done`。
 - 等待中断开连接会清理 memory/Redis 等待项。
-
-### 后续继续对齐 ragent
-
-1. Redis 队列还缺更细的队列位置遥测；用户级并发只有在 ragent 或产品需求明确后再做。
-3. Ingestion runtime 还需继续贴近 ragent 的节点上下文、条件执行和输出抽取。
-4. 意图树 resolver 已支持多 KB 候选保留、父节点 fallback、多 query 路由合并和接近分数下的澄清引导；但还需要更深的置信度传播、节点级参数和完整 trace。
-5. 检索插件体系已具备 channel/postprocessor 抽象和 stage metrics，但还缺缓存、版本过滤和更完整治理。
-6. MCP 已具备远程 server 注册健康状态和失败跳过机制，但还缺原生模型 function calling 与更完整的远程治理展示。
-7. 模型健康已有后台 API、独立后台面板、手动 probe、熔断、持久化和非流式当次请求 fallback；还缺定时探测、启动预热和流式首包探针 fallback。
-8. 后台 UI 已按功能拆出 Dashboard、模型健康、Trace、知识库、文档、分块、意图、关键词、数据通道、示例问题、用户和设置等面板，并将公共弹窗、分页、toast 与表单控件下沉到 `components/admin/common`；`AdminView` 仍需要继续瘦身为更纯粹的路由级编排。
 
 ## 后台界面设计
 

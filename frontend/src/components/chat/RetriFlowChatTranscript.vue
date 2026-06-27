@@ -1,7 +1,7 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { computed, shallowRef } from "vue";
 import type { ChatMessage } from "../../composables/useRetriFlowChat";
-import type { ChatMcpCallItem, ChatSourceItem, ChatWorkflow } from "../../services/chatApi";
+import type { ChatMcpCallItem, ChatMcpSourceItem, ChatSourceItem, ChatWorkflow } from "../../services/chatApi";
 import { renderMessageHtml } from "../../utils/markdownRenderer";
 
 const props = defineProps<{
@@ -17,12 +17,15 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   feedback: [message: ChatMessage, vote: 1 | -1];
+  regenerate: [];
 }>();
 
 const defaultVisibleSourceCount = 3;
 const sourcesExpanded = shallowRef(false);
 const mcpExpanded = shallowRef(true);
+const thinkingExpanded = shallowRef(true);
 const expandedSourceKey = shallowRef<string | null>(null);
+const copiedMessageId = shallowRef<string | null>(null);
 
 const sourceToggleLabel = computed(() => {
   if (props.latestSources.length <= defaultVisibleSourceCount) {
@@ -36,6 +39,129 @@ const visibleSources = computed(() =>
   sourcesExpanded.value ? props.latestSources : props.latestSources.slice(0, defaultVisibleSourceCount)
 );
 const visibleMcpCalls = computed(() => (mcpExpanded.value ? props.latestMcpCalls : []));
+const mcpSourceItems = computed(() => {
+  const seen = new Set<string>();
+  const items: ChatMcpSourceItem[] = [];
+  for (const call of props.latestMcpCalls) {
+    for (const source of call.sources ?? []) {
+      const url = String(source.url ?? "").trim();
+      if (!url || seen.has(url)) {
+        continue;
+      }
+      seen.add(url);
+      items.push({
+        title: String(source.title || url),
+        url,
+        snippet: source.snippet
+      });
+    }
+  }
+  return items;
+});
+const totalReferenceCount = computed(() => props.latestSources.length + mcpSourceItems.value.length);
+function messageThinkingDurationSeconds(message: ChatMessage): number {
+  if (!message.thinkingStartedAt) {
+    return 0;
+  }
+  const end = message.thinkingEndedAt ?? Date.now();
+  return Math.max(1, Math.round((end - message.thinkingStartedAt) / 1000));
+}
+
+function messageThinkingTitle(message: ChatMessage): string {
+  if (message.thinkingState === "streaming") {
+    return "正在思考";
+  }
+  const duration = messageThinkingDurationSeconds(message);
+  return duration > 0 ? `已思考（用时 ${duration} 秒）` : "已思考";
+}
+
+function messageThinkingLines(message: ChatMessage): string[] {
+  return (message.thinkingContent ?? "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+const thinkingDurationSeconds = computed(() => {
+  const workflow = props.latestWorkflow;
+  if (!workflow?.deep_thinking || !workflow.retrieval_stage_metrics) {
+    return 0;
+  }
+  let totalMs = 0;
+  for (const metrics of Object.values(workflow.retrieval_stage_metrics)) {
+    for (const key of ["duration_ms", "elapsed_ms", "latency_ms"]) {
+      const value = metrics[key];
+      if (typeof value === "number" && Number.isFinite(value)) {
+        totalMs += value;
+        break;
+      }
+    }
+  }
+  return totalMs > 0 ? Math.max(1, Math.round(totalMs / 1000)) : 0;
+});
+const thinkingTitle = computed(() => {
+  if (!props.latestWorkflow?.deep_thinking) {
+    return "";
+  }
+  return thinkingDurationSeconds.value > 0 ? `已思考（用时 ${thinkingDurationSeconds.value} 秒）` : "已思考";
+});
+const thinkingSummary = computed(() => {
+  const workflow = props.latestWorkflow;
+  if (!workflow?.deep_thinking) {
+    return [];
+  }
+  const lines: string[] = [];
+
+  const stageLabels: Record<string, string> = {
+    local: "本地规则",
+    memory: "读取会话记忆",
+    rewrite: "问题重写/拆分",
+    intent: "意图识别",
+    route: "知识库/工具路由",
+    retrieval: "知识检索",
+    mcp: "MCP 工具调用",
+    generation: "组织并生成回答"
+  };
+
+  const readableStages = (workflow.pipeline_stages ?? []).map((stage) => stageLabels[stage] ?? stage);
+  if (readableStages.length > 0) {
+    lines.push(`我先按 ${readableStages.join(" → ")} 的顺序处理这个问题。`);
+  }
+  if (workflow.rewritten_queries?.length > 0) {
+    lines.push(`问题重写/拆分后得到：${workflow.rewritten_queries.join("；")}。`);
+  }
+  if (workflow.intent) {
+    const confidence =
+      workflow.intent_confidence !== undefined ? `，置信度 ${workflow.intent_confidence.toFixed(2)}` : "";
+    lines.push(`意图识别为 ${workflow.intent}${confidence}。${workflow.intent_reason ? `依据：${workflow.intent_reason}` : ""}`);
+  }
+  if (workflow.route_mode) {
+    const confidence =
+      workflow.route_confidence !== undefined ? `，路由置信度 ${workflow.route_confidence.toFixed(2)}` : "";
+    lines.push(`路由模式是 ${workflow.route_mode}${confidence}。`);
+  }
+  if (workflow.retrieval_count > 0) {
+    lines.push(`知识库检索命中 ${workflow.retrieval_count} 个片段，使用 ${workflow.retrieval_channels.join(" / ")} 等通道。`);
+  } else {
+    lines.push("知识库没有命中可直接引用的片段。");
+  }
+  if (workflow.mcp_tool_count > 0) {
+    lines.push(`同时调用了 ${workflow.mcp_tool_count} 个 MCP 工具补充实时或外部信息。`);
+  }
+  lines.push(workflow.smart_search ? "最后结合知识库、工具结果与当前问题生成回答。" : "最后结合可用上下文生成回答。");
+  return lines;
+});
+const latestAssistantMessageId = computed(() => {
+  return [...props.messages].reverse().find((message) => message.role === "assistant")?.id ?? "";
+});
+
+function shouldShowThinking(message: ChatMessage): boolean {
+  return (
+    message.role === "assistant" &&
+    (Boolean(message.thinkingContent?.trim()) ||
+      (message.id === latestAssistantMessageId.value && thinkingSummary.value.length > 0))
+  );
+}
 
 function formatArguments(argumentsValue: Record<string, unknown>): string {
   return JSON.stringify(argumentsValue, null, 2);
@@ -72,6 +198,13 @@ function openSourceLink(source: ChatSourceItem) {
   window.open(source.source_link, "_blank", "noopener,noreferrer");
 }
 
+function openMcpSource(source: ChatMcpSourceItem) {
+  if (!source.url) {
+    return;
+  }
+  window.open(source.url, "_blank", "noopener,noreferrer");
+}
+
 function canRateMessage(message: ChatMessage): boolean {
   return message.role === "assistant" && message.state === "complete" && Boolean(message.backendId);
 }
@@ -85,6 +218,23 @@ function buildSourcePreview(content: string): string {
     return normalized;
   }
   return `${normalized.slice(0, 120)}...`;
+}
+
+async function copyMessage(message: ChatMessage) {
+  if (!message.content.trim()) {
+    return;
+  }
+  await navigator.clipboard?.writeText(message.content);
+  copiedMessageId.value = message.id;
+  window.setTimeout(() => {
+    if (copiedMessageId.value === message.id) {
+      copiedMessageId.value = null;
+    }
+  }, 1400);
+}
+
+function canUseAssistantActions(message: ChatMessage): boolean {
+  return message.role === "assistant" && message.state === "complete" && Boolean(message.content.trim());
 }
 </script>
 
@@ -101,14 +251,57 @@ function buildSourcePreview(content: string): string {
       </div>
 
       <div class="message-content" :class="{ 'bubble': message.role === 'user' }">
+        <div
+          v-if="shouldShowThinking(message)"
+          class="thinking-panel"
+        >
+          <button class="thinking-header" type="button" @click="thinkingExpanded = !thinkingExpanded">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+            </svg>
+            <span>{{ message.thinkingContent ? messageThinkingTitle(message) : thinkingTitle }}</span>
+            <svg class="chevron" :class="{ open: thinkingExpanded }" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
+          <div v-if="thinkingExpanded" class="thinking-body">
+            <p v-for="(line, index) in (message.thinkingContent ? messageThinkingLines(message) : thinkingSummary)" :key="`${line}-${index}`">{{ line }}</p>
+          </div>
+        </div>
         <div class="prose-message" v-html="renderMessageHtml(message.content)"></div>
         <div v-if="message.state === 'streaming'" class="streaming-caret"></div>
         <div v-if="message.state === 'error'" class="error-badge">回复失败</div>
-        <div v-if="canRateMessage(message)" class="message-feedback">
+        <div v-if="canUseAssistantActions(message)" class="message-actions">
+          <button
+            class="feedback-button"
+            type="button"
+            :title="copiedMessageId === message.id ? '已复制' : '复制'"
+            @click="copyMessage(message)"
+          >
+            <svg v-if="copiedMessageId !== message.id" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="9" y="9" width="13" height="13" rx="2" />
+              <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
+            </svg>
+            <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M20 6L9 17l-5-5" />
+            </svg>
+          </button>
+          <button
+            class="feedback-button"
+            type="button"
+            title="重新生成"
+            :disabled="loading"
+            @click="emit('regenerate')"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 12a9 9 0 11-2.64-6.36" />
+              <path d="M21 3v6h-6" />
+            </svg>
+          </button>
           <button
             class="feedback-button"
             :class="{ active: message.feedbackVote === 1 }"
-            :disabled="message.feedbackState === 'saving'"
+            :disabled="message.feedbackState === 'saving' || !canRateMessage(message)"
             type="button"
             title="有帮助"
             @click="emit('feedback', message, 1)"
@@ -118,7 +311,7 @@ function buildSourcePreview(content: string): string {
           <button
             class="feedback-button"
             :class="{ active: message.feedbackVote === -1 }"
-            :disabled="message.feedbackState === 'saving'"
+            :disabled="message.feedbackState === 'saving' || !canRateMessage(message)"
             type="button"
             title="不准确"
             @click="emit('feedback', message, -1)"
@@ -132,12 +325,12 @@ function buildSourcePreview(content: string): string {
     </div>
 
     <!-- Reference & Source panels here as needed, simplified for aesthetic -->
-    <div v-if="latestSources.length > 0" class="message-row assistant">
+    <div v-if="totalReferenceCount > 0" class="message-row assistant">
       <div class="avatar assistant-avatar" style="visibility: hidden;"></div>
       <div class="message-content references-panel">
          <div class="ref-header" @click="sourcesExpanded = !sourcesExpanded">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" /></svg>
-            <span>参考了 {{ latestSources.length }} 个来源</span>
+            <span>参考了 {{ totalReferenceCount }} 个来源</span>
             <svg class="chevron" :class="{'open': sourcesExpanded}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 9l-7 7-7-7" /></svg>
          </div>
          <div v-if="sourcesExpanded" class="ref-list">
@@ -171,6 +364,26 @@ function buildSourcePreview(content: string): string {
                >
                  打开原文
                </button>
+            </div>
+            <div
+              v-for="(source, index) in mcpSourceItems"
+              :key="source.url"
+              class="ref-item web-ref-item"
+              role="button"
+              tabindex="0"
+              @click="openMcpSource(source)"
+              @keydown.enter.prevent="openMcpSource(source)"
+              @keydown.space.prevent="openMcpSource(source)"
+            >
+              <div class="ref-title-row">
+                <span class="ref-index">[W{{ index + 1 }}]</span>
+                <span class="ref-title">{{ source.title }}</span>
+                <span class="ref-badge web">联网</span>
+              </div>
+              <div class="ref-meta">
+                <span class="ref-url">{{ source.url }}</span>
+              </div>
+              <div v-if="source.snippet" class="ref-preview">{{ source.snippet }}</div>
             </div>
          </div>
       </div>
@@ -405,11 +618,11 @@ function buildSourcePreview(content: string): string {
   font-size: 12px;
 }
 
-.message-feedback {
+.message-actions {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-top: 10px;
+  margin-top: 12px;
 }
 
 .feedback-button {
@@ -455,6 +668,54 @@ function buildSourcePreview(content: string): string {
 .references-panel {
   width: 100%;
   max-width: 600px;
+}
+
+.thinking-panel {
+  width: 100%;
+  max-width: 720px;
+  color: #667085;
+}
+
+.thinking-header {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  background: transparent;
+  color: #475467;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0;
+}
+
+.thinking-header svg {
+  width: 16px;
+  height: 16px;
+}
+
+.thinking-header .chevron {
+  width: 14px;
+  height: 14px;
+  margin-left: 2px;
+}
+
+.thinking-body {
+  margin-top: 12px;
+  margin-left: 8px;
+  padding-left: 18px;
+  border-left: 1px solid #e4e7ec;
+  color: #667085;
+  line-height: 1.8;
+  font-size: 14px;
+}
+
+.thinking-body p {
+  margin: 0 0 12px;
+}
+
+.thinking-body p:last-child {
+  margin-bottom: 0;
 }
 
 .ref-header {
@@ -551,6 +812,23 @@ function buildSourcePreview(content: string): string {
   color: var(--primary);
   font-size: 11px;
   font-weight: 600;
+}
+
+.ref-badge.web {
+  background: rgba(16, 185, 129, 0.12);
+  color: #059669;
+}
+
+.web-ref-item {
+  cursor: pointer;
+}
+
+.ref-url {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--primary);
 }
 
 .ref-meta {

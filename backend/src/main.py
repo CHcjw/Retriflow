@@ -1,6 +1,8 @@
 import os
 import sys
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
@@ -8,6 +10,7 @@ import uvicorn
 from api.router import router
 from core.config import get_settings
 from core.state import get_connection, initialize_database
+from infra.llm.monitor import get_model_health_probe_scheduler
 
 
 def configure_utf8_stdio() -> None:
@@ -36,11 +39,21 @@ def create_app() -> FastAPI:
         f" | db_path={settings.db_path}"
     )
 
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        scheduler = get_model_health_probe_scheduler()
+        scheduler.start()
+        try:
+            yield
+        finally:
+            await scheduler.stop()
+
     app = FastAPI(
         title=settings.app_name,
         version=settings.app_version,
         docs_url="/docs",
         redoc_url="/redoc",
+        lifespan=lifespan,
     )
     app.add_middleware(
         CORSMiddleware,

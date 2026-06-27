@@ -59,6 +59,9 @@ class RetriFlowRetrievalEngineTests(unittest.TestCase):
         os.environ.pop("RETRIFLOW_RETRIEVAL_RRF_TOP_K", None)
         os.environ.pop("RETRIFLOW_RETRIEVAL_RERANK_TOP_K", None)
         os.environ.pop("RETRIFLOW_RETRIEVAL_FINAL_TOP_K", None)
+        os.environ.pop("RETRIFLOW_RETRIEVAL_CROSS_REQUEST_CACHE_ENABLED", None)
+        os.environ.pop("RETRIFLOW_RETRIEVAL_CROSS_REQUEST_CACHE_TTL_SECONDS", None)
+        os.environ.pop("RETRIFLOW_RETRIEVAL_CROSS_REQUEST_CACHE_MAX_ENTRIES", None)
         from core.config import get_settings
 
         get_settings.cache_clear()
@@ -106,6 +109,51 @@ class RetriFlowRetrievalEngineTests(unittest.TestCase):
         resolve_store.assert_called()
         self.assertGreaterEqual(len(result.sources), 1)
         self.assertEqual(result.sources[0].document_title, "LangChain retrieval notes")
+
+    def test_bm25_channel_excludes_disabled_chunks(self) -> None:
+        from core.state import get_connection
+        from modules.rag.retrieval.channels import BM25SearchChannel
+
+        with get_connection() as connection:
+            connection.execute(
+                """
+                update knowledge_chunks
+                set enabled = 0
+                where knowledge_base_id = ?
+                """,
+                ("kb-demo-1",),
+            )
+            connection.commit()
+
+        records = BM25SearchChannel().retrieve(
+            "RetriFlow LangChain retrievers",
+            knowledge_base_ids=["kb-demo-1"],
+        )
+
+        self.assertEqual(records, [])
+
+    def test_bm25_channel_prefers_vector_indexed_at_as_source_version(self) -> None:
+        from core.state import get_connection
+        from modules.rag.retrieval.channels import BM25SearchChannel
+
+        with get_connection() as connection:
+            connection.execute(
+                """
+                update knowledge_documents
+                set vector_indexed_at = ?
+                where knowledge_base_id = ?
+                """,
+                ("2026-06-25 12:34:56", "kb-demo-1"),
+            )
+            connection.commit()
+
+        records = BM25SearchChannel().retrieve(
+            "RetriFlow LangChain retrievers",
+            knowledge_base_ids=["kb-demo-1"],
+        )
+
+        self.assertTrue(records)
+        self.assertIn("2026-06-25 12:34:56", records[0].source_updated_at)
 
     def test_vector_search_channel_uses_search_context_and_returns_channel_result(self) -> None:
         from modules.rag.retrieval.channels import RetrievedChunkRecord, SearchContext, VectorSearchChannel
@@ -577,6 +625,198 @@ class RetriFlowRetrievalEngineTests(unittest.TestCase):
         self.assertEqual(result.stage_counts["rerank"], 3)
         self.assertEqual(result.stage_counts["final"], 2)
         self.assertEqual(len(result.sources), 2)
+
+    def test_retrieval_engine_uses_intent_route_top_k_override(self) -> None:
+        from modules.rag.retrieval.engine import RetriFlowRetrievalEngine
+        from modules.rag.retrieval.channels import RetrievedChunkRecord
+
+        bm25_records = [
+            RetrievedChunkRecord(1, "kb-demo-1", 1, "Doc A", "intent bm25 hit", 12.0, "bm25"),
+        ]
+        semantic_records = [
+            RetrievedChunkRecord(2, "kb-demo-1", 1, "Doc A", "intent vector hit", 0.91, "semantic"),
+        ]
+
+        class FakeVectorStore:
+            def similarity_search(self, query: str, k: int = 80, knowledge_base_ids=None):
+                self.last_query = query
+                self.last_k = k
+                self.last_knowledge_base_ids = knowledge_base_ids
+                return semantic_records
+
+            def upsert_chunk_records(self, records) -> None:
+                _ = records
+
+        class FakeReranker:
+            def rerank(self, question: str, records: list[RetrievedChunkRecord], limit: int = 10) -> list[RetrievedChunkRecord]:
+                return records[:limit]
+
+        fake_vector_store = FakeVectorStore()
+        with (
+            patch("modules.rag.retrieval.engine.resolve_vector_store", return_value=fake_vector_store),
+            patch("modules.rag.retrieval.engine.BM25SearchChannel.retrieve", return_value=bm25_records) as bm25_retrieve,
+            patch("modules.rag.retrieval.engine.RetriFlowRerankService", return_value=FakeReranker()),
+        ):
+            result = RetriFlowRetrievalEngine().retrieve(
+                "intent routed query",
+                knowledge_base_ids=["kb-demo-1"],
+                top_k_override=6,
+            )
+
+        self.assertEqual(bm25_retrieve.call_args.kwargs["top_k"], 6)
+        self.assertEqual(fake_vector_store.last_k, 6)
+        self.assertEqual(fake_vector_store.last_knowledge_base_ids, ["kb-demo-1"])
+        self.assertEqual(result.stage_metrics["bm25"]["top_k"], 6)
+        self.assertEqual(result.stage_metrics["semantic"]["top_k"], 6)
+
+    def test_retrieval_engine_applies_per_knowledge_base_top_k(self) -> None:
+        from modules.rag.retrieval.engine import RetriFlowRetrievalEngine
+        from modules.rag.retrieval.channels import RetrievedChunkRecord
+
+        bm25_records = [
+            RetrievedChunkRecord(1, "kb-demo-1", 1, "Doc A", "kb1 best", 12.0, "bm25"),
+            RetrievedChunkRecord(2, "kb-demo-1", 1, "Doc A", "kb1 second", 11.0, "bm25"),
+            RetrievedChunkRecord(3, "kb-demo-2", 2, "Doc B", "kb2 best", 10.0, "bm25"),
+            RetrievedChunkRecord(4, "kb-demo-2", 2, "Doc B", "kb2 second", 9.0, "bm25"),
+            RetrievedChunkRecord(5, "kb-demo-2", 2, "Doc B", "kb2 third", 8.0, "bm25"),
+        ]
+
+        class FakeChannel:
+            name = "bm25"
+
+            def is_enabled(self, context) -> bool:
+                return True
+
+            def search(self, context):
+                from modules.rag.retrieval.channels import SearchChannelResult
+
+                self.last_context = context
+                return SearchChannelResult(channel_name=self.name, records=list(bm25_records), metadata={"query_count": 1})
+
+        fake_channel = FakeChannel()
+        retriever = RetriFlowRetrievalEngine(
+            retriever_factory=lambda **kwargs: __import__(
+                "modules.rag.retrieval.engine",
+                fromlist=["RetriFlowHybridRetriever"],
+            ).RetriFlowHybridRetriever(
+                channels=[fake_channel],
+                postprocessors=[],
+                **kwargs,
+            )
+        )
+        result = retriever.retrieve(
+            "per kb top k",
+            knowledge_base_ids=["kb-demo-1", "kb-demo-2"],
+            top_k_by_knowledge_base={"kb-demo-1": 1, "kb-demo-2": 2},
+        )
+
+        self.assertEqual([source.chunk_id for source in result.sources], [1, 3, 4])
+        self.assertEqual(result.stage_metrics["bm25"]["top_k_by_knowledge_base"], {"kb-demo-1": 1, "kb-demo-2": 2})
+
+    def test_retrieval_engine_applies_per_knowledge_base_min_score(self) -> None:
+        from modules.rag.retrieval.engine import RetriFlowRetrievalEngine
+        from modules.rag.retrieval.channels import RetrievedChunkRecord
+
+        records = [
+            RetrievedChunkRecord(1, "kb-demo-1", 1, "Doc A", "strong", 0.8, "bm25"),
+            RetrievedChunkRecord(2, "kb-demo-1", 1, "Doc A", "weak", 0.2, "bm25"),
+            RetrievedChunkRecord(3, "kb-demo-2", 2, "Doc B", "other", 0.3, "bm25"),
+        ]
+
+        class FakeChannel:
+            name = "bm25"
+
+            def is_enabled(self, context) -> bool:
+                return True
+
+            def search(self, context):
+                from modules.rag.retrieval.channels import SearchChannelResult
+
+                return SearchChannelResult(channel_name=self.name, records=list(records), metadata={"query_count": 1})
+
+        result = RetriFlowRetrievalEngine(
+            retriever_factory=lambda **kwargs: __import__(
+                "modules.rag.retrieval.engine",
+                fromlist=["RetriFlowHybridRetriever"],
+            ).RetriFlowHybridRetriever(channels=[FakeChannel()], postprocessors=[], **kwargs)
+        ).retrieve(
+            "per kb min score",
+            knowledge_base_ids=["kb-demo-1", "kb-demo-2"],
+            min_score_by_knowledge_base={"kb-demo-1": 0.5},
+        )
+
+        self.assertEqual([source.chunk_id for source in result.sources], [1, 3])
+        self.assertEqual(result.stage_metrics["bm25"]["min_score_by_knowledge_base"], {"kb-demo-1": 0.5})
+
+    def test_bm25_channel_caches_duplicate_queries_within_request(self) -> None:
+        from modules.rag.retrieval.channels import BM25SearchChannel, RetrievedChunkRecord, SearchContext
+
+        class CountingBM25Channel(BM25SearchChannel):
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def retrieve(self, question: str, knowledge_base_ids=None, top_k: int = 80):
+                self.calls += 1
+                return [
+                    RetrievedChunkRecord(
+                        self.calls,
+                        "kb-demo-1",
+                        1,
+                        "Doc A",
+                        f"hit {question}",
+                        1.0,
+                        self.name,
+                    )
+                ]
+
+        channel = CountingBM25Channel()
+        result = channel.search(
+            SearchContext(
+                original_question="claim",
+                queries=["claim", "claim", "policy"],
+                knowledge_base_ids=["kb-demo-1"],
+                top_k=5,
+            )
+        )
+
+        self.assertEqual(channel.calls, 2)
+        self.assertEqual(len(result.records), 3)
+        self.assertEqual(result.metadata["query_count"], 3)
+        self.assertEqual(result.metadata["cache_hits"], 1)
+
+    def test_bm25_channel_can_cache_queries_across_requests_when_enabled(self) -> None:
+        os.environ["RETRIFLOW_RETRIEVAL_CROSS_REQUEST_CACHE_ENABLED"] = "true"
+        os.environ["RETRIFLOW_RETRIEVAL_CROSS_REQUEST_CACHE_TTL_SECONDS"] = "60"
+        from core.config import get_settings
+        from modules.rag.retrieval.channels import BM25SearchChannel, RetrievedChunkRecord, SearchContext
+
+        get_settings.cache_clear()
+        BM25SearchChannel.clear_cross_request_cache()
+
+        class CountingBM25Channel(BM25SearchChannel):
+            calls = 0
+
+            def retrieve(self, question: str, knowledge_base_ids=None, top_k: int = 80):
+                type(self).calls += 1
+                return [
+                    RetrievedChunkRecord(
+                        type(self).calls,
+                        "kb-demo-1",
+                        1,
+                        "Doc A",
+                        f"hit {question}",
+                        1.0,
+                        self.name,
+                    )
+                ]
+
+        first = CountingBM25Channel().search(SearchContext(original_question="claim", knowledge_base_ids=["kb-demo-1"], top_k=5))
+        second = CountingBM25Channel().search(SearchContext(original_question="claim", knowledge_base_ids=["kb-demo-1"], top_k=5))
+
+        self.assertEqual(CountingBM25Channel.calls, 1)
+        self.assertEqual(first.metadata["cache_hits"], 0)
+        self.assertEqual(second.metadata["cache_hits"], 1)
+        self.assertEqual(second.metadata["cache_scope"], "cross_request")
 
 
 if __name__ == "__main__":

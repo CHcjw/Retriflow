@@ -21,6 +21,7 @@ class McpToolCallResult:
     arguments: dict[str, Any]
     content: str
     is_error: bool = False
+    sources: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass
@@ -44,15 +45,14 @@ class McpExecutionResult:
         sections: list[str] = []
         for index, call in enumerate(self.calls, start=1):
             status = "error" if call.is_error else "ok"
-            sections.append(
-                "\n".join(
-                    [
-                        f"[M{index}] Tool: {call.tool_id}",
-                        f"Status: {status}",
-                        f"Arguments: {call.arguments}",
-                        f"Result: {call.content}",
-                    ]
-                )
-            )
+            lines = [
+                f"[M{index}] Tool: {call.tool_id}",
+                f"Status: {status}",
+                f"Arguments: {call.arguments}",
+                f"Result: {call.content}",
+            ]
+            if call.sources:
+                lines.append(f"Sources: {call.sources}")
+            sections.append("\n".join(lines))
         return "\n\n".join(sections)
 

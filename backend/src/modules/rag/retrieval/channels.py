@@ -6,6 +6,7 @@ from math import log
 import time
 from typing import Callable, Protocol
 
+from core.config import get_settings
 from core.state import get_connection
 
 
@@ -82,11 +83,12 @@ def tokenize_text(text: str) -> list[str]:
 def load_chunk_rows(knowledge_base_ids: list[str] | None = None):
     with get_connection() as connection:
         params: tuple[str, ...] = ()
-        where_clause = ""
+        where_clauses = ["kc.enabled = 1"]
         if knowledge_base_ids:
             placeholders = ",".join("?" for _ in knowledge_base_ids)
-            where_clause = f"where kc.knowledge_base_id in ({placeholders})"
+            where_clauses.append(f"kc.knowledge_base_id in ({placeholders})")
             params = tuple(knowledge_base_ids)
+        where_clause = "where " + " and ".join(where_clauses)
 
         return connection.execute(
             f"""
@@ -96,7 +98,7 @@ def load_chunk_rows(knowledge_base_ids: list[str] | None = None):
                 kc.document_id,
                 kd.title as document_title,
                 kc.content,
-                kd.created_at as source_updated_at
+                coalesce(kd.vector_indexed_at, kc.created_at) as source_updated_at
             from knowledge_chunks kc
             join knowledge_documents kd on kd.id = kc.document_id
             {where_clause}
@@ -108,6 +110,7 @@ def load_chunk_rows(knowledge_base_ids: list[str] | None = None):
 
 class BM25SearchChannel:
     name = "bm25"
+    _cross_request_cache: dict[tuple[str, tuple[str, ...], int], tuple[float, list[RetrievedChunkRecord]]] = {}
 
     def is_enabled(self, context: SearchContext) -> bool:
         _ = context
@@ -116,20 +119,77 @@ class BM25SearchChannel:
     def search(self, context: SearchContext) -> SearchChannelResult:
         started_at = time.perf_counter()
         records: list[RetrievedChunkRecord] = []
+        cache: dict[tuple[str, tuple[str, ...], int], list[RetrievedChunkRecord]] = {}
+        cache_hits = 0
+        cross_request_cache_hits = 0
         for query in context.effective_queries:
-            records.extend(
-                self.retrieve(
+            cache_key = (query, tuple(context.knowledge_base_ids or []), context.top_k)
+            if cache_key in cache:
+                cache_hits += 1
+                records.extend(cache[cache_key])
+                continue
+            cached_records = self._get_cross_request_cache(cache_key)
+            if cached_records is not None:
+                cache_hits += 1
+                cross_request_cache_hits += 1
+                cache[cache_key] = cached_records
+                records.extend(cached_records)
+                continue
+            query_records = self.retrieve(
                     query,
                     knowledge_base_ids=context.knowledge_base_ids,
                     top_k=context.top_k,
                 )
-            )
+            cache[cache_key] = query_records
+            self._set_cross_request_cache(cache_key, query_records)
+            records.extend(query_records)
+        metadata: dict[str, object] = {"query_count": len(context.effective_queries), "cache_hits": cache_hits}
+        if cross_request_cache_hits:
+            metadata["cross_request_cache_hits"] = cross_request_cache_hits
+            metadata["cache_scope"] = "cross_request"
         return SearchChannelResult(
             channel_name=self.name,
             records=records,
             latency_ms=max(0, int((time.perf_counter() - started_at) * 1000)),
-            metadata={"query_count": len(context.effective_queries)},
+            metadata=metadata,
         )
+
+    @classmethod
+    def clear_cross_request_cache(cls) -> None:
+        cls._cross_request_cache.clear()
+
+    @classmethod
+    def _get_cross_request_cache(
+        cls,
+        cache_key: tuple[str, tuple[str, ...], int],
+    ) -> list[RetrievedChunkRecord] | None:
+        settings = get_settings()
+        if not settings.retrieval_cross_request_cache_enabled:
+            return None
+        cached = cls._cross_request_cache.get(cache_key)
+        if cached is None:
+            return None
+        expires_at, records = cached
+        if expires_at < time.time():
+            cls._cross_request_cache.pop(cache_key, None)
+            return None
+        return list(records)
+
+    @classmethod
+    def _set_cross_request_cache(
+        cls,
+        cache_key: tuple[str, tuple[str, ...], int],
+        records: list[RetrievedChunkRecord],
+    ) -> None:
+        settings = get_settings()
+        if not settings.retrieval_cross_request_cache_enabled:
+            return
+        max_entries = max(1, settings.retrieval_cross_request_cache_max_entries)
+        while len(cls._cross_request_cache) >= max_entries:
+            oldest_key = min(cls._cross_request_cache.items(), key=lambda item: item[1][0])[0]
+            cls._cross_request_cache.pop(oldest_key, None)
+        ttl_seconds = max(1, settings.retrieval_cross_request_cache_ttl_seconds)
+        cls._cross_request_cache[cache_key] = (time.time() + ttl_seconds, list(records))
 
     def retrieve(
         self,
@@ -195,6 +255,7 @@ class BM25SearchChannel:
 
 class VectorSearchChannel:
     name = "semantic"
+    _cross_request_cache: dict[tuple[str, tuple[str, ...], int], tuple[float, list[RetrievedChunkRecord]]] = {}
 
     def __init__(self, vector_store_factory: Callable[[], object]) -> None:
         self.vector_store_factory = vector_store_factory
@@ -206,20 +267,77 @@ class VectorSearchChannel:
     def search(self, context: SearchContext) -> SearchChannelResult:
         started_at = time.perf_counter()
         records: list[RetrievedChunkRecord] = []
+        cache: dict[tuple[str, tuple[str, ...], int], list[RetrievedChunkRecord]] = {}
+        cache_hits = 0
+        cross_request_cache_hits = 0
         for query in context.effective_queries:
-            records.extend(
-                self.retrieve(
+            cache_key = (query, tuple(context.knowledge_base_ids or []), context.top_k)
+            if cache_key in cache:
+                cache_hits += 1
+                records.extend(cache[cache_key])
+                continue
+            cached_records = self._get_cross_request_cache(cache_key)
+            if cached_records is not None:
+                cache_hits += 1
+                cross_request_cache_hits += 1
+                cache[cache_key] = cached_records
+                records.extend(cached_records)
+                continue
+            query_records = self.retrieve(
                     query,
                     knowledge_base_ids=context.knowledge_base_ids,
                     top_k=context.top_k,
                 )
-            )
+            cache[cache_key] = query_records
+            self._set_cross_request_cache(cache_key, query_records)
+            records.extend(query_records)
+        metadata: dict[str, object] = {"query_count": len(context.effective_queries), "cache_hits": cache_hits}
+        if cross_request_cache_hits:
+            metadata["cross_request_cache_hits"] = cross_request_cache_hits
+            metadata["cache_scope"] = "cross_request"
         return SearchChannelResult(
             channel_name=self.name,
             records=records,
             latency_ms=max(0, int((time.perf_counter() - started_at) * 1000)),
-            metadata={"query_count": len(context.effective_queries)},
+            metadata=metadata,
         )
+
+    @classmethod
+    def clear_cross_request_cache(cls) -> None:
+        cls._cross_request_cache.clear()
+
+    @classmethod
+    def _get_cross_request_cache(
+        cls,
+        cache_key: tuple[str, tuple[str, ...], int],
+    ) -> list[RetrievedChunkRecord] | None:
+        settings = get_settings()
+        if not settings.retrieval_cross_request_cache_enabled:
+            return None
+        cached = cls._cross_request_cache.get(cache_key)
+        if cached is None:
+            return None
+        expires_at, records = cached
+        if expires_at < time.time():
+            cls._cross_request_cache.pop(cache_key, None)
+            return None
+        return list(records)
+
+    @classmethod
+    def _set_cross_request_cache(
+        cls,
+        cache_key: tuple[str, tuple[str, ...], int],
+        records: list[RetrievedChunkRecord],
+    ) -> None:
+        settings = get_settings()
+        if not settings.retrieval_cross_request_cache_enabled:
+            return
+        max_entries = max(1, settings.retrieval_cross_request_cache_max_entries)
+        while len(cls._cross_request_cache) >= max_entries:
+            oldest_key = min(cls._cross_request_cache.items(), key=lambda item: item[1][0])[0]
+            cls._cross_request_cache.pop(oldest_key, None)
+        ttl_seconds = max(1, settings.retrieval_cross_request_cache_ttl_seconds)
+        cls._cross_request_cache[cache_key] = (time.time() + ttl_seconds, list(records))
 
     def retrieve(
         self,

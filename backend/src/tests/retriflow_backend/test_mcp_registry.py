@@ -81,6 +81,38 @@ class RetriFlowMcpRegistryTests(unittest.TestCase):
         self.assertTrue(statuses[0].healthy)
         self.assertEqual(statuses[0].tool_count, 1)
 
+    def test_remote_tool_with_same_id_overrides_builtin_executor(self) -> None:
+        os.environ["RETRIFLOW_MCP_REMOTE_ENABLED"] = "true"
+        os.environ["RETRIFLOW_MCP_REMOTE_SERVERS_JSON"] = (
+            '[{"name":"weather-remote","url":"http://mcp.example"}]'
+        )
+        from core.config import get_settings
+        from modules.mcp.models import McpToolDefinition
+        from modules.mcp.registry import RetriFlowMcpRegistry
+
+        get_settings.cache_clear()
+
+        remote_weather = McpToolDefinition(
+            tool_id="weather_query",
+            description="联网查询真实天气",
+            parameter_schema={"type": "object", "properties": {"city": {"type": "string"}}},
+            keywords=["天气"],
+            server_name="weather-remote",
+            transport="streamable_http",
+        )
+
+        with patch(
+            "modules.mcp.registry.RetriFlowRemoteMcpClient.list_tools",
+            return_value=[remote_weather],
+        ):
+            registry = RetriFlowMcpRegistry()
+
+        executor = registry.get_executor("weather_query")
+        self.assertIsNotNone(executor)
+        definition = executor.get_definition()
+        self.assertEqual(definition.server_name, "weather-remote")
+        self.assertEqual(definition.transport, "streamable_http")
+
     def test_registry_skips_unhealthy_remote_server_without_losing_builtins(self) -> None:
         os.environ["RETRIFLOW_MCP_REMOTE_ENABLED"] = "true"
         os.environ["RETRIFLOW_MCP_REMOTE_SERVERS_JSON"] = (

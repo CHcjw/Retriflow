@@ -1324,7 +1324,7 @@ export function useRetriFlowAdmin() {
     infoMessage.value = "关键词映射已删除。";
   };
 
-  const loadTraceDetail = async (sessionId: string) => {
+  const loadTraceDetail = async (sessionId: string, traceId = "") => {
     if (!isAdmin.value || !sessionId) {
       selectedAdminTrace.value = null;
       selectedAdminTraceNodes.value = [];
@@ -1334,7 +1334,7 @@ export function useRetriFlowAdmin() {
     try {
       const [detailData, nodeData] = await Promise.all([
         fetchAdminTraceDetail(sessionId),
-        fetchAdminTraceNodes(sessionId)
+        fetchAdminTraceNodes(sessionId, traceId)
       ]);
       selectedAdminTrace.value = detailData;
       selectedAdminTraceNodes.value = nodeData.items;

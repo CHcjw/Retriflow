@@ -23,7 +23,7 @@ const emit = defineEmits<{
 
 <template>
   <AdminModalShell
-    aria-label="创建知识库"
+    aria-label="知识库表单"
     :description="editingKnowledgeBaseId ? '更新知识库名称、模型和 collection 配置。' : '创建一个新的知识库，用于存储和检索文档。'"
     :title="editingKnowledgeBaseId ? '修改知识库' : '创建知识库'"
     @close="emit('close')"
@@ -39,12 +39,12 @@ const emit = defineEmits<{
         <select v-model="embeddingModel" class="ui-input modal-control">
           <option v-for="model in knowledgeEmbeddingModelOptions" :key="model.value" :value="model.value">{{ model.label }}</option>
         </select>
-        <span>当前后端按全局配置入库，这里作为创建时的展示配置。</span>
+        <span>用于该知识库后续切块入库时的向量化模型。</span>
       </label>
       <label class="modal-label">
         Collection 名称
         <input v-model="collectionName" class="ui-input modal-control" type="text" placeholder="例如：productdocs" />
-        <span>当前后端会按此 collection 配置创建和展示知识库。</span>
+        <span>后端会按此 collection 配置创建和展示知识库。</span>
       </label>
     </div>
     <template #actions>

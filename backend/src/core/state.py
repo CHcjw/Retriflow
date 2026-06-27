@@ -369,12 +369,15 @@ def _initialize_sqlite_database() -> None:
                 node_type text not null default 'KB',
                 parent_id text not null default 'ROOT',
                 knowledge_base_id text not null default '',
+                mcp_tool_id text not null default '',
                 collection_name text not null default '',
                 description text not null default '',
                 sample_questions_json text not null default '[]',
                 rule_snippet text not null default '',
                 prompt_template text not null default '',
+                param_prompt_template text not null default '',
                 top_k integer,
+                min_score real,
                 sort_order integer not null default 0,
                 enabled integer not null default 1,
                 created_at text not null default current_timestamp,
@@ -382,6 +385,9 @@ def _initialize_sqlite_database() -> None:
             )
             """
         )
+        _ensure_sqlite_column(connection, "admin_intent_nodes", "mcp_tool_id", "text not null default ''")
+        _ensure_sqlite_column(connection, "admin_intent_nodes", "param_prompt_template", "text not null default ''")
+        _ensure_sqlite_column(connection, "admin_intent_nodes", "min_score", "real")
         connection.execute(
             """
             create table if not exists admin_keyword_mappings (
@@ -789,12 +795,15 @@ def _initialize_postgres_database() -> None:
                     node_type text not null default 'KB',
                     parent_id text not null default 'ROOT',
                     knowledge_base_id text not null default '',
+                    mcp_tool_id text not null default '',
                     collection_name text not null default '',
                     description text not null default '',
                     sample_questions_json jsonb not null default '[]'::jsonb,
                     rule_snippet text not null default '',
                     prompt_template text not null default '',
+                    param_prompt_template text not null default '',
                     top_k integer,
+                    min_score double precision,
                     sort_order integer not null default 0,
                     enabled integer not null default 1,
                     created_at timestamptz not null default now(),
@@ -802,6 +811,9 @@ def _initialize_postgres_database() -> None:
                 )
                 """
             )
+            _ensure_postgres_column(cursor, "admin_intent_nodes", "mcp_tool_id", "text not null default ''")
+            _ensure_postgres_column(cursor, "admin_intent_nodes", "param_prompt_template", "text not null default ''")
+            _ensure_postgres_column(cursor, "admin_intent_nodes", "min_score", "double precision")
             cursor.execute(
                 """
                 create table if not exists admin_keyword_mappings (
@@ -1143,7 +1155,7 @@ def _seed_demo_data(connection: DatabaseConnection) -> None:
                 "node_type": "embedder",
                 "next_node_id": "index",
                 "condition": "",
-                "config": {"provider": "siliconflow", "model": "Qwen/Qwen3-Embedding-8B"},
+                "config": {"provider": "lmstudio", "model": "Qwen/Qwen3-Embedding-8B-GGUF"},
             },
             {
                 "node_id": "index",
@@ -1212,7 +1224,7 @@ def _seed_default_ingestion_pipeline(connection: DatabaseConnection) -> None:
             "node_type": "embedder",
             "next_node_id": "index",
             "condition": "",
-            "config": {"provider": "siliconflow", "model": "Qwen/Qwen3-Embedding-8B"},
+            "config": {"provider": "lmstudio", "model": "Qwen/Qwen3-Embedding-8B-GGUF"},
         },
         {
             "node_id": "index",
@@ -1292,3 +1304,4 @@ def _import_psycopg():
     except ImportError as exc:
         raise RuntimeError("psycopg is not installed for PostgreSQL support") from exc
     return psycopg
+

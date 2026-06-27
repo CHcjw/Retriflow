@@ -15,6 +15,9 @@ class ChatQueueTicket:
     request_id: str
     acquired: bool
     reason: str = ""
+    queue_position: int = 0
+    queued_ahead: int = 0
+    wait_ms: int = 0
     _limiter: "RetriFlowFairQueueLimiter | RetriFlowRedisQueueLimiter | None" = None
     _released: bool = False
 
@@ -41,24 +44,47 @@ class RetriFlowFairQueueLimiter:
     def acquire(self, *, max_wait_seconds: float, cancel_event: threading.Event | None = None) -> ChatQueueTicket:
         request_id = uuid.uuid4().hex
         deadline = time.monotonic() + max(0.0, float(max_wait_seconds))
+        started_at = time.perf_counter()
         with self._condition:
             self._queue.append(request_id)
+            initial_position = len(self._queue)
             while True:
                 if cancel_event is not None and cancel_event.is_set():
                     self._remove_queued(request_id)
                     self._condition.notify_all()
-                    return ChatQueueTicket(request_id=request_id, acquired=False, reason="cancelled")
+                    return ChatQueueTicket(
+                        request_id=request_id,
+                        acquired=False,
+                        reason="cancelled",
+                        queue_position=self._queue_position(request_id, fallback=initial_position),
+                        queued_ahead=max(0, initial_position - 1),
+                        wait_ms=max(0, int((time.perf_counter() - started_at) * 1000)),
+                    )
 
                 if self._can_grant(request_id):
                     self._queue.popleft()
                     self._active.add(request_id)
-                    return ChatQueueTicket(request_id=request_id, acquired=True, _limiter=self)
+                    return ChatQueueTicket(
+                        request_id=request_id,
+                        acquired=True,
+                        queue_position=0,
+                        queued_ahead=0,
+                        wait_ms=max(0, int((time.perf_counter() - started_at) * 1000)),
+                        _limiter=self,
+                    )
 
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     self._remove_queued(request_id)
                     self._condition.notify_all()
-                    return ChatQueueTicket(request_id=request_id, acquired=False, reason="timeout")
+                    return ChatQueueTicket(
+                        request_id=request_id,
+                        acquired=False,
+                        reason="timeout",
+                        queue_position=self._queue_position(request_id, fallback=initial_position),
+                        queued_ahead=max(0, initial_position - 1),
+                        wait_ms=max(0, int((time.perf_counter() - started_at) * 1000)),
+                    )
 
                 self._condition.wait(timeout=min(remaining, 0.05))
 
@@ -81,6 +107,12 @@ class RetriFlowFairQueueLimiter:
 
     def _can_grant(self, request_id: str) -> bool:
         return bool(self._queue) and self._queue[0] == request_id and len(self._active) < self.max_concurrent
+
+    def _queue_position(self, request_id: str, *, fallback: int = 0) -> int:
+        try:
+            return list(self._queue).index(request_id) + 1
+        except ValueError:
+            return fallback
 
     def _remove_queued(self, request_id: str) -> None:
         try:
@@ -165,9 +197,11 @@ return redis.call('DECR', activeKey)
         request_id = uuid.uuid4().hex
         max_wait_seconds = max(0.0, float(max_wait_seconds))
         deadline = time.monotonic() + max_wait_seconds
+        started_at = time.perf_counter()
         ttl_ms = int((max_wait_seconds * 1000) + 5000)
         self._redis.set(f"{self._entry_prefix}{request_id}", "1", px=max(1, ttl_ms))
         self._redis.zadd(self._queue_key, {request_id: self._next_score()})
+        initial_position = self._queue_position(request_id)
 
         pubsub = self._redis.pubsub(ignore_subscribe_messages=True)
         pubsub.subscribe(self._notify_key)
@@ -175,15 +209,36 @@ return redis.call('DECR', activeKey)
             while True:
                 if cancel_event is not None and cancel_event.is_set():
                     self._cleanup_request(request_id)
-                    return ChatQueueTicket(request_id=request_id, acquired=False, reason="cancelled")
+                    return ChatQueueTicket(
+                        request_id=request_id,
+                        acquired=False,
+                        reason="cancelled",
+                        queue_position=self._queue_position(request_id, fallback=initial_position),
+                        queued_ahead=max(0, initial_position - 1),
+                        wait_ms=max(0, int((time.perf_counter() - started_at) * 1000)),
+                    )
 
                 if self._claim_if_ready(request_id):
-                    return ChatQueueTicket(request_id=request_id, acquired=True, _limiter=self)  # type: ignore[arg-type]
+                    return ChatQueueTicket(
+                        request_id=request_id,
+                        acquired=True,
+                        queue_position=0,
+                        queued_ahead=0,
+                        wait_ms=max(0, int((time.perf_counter() - started_at) * 1000)),
+                        _limiter=self,  # type: ignore[arg-type]
+                    )
 
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     self._cleanup_request(request_id)
-                    return ChatQueueTicket(request_id=request_id, acquired=False, reason="timeout")
+                    return ChatQueueTicket(
+                        request_id=request_id,
+                        acquired=False,
+                        reason="timeout",
+                        queue_position=self._queue_position(request_id, fallback=initial_position),
+                        queued_ahead=max(0, initial_position - 1),
+                        wait_ms=max(0, int((time.perf_counter() - started_at) * 1000)),
+                    )
 
                 wait_timeout = min(remaining, self.poll_interval_ms / 1000)
                 if cancel_event is not None:
@@ -222,6 +277,15 @@ return redis.call('DECR', activeKey)
 
     def _next_score(self) -> int:
         return int(self._redis.incr(self._seq_key))
+
+    def _queue_position(self, request_id: str, *, fallback: int = 0) -> int:
+        try:
+            rank = self._redis.zrank(self._queue_key, request_id)
+        except Exception:
+            return fallback
+        if rank is None:
+            return fallback
+        return int(rank) + 1
 
     def _cleanup_request(self, request_id: str) -> None:
         self._redis.zrem(self._queue_key, request_id)

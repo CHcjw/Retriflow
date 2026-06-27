@@ -25,6 +25,8 @@ class RetriFlowAdminApiTests(unittest.TestCase):
         os.environ["RETRIFLOW_DATABASE_DSN"] = ""
         os.environ["RETRIFLOW_PGVECTOR_DSN"] = ""
         os.environ["RETRIFLOW_VECTOR_STORE_TYPE"] = "memory"
+        os.environ["RETRIFLOW_MCP_REMOTE_ENABLED"] = "false"
+        os.environ["RETRIFLOW_MCP_REMOTE_SERVERS_JSON"] = "[]"
 
         from core.config import get_settings
 
@@ -38,6 +40,8 @@ class RetriFlowAdminApiTests(unittest.TestCase):
         os.environ.pop("RETRIFLOW_DATABASE_DSN", None)
         os.environ.pop("RETRIFLOW_PGVECTOR_DSN", None)
         os.environ.pop("RETRIFLOW_VECTOR_STORE_TYPE", None)
+        os.environ.pop("RETRIFLOW_MCP_REMOTE_ENABLED", None)
+        os.environ.pop("RETRIFLOW_MCP_REMOTE_SERVERS_JSON", None)
 
         from core.config import get_settings
         from infra.llm.health import get_model_health_service
@@ -290,6 +294,48 @@ class RetriFlowAdminApiTests(unittest.TestCase):
         self.assertEqual(payload["items"][1]["parent_id"], payload["items"][0]["id"])
         self.assertEqual(payload["items"][1]["node_type"], "RETRIEVAL")
 
+    def test_admin_trace_nodes_can_be_scoped_to_single_trace_root(self) -> None:
+        token = self._register_and_login("trace-node-scope-admin", "admin")
+        session_response = self.client.post(
+            "/api/v1/sessions",
+            json={"title": "Trace scope session"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        session_id = session_response.json()["id"]
+
+        from core.state import get_connection
+        from modules.rag.trace import RetriFlowTraceService
+
+        trace_service = RetriFlowTraceService()
+        with trace_service.start_root(session_id=session_id, task_id="first-run", name="chat.stream") as root:
+            with trace_service.span(name="first-child", node_type="GENERATION") as child:
+                child.finish_success(output_summary="first")
+            root.finish_success(output_summary="first done")
+        with trace_service.start_root(session_id=session_id, task_id="second-run", name="chat.stream") as root:
+            with trace_service.span(name="second-child", node_type="GENERATION") as child:
+                child.finish_success(output_summary="second")
+            root.finish_success(output_summary="second done")
+
+        with get_connection() as connection:
+            second_trace = connection.execute(
+                """
+                select id
+                from rag_trace_nodes
+                where session_id = ? and task_id = ? and parent_id = ''
+                """,
+                (session_id, "second-run"),
+            ).fetchone()
+
+        response = self.client.get(
+            f"/api/v1/admin/traces/{session_id}/nodes?trace_id={second_trace['id']}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        names = [item["name"] for item in response.json()["items"]]
+        self.assertEqual(names, ["chat.stream", "second-child"])
+        self.assertNotIn("first-child", names)
+
     def test_admin_can_filter_trace_runs_by_root_trace_fields(self) -> None:
         token = self._register_and_login("trace-filter-admin", "admin")
         first_session = self.client.post(
@@ -394,6 +440,30 @@ class RetriFlowAdminApiTests(unittest.TestCase):
         self.assertEqual(item["failure_count"], 1)
         self.assertEqual(item["last_error"], "timeout")
 
+    def test_admin_can_view_mcp_governance_status(self) -> None:
+        token = self._register_and_login("mcp-admin", "admin")
+
+        response = self.client.get(
+            "/api/v1/admin/mcp",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertGreaterEqual(payload["total_tools"], 3)
+        self.assertFalse(payload["remote_enabled"])
+        self.assertEqual(payload["remote_servers"], [])
+        tool = payload["tools"][0]
+        self.assertIn("tool_id", tool)
+        self.assertIn("server_name", tool)
+        self.assertIn("transport", tool)
+        self.assertIn("schema_version", tool)
+        self.assertIn("parameters", tool)
+        self.assertEqual(tool["parameter_count"], len(tool["parameters"]))
+        self.assertIn("name", tool["parameters"][0])
+        self.assertIn("required", tool["parameters"][0])
+        self.assertIn("type", tool["parameters"][0])
+
     def test_admin_model_health_survives_memory_reset(self) -> None:
         token = self._register_and_login("model-health-persist-admin", "admin")
 
@@ -471,6 +541,20 @@ class RetriFlowAdminApiTests(unittest.TestCase):
         self.assertEqual(len(payload["traffic_overview"]["labels"]), 7)
         self.assertEqual(len(payload["trend_panels"]), 4)
 
+    def test_admin_settings_exposes_retrieval_cache_governance(self) -> None:
+        token = self._register_and_login("settings-admin", "admin")
+
+        response = self.client.get(
+            "/api/v1/admin/settings",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        items = {item["key"]: item for item in response.json()["items"]}
+        self.assertEqual(items["retrieval_cross_request_cache_enabled"]["category"], "检索治理")
+        self.assertEqual(items["retrieval_cross_request_cache_ttl_seconds"]["category"], "检索治理")
+        self.assertEqual(items["retrieval_cross_request_cache_max_entries"]["category"], "检索治理")
+
     def test_admin_can_manage_intent_nodes(self) -> None:
         token = self._register_and_login("intent-admin", "admin")
 
@@ -487,6 +571,7 @@ class RetriFlowAdminApiTests(unittest.TestCase):
                 "rule_snippet": "命中退货、换货、保修等问题",
                 "prompt_template": "只基于售后知识回答。",
                 "top_k": 5,
+                "min_score": 0.42,
                 "sort_order": 10,
                 "enabled": True,
             },
@@ -496,10 +581,11 @@ class RetriFlowAdminApiTests(unittest.TestCase):
         created = create_response.json()
         self.assertEqual(created["code"], "after_sales")
         self.assertEqual(created["sample_questions"], ["可以退货吗？"])
+        self.assertEqual(created["min_score"], 0.42)
 
         update_response = self.client.patch(
             f"/api/v1/admin/intent-nodes/{created['id']}",
-            json={"name": "售后政策", "enabled": False, "top_k": 8},
+            json={"name": "售后政策", "enabled": False, "top_k": 8, "min_score": 0.55},
             headers={"Authorization": f"Bearer {token}"},
         )
         self.assertEqual(update_response.status_code, 200)
@@ -507,6 +593,7 @@ class RetriFlowAdminApiTests(unittest.TestCase):
         self.assertEqual(updated["name"], "售后政策")
         self.assertFalse(updated["enabled"])
         self.assertEqual(updated["top_k"], 8)
+        self.assertEqual(updated["min_score"], 0.55)
 
         list_response = self.client.get(
             "/api/v1/admin/intent-nodes",

@@ -12,6 +12,7 @@ export {
   type ChatBootstrapResponse,
   type ChatFinalEvent,
   type ChatMcpCallItem,
+  type ChatMcpSourceItem,
   type ChatMessageResponse,
   type ChatRejectEvent,
   type ChatSourceItem,

@@ -117,17 +117,27 @@ function summary(node: AdminTraceNodeItem) {
 
 function displayName(name: string) {
   const names: Record<string, string> = {
+    "chat.run": "对话执行",
     "chat.stream": "流式对话",
+    "memory.load_prompt_messages": "记忆加载",
     "generation.answer": "生成回答",
     "user-first-packet": "用户感知首包",
     "llm-first-packet": "LLM 首包",
+    "llm-chat-routing": "LLM 路由",
     "llm-stream-routing": "LLM 流式路由",
+    "knowledge.route": "知识路由",
+    "mcp.execute": "工具调用",
+    "mcp.execute.intent_route": "意图工具调用",
     "retrieval-engine": "知识库检索",
     "multi-channel-retrieval": "多路召回",
     "context-build": "上下文组装",
     "prompt-render": "Prompt 渲染",
     "query-rewrite-and-split": "问题改写与拆分",
     "intent-resolve": "意图识别",
+    "bailian-chat": "百炼对话",
+    "bailian-stream-chat": "百炼流式对话",
+    "lmstudio-chat": "LM Studio 对话",
+    "lmstudio-stream-chat": "LM Studio 流式对话",
     "guidance-detect": "歧义引导"
   };
   return names[name] || name;

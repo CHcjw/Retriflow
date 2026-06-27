@@ -29,6 +29,8 @@ class RetriFlowChatApiTests(unittest.TestCase):
         os.environ["RETRIFLOW_VECTOR_STORE_TYPE"] = "memory"
         os.environ["RETRIFLOW_LLM_PROVIDER"] = "disabled"
         os.environ["RETRIFLOW_SEED_DEMO_CONTENT"] = "true"
+        os.environ["RETRIFLOW_STORAGE_BACKEND"] = "local"
+        os.environ["RETRIFLOW_STORAGE_LOCAL_DIR"] = str(Path(self.temp_dir.name) / "uploads")
 
         from core.config import get_settings
 
@@ -51,6 +53,8 @@ class RetriFlowChatApiTests(unittest.TestCase):
         os.environ.pop("RETRIFLOW_VECTOR_STORE_TYPE", None)
         os.environ.pop("RETRIFLOW_LLM_PROVIDER", None)
         os.environ.pop("RETRIFLOW_SEED_DEMO_CONTENT", None)
+        os.environ.pop("RETRIFLOW_STORAGE_BACKEND", None)
+        os.environ.pop("RETRIFLOW_STORAGE_LOCAL_DIR", None)
         os.environ.pop("RETRIFLOW_WORKFLOW_ADAPTER", None)
         os.environ.pop("RETRIFLOW_MEMORY_MID_ENABLED", None)
         os.environ.pop("RETRIFLOW_MEMORY_MID_MAX_ITEMS", None)
@@ -575,7 +579,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
         self.assertEqual(payload["workflow"]["route_mode"], "mcp_only")
         self.assertEqual(payload["workflow"]["mcp_tool_count"], 1)
         self.assertTrue(payload["mcp_calls"])
-        self.assertEqual(payload["mcp_calls"][0]["tool_id"], "weather_query")
+        self.assertEqual([item["tool_id"] for item in payload["mcp_calls"]], ["get-weather-forecast"])
         self.assertTrue(payload["assistant_message"])
 
     def test_chat_message_supports_mixed_kb_and_mcp_answer(self) -> None:
@@ -622,7 +626,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
         self.assertEqual(payload["workflow"]["mcp_tool_count"], 1)
         self.assertGreaterEqual(payload["workflow"]["retrieval_count"], 1)
         self.assertTrue(payload["mcp_calls"])
-        self.assertEqual(payload["mcp_calls"][0]["tool_id"], "weather_query")
+        self.assertEqual([item["tool_id"] for item in payload["mcp_calls"]], ["get-weather-forecast"])
 
     def test_chat_message_injects_short_term_memory_into_prompt(self) -> None:
         self._rebuild_app_with_langgraph()
@@ -935,6 +939,56 @@ class RetriFlowChatApiTests(unittest.TestCase):
         retrieval = next(node for node in nodes if node["name"] == "retrieval-engine")
         multi_channel = next(node for node in nodes if node["name"] == "multi-channel-retrieval")
         self.assertEqual(multi_channel["parent_id"], retrieval["id"])
+        self.assertIn("stage_counts", retrieval["metadata"])
+        self.assertIn("stage_metrics", retrieval["metadata"])
+        self.assertIn("source_preview", retrieval["metadata"])
+        self.assertEqual(retrieval["metadata"]["source_count"], response.json()["workflow"]["retrieval_count"])
+        self.assertIn("bm25", retrieval["metadata"]["stage_metrics"])
+
+    def test_chat_message_persists_route_candidates_in_trace_metadata(self) -> None:
+        self._rebuild_app_with_langgraph()
+
+        from modules.knowledge.routing import KnowledgeRouteCandidate, KnowledgeRouteDecision
+
+        decision = KnowledgeRouteDecision(
+            mode="knowledge_base",
+            knowledge_base_ids=["kb-demo-1", "kb-demo-2"],
+            confidence=0.87,
+            reason="matched two knowledge bases",
+            candidates=[
+                KnowledgeRouteCandidate(
+                    knowledge_base_id="kb-demo-1",
+                    name="Insurance KB",
+                    path="Insurance / Claims",
+                    score=0.91,
+                    top_k=6,
+                    min_score=0.5,
+                ),
+                KnowledgeRouteCandidate(
+                    knowledge_base_id="kb-demo-2",
+                    name="RetriFlow KB",
+                    path="RetriFlow / Migration",
+                    score=0.84,
+                    top_k=8,
+                ),
+            ],
+        )
+
+        with patch("modules.rag.workflow_adapter.RetriFlowKnowledgeRouteService.route_question", return_value=decision):
+            response = self.client.post(
+                "/api/v1/chat/messages",
+                json={"session_id": "session-demo-1", "message": "route candidate trace"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        trace_response = self.client.get("/api/v1/admin/traces/session-demo-1/nodes")
+        self.assertEqual(trace_response.status_code, 200)
+        nodes = trace_response.json()["items"]
+        route_node = next(node for node in nodes if node["name"] == "knowledge.route")
+        self.assertIn("candidates", route_node["metadata"])
+        self.assertEqual(route_node["metadata"]["candidates"][0]["knowledge_base_id"], "kb-demo-1")
+        self.assertEqual(route_node["metadata"]["candidates"][0]["top_k"], 6)
+        self.assertEqual(route_node["metadata"]["candidates"][1]["score"], 0.84)
 
     def test_chat_message_returns_rewritten_queries_in_workflow_metadata(self) -> None:
         self._rebuild_app_with_langgraph()
@@ -977,6 +1031,71 @@ class RetriFlowChatApiTests(unittest.TestCase):
             ["insurance claim process", "underwriting policy rules"],
         )
         self.assertEqual(payload["workflow"]["rewrite_query_count"], 2)
+
+    def test_chat_message_returns_route_candidates_in_workflow_metadata(self) -> None:
+        self._rebuild_app_with_langgraph()
+
+        from modules.rag.guidance import GuidanceDecision
+        from modules.knowledge.routing import KnowledgeRouteCandidate, KnowledgeRouteDecision
+
+        decision = KnowledgeRouteDecision(
+            mode="knowledge_base",
+            knowledge_base_ids=["kb-demo-1", "kb-demo-2"],
+            confidence=0.87,
+            reason="matched two knowledge bases",
+            candidates=[
+                KnowledgeRouteCandidate(
+                    knowledge_base_id="kb-demo-1",
+                    name="Insurance KB",
+                    path="Insurance / Claims",
+                    score=0.91,
+                    top_k=6,
+                    min_score=0.5,
+                ),
+                KnowledgeRouteCandidate(
+                    knowledge_base_id="kb-demo-2",
+                    name="RetriFlow KB",
+                    path="RetriFlow / Migration",
+                    score=0.84,
+                    top_k=8,
+                ),
+            ],
+        )
+
+        captured_retrieval_kwargs: dict[str, object] = {}
+
+        def fake_retrieve(self, question, **kwargs):
+            from modules.rag.retrieval.engine import RetrievalResult
+
+            captured_retrieval_kwargs.update(kwargs)
+            return RetrievalResult(channels=[], sources=[], stage_counts={}, stage_metrics={})
+
+        with (
+            patch("modules.rag.workflow_adapter.RetriFlowKnowledgeRouteService.route_question", return_value=decision),
+            patch("modules.rag.workflow_adapter.RetriFlowIntentGuidanceService.detect", return_value=GuidanceDecision()),
+            patch("modules.rag.workflow_adapter.RetriFlowRetrievalEngine.retrieve", fake_retrieve),
+        ):
+            response = self.client.post(
+                "/api/v1/chat/messages",
+                json={"session_id": "session-demo-1", "message": "route candidate workflow"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["workflow"]["route_mode"], "knowledge_base")
+        self.assertEqual(payload["workflow"]["route_top_k"], 8)
+        self.assertEqual(payload["workflow"]["route_confidence"], 0.87)
+        self.assertEqual(payload["workflow"]["route_candidates"][0]["knowledge_base_id"], "kb-demo-1")
+        self.assertEqual(payload["workflow"]["route_candidates"][0]["path"], "Insurance / Claims")
+        self.assertEqual(payload["workflow"]["route_candidates"][0]["min_score"], 0.5)
+        self.assertEqual(payload["workflow"]["route_candidates"][1]["score"], 0.84)
+        self.assertEqual(payload["workflow"]["route_candidates"][1]["top_k"], 8)
+        self.assertEqual(captured_retrieval_kwargs["top_k_override"], 8)
+        self.assertEqual(
+            captured_retrieval_kwargs["top_k_by_knowledge_base"],
+            {"kb-demo-1": 6, "kb-demo-2": 8},
+        )
+        self.assertEqual(captured_retrieval_kwargs["min_score_by_knowledge_base"], {"kb-demo-1": 0.5})
 
     def test_chat_message_falls_back_to_original_query_when_rewrite_fails(self) -> None:
         self._rebuild_app_with_langgraph()
@@ -1109,6 +1228,40 @@ class RetriFlowChatApiTests(unittest.TestCase):
         self.assertEqual(payload["workflow"]["retrieval_count"], 0)
         self.assertEqual(payload["workflow"]["rewrite_query_count"], 1)
         self.assertEqual(payload["workflow"]["route_mode"], "chitchat")
+
+    def test_chitchat_falls_back_to_natural_reply_when_llm_unavailable(self) -> None:
+        self._rebuild_app_with_langgraph()
+
+        with (
+            patch(
+                "modules.rag.workflow_adapter.RetriFlowIntentClassifier.classify",
+                return_value={
+                    "intent": "chitchat",
+                    "confidence": 0.88,
+                    "reason": "greeting",
+                    "source": "rule",
+                    "clarification_question": "",
+                },
+            ),
+            patch(
+                "modules.rag.workflow_adapter.RetriFlowQueryRewriteService.rewrite",
+                return_value=["你好"],
+            ),
+            patch(
+                "modules.rag.workflow_adapter.RetriFlowLLMService.generate_general_answer",
+                side_effect=RuntimeError("llm unavailable"),
+            ),
+        ):
+            response = self.client.post(
+                "/api/v1/chat/messages",
+                json={"session_id": "session-demo-1", "message": "你好"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["workflow"]["route_mode"], "chitchat")
+        self.assertNotIn("根据现有资料", payload["assistant_message"])
+        self.assertIn("你好", payload["assistant_message"])
 
     def test_chat_message_returns_clarification_question_for_clarification_intent(self) -> None:
         self._rebuild_app_with_langgraph()

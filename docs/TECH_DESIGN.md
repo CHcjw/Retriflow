@@ -83,7 +83,7 @@ RetriFlow/
 1. 加载短期、中期、长期会话记忆。
 2. 执行 `intent-resolve` 意图识别。
 3. 执行 `query-rewrite-and-split` 查询改写和多问题拆分。
-4. 进行知识库路由或 MCP 工具路由；当多个真实知识库候选分数接近且问题未明确指向候选时，返回澄清引导，不直接扩展复杂工作流。
+4. 进行知识库路由或 MCP 工具路由；意图树 MCP 节点通过 `mcp_tool_id` 强制选择工具执行；当多个真实知识库候选分数接近且问题未明确指向候选时，返回澄清引导，不直接扩展复杂工作流。
 5. 通过 `retrieval-engine` 执行检索。
 6. 通过 `multi-channel-retrieval` 执行 BM25、向量召回和后处理链。
 7. 执行 RRF、rerank 和 final topK。
@@ -128,8 +128,8 @@ RetriFlow/
 1. Trace 使用 `contextvars` 保存 trace id、task id、session id 和节点栈；root span 退出时必须 reset，避免上下文泄漏。
 2. 普通 `span()` 在没有 active trace 时必须 no-op，不能产生空 session 的孤儿节点。
 3. 流式 `generation.answer` 必须 close-aware，完成、异常、fallback 或取消都要关闭。
-4. 检索通过 SearchChannel 和 SearchResultPostProcessor 扩展，当前真实能力为 BM25、向量、RRF、rerank 和 final limit；workflow metadata 暴露 `retrieval_stage_counts` 与 `retrieval_stage_metrics`，用于查看通道耗时、query count、topK 和后处理器输入输出数量；单个通道或后处理器异常时记录 error metrics 并继续后续链路。
-5. 意图树 Redis 缓存只缓存真实后台节点，admin create/update/delete 后必须清理；路由时按分数排序保留阈值以上的多个 KB 候选，最多 3 个目标，保留 parent -> child fallback 路径；workflow 会对 rewrite 后的多个 query 分别路由并合并 KB 范围。
+4. 检索通过 SearchChannel 和 SearchResultPostProcessor 扩展，当前真实能力为 BM25、向量、RRF、rerank 和 final limit；BM25 / semantic 通道支持请求内重复 query 去重缓存；workflow metadata 暴露 `retrieval_stage_counts` 与 `retrieval_stage_metrics`，用于查看通道耗时、query count、cache hit、topK 和后处理器输入输出数量；单个通道或后处理器异常时记录 error metrics 并继续后续链路。
+5. 意图树 Redis 缓存只缓存真实后台节点，admin create/update/delete 后必须清理；路由时按分数排序保留阈值以上的多个 KB 或 MCP 候选，最多 3 个目标，保留 parent -> child fallback 路径；MCP 节点读取 `mcp_tool_id` 并交给 MCP 执行器 forced tools，同时读取 `param_prompt_template` 传给参数提取器；workflow 会对 rewrite 后的多个 query 分别路由并合并 KB/MCP 范围，同时把候选 KB、MCP 工具、候选路径、route top_k、route min_score 和置信度同步到 workflow metadata，并把候选节点的 per-KB top_k / min_score 透传给检索引擎做分库截断和最低分过滤。
 6. MCP trace 节点命名为 `mcp.tool.<tool_id>`，metadata 保留 tool、server、transport 和 schema version；远程 server 注册按 ragent 自动配置语义逐个初始化，失败 server 记录 unhealthy/error/tool_count=0 并跳过，不影响内置工具和其他远程 server。
 7. 非流式 LLM 调用通过 `_post_json_with_fallback()` 对齐 ragent `ModelRoutingExecutor`，按候选 provider 顺序调用；单个 provider 失败由 `_post_json()` 记录模型健康失败，再继续尝试下一个可用候选。
 8. 后台 `AdminView` 继续承担路由级编排，业务面板已按功能下沉到 `components/admin/*`，表单状态已按功能下沉到 `composables/admin/*`；公共弹窗、分页、通知和 toast 统一放在 `components/admin/common`，子组件必须自带局部控件样式或使用明确的全局后台样式。
@@ -174,13 +174,3 @@ cmd /c npm.cmd run build
 ```
 
 涉及后台 UI 时还需要用浏览器自动化检查桌面和窄屏布局。
-
-## 剩余技术差距
-
-- Redis 队列已支持取消清理、快照和拒绝持久化，但缺更细队列位置遥测。
-- Ingestion 已有节点结果、条件和输出，但还不是 ragent 那样完整的节点执行引擎。
-- 意图树已有 Redis 缓存、基础 fallback、多 KB 候选保留、多 query 路由合并和最小歧义引导，但缺 ragent 完整候选置信度传播和节点级检索参数。
-- 检索已抽象 channel/postprocessor，并暴露 stage metrics；缓存、版本过滤和更细治理仍需真实后端支撑。
-- MCP 已有工具 trace、schema version 和远程 server 注册健康状态，但缺原生 function calling 与后台治理展示。
-- 模型健康已有后端能力、独立后台面板、手动 probe 和非流式当次请求 fallback，但缺定时探测、启动预热和流式首包探针 fallback。
-- 后台已拆出 Dashboard、Trace、模型健康、知识库、文档、分块、意图、关键词、数据通道、示例问题、用户和设置面板；后续重点是继续压缩 `AdminView` 的编排代码、补浏览器自动化 UI 回归，并把更多纯状态/表单逻辑下沉到 feature composable。

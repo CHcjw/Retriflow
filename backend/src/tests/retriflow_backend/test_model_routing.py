@@ -21,6 +21,9 @@ class RetriFlowModelRoutingTests(unittest.TestCase):
             "RETRIFLOW_MEMORY_SUMMARY_PROVIDER",
             "RETRIFLOW_EMBEDDING_PROVIDER",
             "RETRIFLOW_RERANK_PROVIDER",
+            "RETRIFLOW_LMSTUDIO_BASE_URL",
+            "RETRIFLOW_LMSTUDIO_CHAT_MODEL",
+            "RETRIFLOW_LMSTUDIO_EMBEDDING_MODEL",
             "RETRIFLOW_OLLAMA_BASE_URL",
             "RETRIFLOW_OLLAMA_CHAT_MODEL",
             "RETRIFLOW_OLLAMA_EMBEDDING_MODEL",
@@ -36,18 +39,25 @@ class RetriFlowModelRoutingTests(unittest.TestCase):
 
         get_settings.cache_clear()
 
-    def test_settings_expose_split_provider_defaults_and_ollama_defaults(self) -> None:
+    def test_settings_expose_ragent_aligned_provider_defaults_and_local_fallback_models(self) -> None:
         from core.config import get_settings
 
         get_settings.cache_clear()
         settings = get_settings()
 
         self.assertEqual(settings.chat_provider, "bailian")
-        self.assertEqual(settings.rewrite_provider, "ollama")
-        self.assertEqual(settings.route_provider, "ollama")
-        self.assertEqual(settings.memory_summary_provider, "ollama")
+        self.assertEqual(settings.rewrite_provider, "bailian")
+        self.assertEqual(settings.route_provider, "bailian")
+        self.assertEqual(settings.memory_summary_provider, "bailian")
         self.assertEqual(settings.embedding_provider, "siliconflow")
-        self.assertEqual(settings.rerank_provider, "siliconflow")
+        self.assertEqual(settings.rerank_provider, "bailian")
+        self.assertEqual(settings.default_chat_model, "qwen3-max")
+        self.assertEqual(settings.deep_thinking_model, "qwen3-max")
+        self.assertEqual(settings.default_embedding_model, "Qwen/Qwen3-Embedding-8B")
+        self.assertEqual(settings.default_rerank_model, "qwen3-rerank")
+        self.assertEqual(settings.lmstudio_base_url, "http://127.0.0.1:1234/v1")
+        self.assertEqual(settings.lmstudio_chat_model, "unsloth/Qwen3.5-4B-GGUF")
+        self.assertEqual(settings.lmstudio_embedding_model, "Qwen/Qwen3-Embedding-8B-GGUF")
         self.assertEqual(settings.ollama_base_url, "http://127.0.0.1:11434/v1")
         self.assertEqual(settings.ollama_chat_model, "qwen3:8b")
         self.assertEqual(settings.ollama_embedding_model, "qwen3-embedding:8b")
@@ -84,6 +94,22 @@ class RetriFlowModelRoutingTests(unittest.TestCase):
         self.assertIsNotNone(provider)
         self.assertEqual(provider.name, "siliconflow")
         self.assertEqual(provider.base_url, "https://api.siliconflow.cn/v1")
+
+    def test_chat_provider_can_resolve_local_lmstudio_with_provider_specific_model(self) -> None:
+        os.environ["RETRIFLOW_CHAT_PROVIDER"] = "lmstudio"
+
+        from core.config import get_settings
+        from infra.llm import RetriFlowLLMService
+
+        get_settings.cache_clear()
+        service = RetriFlowLLMService()
+        provider = service._resolve_provider(capability="chat")
+        model = service._resolve_model(capability="chat", provider_name="lmstudio")
+
+        self.assertIsNotNone(provider)
+        self.assertEqual(provider.name, "lmstudio")
+        self.assertEqual(provider.base_url, "http://127.0.0.1:1234/v1")
+        self.assertEqual(model, "unsloth/Qwen3.5-4B-GGUF")
 
     def test_chat_provider_can_resolve_local_ollama_with_provider_specific_model(self) -> None:
         os.environ["RETRIFLOW_CHAT_PROVIDER"] = "ollama"

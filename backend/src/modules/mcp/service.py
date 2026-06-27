@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from datetime import datetime
 import re
 
 from core.config import get_settings
@@ -32,6 +33,8 @@ class RetriFlowMcpService:
     def route_question(self, question: str, *, memory_messages: list[dict[str, str]] | None = None) -> McpRouteDecision:
         route_question = self._resolve_route_question(question, memory_messages or [])
         matched = self._match_tools(route_question)
+        matched = self._prefer_search_for_web_intent(route_question, matched)
+        matched = self._prefer_remote_weather_for_realtime_question(route_question, matched)
         if not matched:
             return McpRouteDecision(
                 mode="none",
@@ -65,18 +68,124 @@ class RetriFlowMcpService:
             ),
         )
 
+    def _prefer_search_for_web_intent(
+        self,
+        question: str,
+        matched: list[MatchedToolCandidate],
+    ) -> list[MatchedToolCandidate]:
+        if not self._looks_like_web_search_question(question):
+            return matched
+        search_tool_id = self._find_preferred_search_tool_id()
+        if not search_tool_id:
+            return matched
+        without_duplicate = [candidate for candidate in matched if candidate.tool_id != search_tool_id]
+        return [
+            MatchedToolCandidate(
+                tool_id=search_tool_id,
+                confidence=0.98,
+                reason="explicit web search intent prefers search MCP",
+            ),
+            *without_duplicate,
+        ]
+
+    def _prefer_remote_weather_for_realtime_question(
+        self,
+        question: str,
+        matched: list[MatchedToolCandidate],
+    ) -> list[MatchedToolCandidate]:
+        if not self._looks_like_weather_question(question):
+            return matched
+        remote_weather_tool_id = self._find_preferred_weather_tool_id()
+        if remote_weather_tool_id:
+            without_builtin_weather = [
+                candidate
+                for candidate in matched
+                if candidate.tool_id not in {remote_weather_tool_id, "weather_query"}
+            ]
+            return [
+                MatchedToolCandidate(
+                    tool_id=remote_weather_tool_id,
+                    confidence=0.98,
+                    reason="weather question prefers remote weather mcp",
+                ),
+                *without_builtin_weather,
+            ]
+        search_tool_id = self._find_preferred_search_tool_id()
+        if search_tool_id:
+            without_builtin_weather = [
+                candidate
+                for candidate in matched
+                if candidate.tool_id not in {search_tool_id, "weather_query"}
+            ]
+            return [
+                MatchedToolCandidate(
+                    tool_id=search_tool_id,
+                    confidence=0.96,
+                    reason="weather question falls back to search mcp",
+                ),
+                *without_builtin_weather,
+            ]
+        return matched
+
+    def _find_preferred_search_tool_id(self) -> str:
+        tools = self.registry.list_tools()
+        for tool in tools:
+            tool_id = tool.tool_id.lower()
+            text = f"{tool.server_name} {tool.tool_id} {tool.description}".lower()
+            if "aisearch" in tool_id or "ai_search" in tool_id or "百度ai搜索" in text:
+                return tool.tool_id
+        for tool in tools:
+            tool_id = tool.tool_id.lower()
+            text = f"{tool.server_name} {tool.tool_id} {tool.description}".lower()
+            if "search_location" in tool_id:
+                continue
+            if "search" in tool_id or "搜索" in text or "web" in text:
+                return tool.tool_id
+        return ""
+
+    def _find_preferred_weather_tool_id(self) -> str:
+        for preferred in ("get_forecast", "get_current_conditions", "weather"):
+            executor = self.registry.get_executor(preferred)
+            if executor and executor.get_definition().server_name != "builtin":
+                return preferred
+        for tool in self.registry.list_tools():
+            if tool.server_name == "builtin":
+                continue
+            tool_id = tool.tool_id.lower()
+            text = f"{tool.server_name} {tool.tool_id} {tool.description}".lower()
+            if "search_location" in tool_id:
+                continue
+            if "weather" in text or "forecast" in tool_id or "conditions" in tool_id:
+                return tool.tool_id
+        return ""
+
     def execute_question(
         self,
         question: str,
         *,
         memory_messages: list[dict[str, str]] | None = None,
+        forced_tool_ids: list[str] | None = None,
+        forced_tool_param_prompts: dict[str, str] | None = None,
     ) -> McpExecutionResult:
         route_question = self._resolve_route_question(question, memory_messages or [])
-        route = self.route_question(question, memory_messages=memory_messages)
+        if forced_tool_ids:
+            route = McpRouteDecision(
+                mode="mcp",
+                tool_ids=list(dict.fromkeys(forced_tool_ids)),
+                confidence=0.99,
+                reason="intent tree selected mcp tools",
+            )
+        else:
+            route = self.route_question(question, memory_messages=memory_messages)
         if route.mode != "mcp" or not route.tool_ids:
             return McpExecutionResult(route=route, calls=[])
 
-        calls = self._execute_tools(question=route_question, tool_ids=route.tool_ids)
+        execution_question = self._with_current_date_context(route_question)
+        calls = self._execute_tools(
+            question=execution_question,
+            tool_ids=route.tool_ids,
+            tool_param_prompts=forced_tool_param_prompts or {},
+        )
         return McpExecutionResult(route=route, calls=calls)
 
     @property
@@ -97,21 +206,43 @@ class RetriFlowMcpService:
             self.settings.mcp_parallel_max_workers or self.DEFAULT_PARALLEL_MAX_WORKERS,
         )
 
-    def _execute_tools(self, question: str, tool_ids: list[str]) -> list[McpToolCallResult]:
+    def _execute_tools(
+        self,
+        question: str,
+        tool_ids: list[str],
+        tool_param_prompts: dict[str, str] | None = None,
+    ) -> list[McpToolCallResult]:
         if self.settings.mcp_fail_fast:
-            return self._execute_sequential(question=question, tool_ids=tool_ids)
+            return self._execute_sequential(
+                question=question,
+                tool_ids=tool_ids,
+                tool_param_prompts=tool_param_prompts or {},
+            )
         if self._execution_mode == "parallel" and len(tool_ids) > 1:
-            return self._execute_parallel(question=question, tool_ids=tool_ids)
-        return self._execute_sequential(question=question, tool_ids=tool_ids)
+            return self._execute_parallel(
+                question=question,
+                tool_ids=tool_ids,
+                tool_param_prompts=tool_param_prompts or {},
+            )
+        return self._execute_sequential(
+            question=question,
+            tool_ids=tool_ids,
+            tool_param_prompts=tool_param_prompts or {},
+        )
 
     def _execute_sequential(
         self,
         question: str,
         tool_ids: list[str],
+        tool_param_prompts: dict[str, str] | None = None,
     ) -> list[McpToolCallResult]:
         calls: list[McpToolCallResult] = []
         for tool_id in tool_ids:
-            result = self._execute_single_tool(question=question, tool_id=tool_id)
+            result = self._execute_single_tool(
+                question=question,
+                tool_id=tool_id,
+                param_prompt_template=(tool_param_prompts or {}).get(tool_id, ""),
+            )
             calls.append(result)
             if result.is_error and self.settings.mcp_fail_fast:
                 break
@@ -121,13 +252,19 @@ class RetriFlowMcpService:
         self,
         question: str,
         tool_ids: list[str],
+        tool_param_prompts: dict[str, str] | None = None,
     ) -> list[McpToolCallResult]:
         indexed_results: dict[int, McpToolCallResult] = {}
         max_workers = min(self._parallel_max_workers, len(tool_ids))
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {
-                executor.submit(self._execute_single_tool, question, tool_id): (index, tool_id)
+                executor.submit(
+                    self._execute_single_tool,
+                    question,
+                    tool_id,
+                    (tool_param_prompts or {}).get(tool_id, ""),
+                ): (index, tool_id)
                 for index, tool_id in enumerate(tool_ids)
             }
             first_error_index: int | None = None
@@ -171,6 +308,7 @@ class RetriFlowMcpService:
         self,
         question: str,
         tool_id: str,
+        param_prompt_template: str = "",
     ) -> McpToolCallResult:
         executor = self.registry.get_executor(tool_id)
         if executor is None:
@@ -192,12 +330,14 @@ class RetriFlowMcpService:
                 "server_name": tool_definition.server_name,
                 "transport": tool_definition.transport,
                 "schema_version": tool_definition.schema_version,
+                "param_prompt_template": bool(param_prompt_template.strip()),
             },
         ) as span:
             try:
                 arguments = self.parameter_extractor.extract(
                     question=question,
                     tool_definition=tool_definition,
+                    param_prompt_template=param_prompt_template,
                 )
                 result = executor.execute(arguments)
                 if not isinstance(result, McpToolCallResult):
@@ -252,6 +392,26 @@ class RetriFlowMcpService:
         matched.sort(key=lambda item: (-item.confidence, item.tool_id))
         return matched
 
+    @staticmethod
+    def _looks_like_weather_question(question: str) -> bool:
+        return bool(
+            re.search(
+                r"\u5929\u6c14|\u6c14\u6e29|\u6e29\u5ea6|\u4e0b\u96e8|\u964d\u96e8|\u9884\u62a5|\u7a7a\u6c14\u8d28\u91cf|weather|temperature|forecast|rain",
+                question,
+                re.I,
+            )
+        )
+
+    @staticmethod
+    def _looks_like_web_search_question(question: str) -> bool:
+        return bool(
+            re.search(
+                r"\u8054\u7f51|\u641c\u7d22|\u7f51\u9875|\u6d4f\u89c8\u5668|\u67e5\u7f51\u9875|\u7f51\u4e0a\u67e5|\u4e0a\u7f51\u67e5|\u4e0a\u7f51\u641c\u7d22|\u767e\u5ea6|online|search|web",
+                question,
+                re.I,
+            )
+        )
+
     def _resolve_route_question(self, question: str, memory_messages: list[dict[str, str]]) -> str:
         if self._match_tools(question):
             return question
@@ -262,7 +422,25 @@ class RetriFlowMcpService:
         if not previous_user_question or not self._match_tools(previous_user_question):
             return question
 
-        return f"{previous_user_question}\n追问：{question}"
+        return f"{previous_user_question}\n\u8ffd\u95ee\uff1a{question}"
+
+    @staticmethod
+    def _with_current_date_context(question: str) -> str:
+        if not re.search(
+            r"\u4eca\u5929|\u4eca\u65e5|\u73b0\u5728|\u660e\u5929|\u540e\u5929|\u672c\u5468|\u672c\u6708|\u672c\u5b63\u5ea6|today|tomorrow|this week|this month",
+            question,
+            re.I,
+        ):
+            return question
+        now = datetime.now().astimezone()
+        weekday = "\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u65e5"[now.weekday()]
+        context = (
+            f"\u5f53\u524d\u65e5\u671f\uff1a{now.year}-{now.month:02d}-{now.day:02d}\uff0c\u661f\u671f{weekday}\u3002"
+            "\u8bf7\u6309\u8fd9\u4e2a\u65e5\u671f\u89e3\u6790\u201c\u4eca\u5929\u3001\u660e\u5929\u3001\u672c\u5468\u3001\u672c\u6708\u201d\u7b49\u76f8\u5bf9\u65f6\u95f4\u8bcd\u3002"
+        )
+        if context in question:
+            return question
+        return f"{question}\n{context}"
 
     @staticmethod
     def _looks_like_tool_follow_up(question: str) -> bool:
@@ -271,10 +449,13 @@ class RetriFlowMcpService:
             return False
         return bool(
             re.search(
-                r"^(未来|明天|后天|大后天|接下来|之后|那|这个|那个|再查|还有|呢|.*呢$)",
+                r"^(\u672a\u6765|\u660e\u5929|\u540e\u5929|\u5927\u540e\u5929|\u63a5\u4e0b\u6765|\u4e4b\u540e|\u90a3|\u8fd9\u4e2a|\u90a3\u4e2a|\u518d\u67e5|\u8fd8\u6709|\u5462|.*\u5462?)",
                 normalized,
             )
-            or re.search(r"(未来|明天|后天|三天|几天|本周|本月|本季度).{0,8}(呢|怎么样|如何|情况)?$", normalized)
+            or re.search(
+                r"(\u672a\u6765|\u660e\u5929|\u540e\u5929|\u4e09\u5929|\u51e0\u5929|\u672c\u5468|\u672c\u6708|\u672c\u5b63\u5ea6).{0,8}(\u5462|\u600e\u4e48\u6837|\u5982\u4f55|\u60c5\u51b5)?$",
+                normalized,
+            )
         )
 
     @staticmethod

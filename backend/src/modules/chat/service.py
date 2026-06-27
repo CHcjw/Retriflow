@@ -59,6 +59,7 @@ class RetriFlowChatService:
             request.message,
             session_id=request.session_id,
             deep_thinking=request.deep_thinking,
+            smart_search=request.smart_search,
         )
         assistant_duration_ms = self._elapsed_ms(started_at)
         assistant_message_id = self._persist_message_exchange(
@@ -82,6 +83,7 @@ class RetriFlowChatService:
             request.message,
             session_id=request.session_id,
             deep_thinking=request.deep_thinking,
+            smart_search=request.smart_search,
         )
 
     def persist_stream_result(

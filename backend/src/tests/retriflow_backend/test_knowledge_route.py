@@ -22,6 +22,8 @@ class RetriFlowKnowledgeRouteTests(unittest.TestCase):
         os.environ["RETRIFLOW_PGVECTOR_DSN"] = ""
         os.environ["RETRIFLOW_VECTOR_STORE_TYPE"] = "memory"
         os.environ["RETRIFLOW_LLM_PROVIDER"] = "disabled"
+        os.environ["RETRIFLOW_STORAGE_BACKEND"] = "local"
+        os.environ["RETRIFLOW_STORAGE_LOCAL_DIR"] = str(Path(self.temp_dir.name) / "uploads")
 
         from core.config import get_settings
         from core.state import initialize_database
@@ -52,6 +54,8 @@ class RetriFlowKnowledgeRouteTests(unittest.TestCase):
         os.environ.pop("RETRIFLOW_PGVECTOR_DSN", None)
         os.environ.pop("RETRIFLOW_VECTOR_STORE_TYPE", None)
         os.environ.pop("RETRIFLOW_LLM_PROVIDER", None)
+        os.environ.pop("RETRIFLOW_STORAGE_BACKEND", None)
+        os.environ.pop("RETRIFLOW_STORAGE_LOCAL_DIR", None)
         os.environ.pop("RETRIFLOW_ROUTE_USE_LLM", None)
         os.environ.pop("RETRIFLOW_INTENT_TREE_CACHE_ENABLED", None)
         os.environ.pop("RETRIFLOW_INTENT_TREE_CACHE_REDIS_URL", None)
@@ -146,6 +150,7 @@ class RetriFlowKnowledgeRouteTests(unittest.TestCase):
                 description="Claims reimbursement routing",
                 sample_questions=["How do I submit claim reimbursement materials?"],
                 rule_snippet="claim reimbursement materials payout",
+                top_k=6,
                 sort_order=1,
             )
         )
@@ -156,6 +161,7 @@ class RetriFlowKnowledgeRouteTests(unittest.TestCase):
         self.assertEqual(decision.knowledge_base_ids, ["kb-1"])
         self.assertGreaterEqual(decision.confidence, 0.45)
         self.assertIn("intent path", decision.reason)
+        self.assertEqual(decision.candidates[0].top_k, 6)
 
     def test_route_question_falls_back_from_matched_parent_to_child_kb_node(self) -> None:
         from modules.admin import RetriFlowAdminService
@@ -191,6 +197,10 @@ class RetriFlowKnowledgeRouteTests(unittest.TestCase):
         self.assertEqual(decision.knowledge_base_ids, ["kb-1"])
         self.assertIn("Claims Domain", decision.reason)
         self.assertIn("Claims Reimbursement Leaf", decision.reason)
+        self.assertEqual(decision.candidates[0].matched_node_path, "Claims Domain")
+        self.assertEqual(decision.candidates[0].target_node_path, "Claims Domain / Claims Reimbursement Leaf")
+        self.assertGreater(decision.candidates[0].target_score, 0)
+        self.assertIn("insurance", decision.candidates[0].matched_terms)
 
     def test_route_question_uses_mcp_intent_tree_nodes(self) -> None:
         from modules.admin import RetriFlowAdminService
@@ -214,7 +224,7 @@ class RetriFlowKnowledgeRouteTests(unittest.TestCase):
                 level="CATEGORY",
                 node_type="MCP",
                 parent_id=parent.id,
-                knowledge_base_id="kb-1",
+                mcp_tool_id="sales_query",
                 description="sales amount and sales volume statistics",
                 sort_order=1,
             )
@@ -222,8 +232,9 @@ class RetriFlowKnowledgeRouteTests(unittest.TestCase):
 
         decision = RetriFlowKnowledgeRouteService().route_question("sales statistics domain")
 
-        self.assertEqual(decision.mode, "knowledge_base")
-        self.assertEqual(decision.knowledge_base_ids, ["kb-1"])
+        self.assertEqual(decision.mode, "mcp")
+        self.assertEqual(decision.knowledge_base_ids, [])
+        self.assertEqual(decision.mcp_tool_ids, ["sales_query"])
         self.assertIn("Sales Domain", decision.reason)
         self.assertIn("Sales Statistics", decision.reason)
 

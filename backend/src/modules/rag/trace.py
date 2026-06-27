@@ -234,6 +234,35 @@ class RetriFlowTraceService:
             )
             connection.commit()
 
+    def update_node_metadata(self, node_id: str, metadata: dict[str, Any]) -> None:
+        if not node_id or not metadata:
+            return
+        with get_connection() as connection:
+            row = connection.execute(
+                """
+                select metadata_json
+                from rag_trace_nodes
+                where id = ?
+                """,
+                (node_id,),
+            ).fetchone()
+            if row is None:
+                return
+            try:
+                current_metadata = json.loads(str(row["metadata_json"] or "{}"))
+            except json.JSONDecodeError:
+                current_metadata = {}
+            current_metadata.update(metadata)
+            connection.execute(
+                """
+                update rag_trace_nodes
+                set metadata_json = ?
+                where id = ?
+                """,
+                (json.dumps(current_metadata, ensure_ascii=False), node_id),
+            )
+            connection.commit()
+
     def current_node_id(self) -> str:
         stack = _NODE_STACK.get()
         return stack[-1] if stack else ""

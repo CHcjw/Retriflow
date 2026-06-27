@@ -83,6 +83,9 @@ class RetriFlowChatRateLimitTests(unittest.TestCase):
 
         self.assertFalse(second.acquired)
         self.assertEqual(second.reason, "timeout")
+        self.assertGreaterEqual(second.queue_position, 1)
+        self.assertGreaterEqual(second.queued_ahead, 0)
+        self.assertGreaterEqual(second.wait_ms, 0)
         first.release()
 
     def test_limiter_grants_waiting_ticket_after_release_in_fifo_order(self) -> None:
@@ -189,6 +192,9 @@ class RetriFlowChatRateLimitTests(unittest.TestCase):
         self.assertIn('"active_count": 1', payload)
         self.assertIn('"available_permits": 0', payload)
         self.assertIn("event: reject", payload)
+        self.assertIn('"queue_position":', payload)
+        self.assertIn('"queued_ahead":', payload)
+        self.assertIn('"wait_ms":', payload)
         self.assertIn("event: final", payload)
         self.assertIn("event: done", payload)
         self.assertIn('"status": "rejected"', payload)

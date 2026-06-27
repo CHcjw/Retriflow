@@ -8,6 +8,7 @@ from langchain_core.documents import Document
 from core.config import get_settings
 from core.state import get_connection
 from infra.document_parser import RetriFlowDocumentParserService
+from infra.distributed_lock import get_distributed_lock_service
 from infra.storage import resolve_file_storage
 from infra.vector_store import VectorChunkRecord, resolve_vector_store
 from modules.ingestion import IngestionPipelineNodeResult, RetriFlowIngestionPipeline
@@ -83,9 +84,17 @@ class RetriFlowKnowledgeService:
             existing_ids = connection.execute("select id from knowledge_bases").fetchall()
             next_index = self._next_numeric_suffix([str(row["id"]) for row in existing_ids], prefix="kb-")
             knowledge_base_id = f"kb-{next_index}"
-            collection_name = request.collection_name.strip() or knowledge_base_id.replace("-", "")
+            requested_collection_name = request.collection_name.strip()
+            collection_name = requested_collection_name or self._next_collection_name(connection, prefix="kb")
             if self._knowledge_base_collection_exists(connection, collection_name):
                 raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"知识库 collection 已存在：{collection_name}")
+            if requested_collection_name:
+                try:
+                    self.file_storage.ensure_bucket(collection_name)
+                except ValueError as exc:
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="存储桶名称已被占用") from exc
+            else:
+                collection_name = self._reserve_auto_collection_bucket(connection, prefix="kb")
             connection.execute(
                 """
                 insert into knowledge_bases (id, name, product, document_count, embedding_model, collection_name, owner, updated_at)
@@ -101,10 +110,6 @@ class RetriFlowKnowledgeService:
                     "admin",
                 ),
             )
-            try:
-                self.file_storage.ensure_bucket(collection_name)
-            except ValueError as exc:
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="存储桶名称已被占用") from exc
             self._sync_knowledge_base_route_profile(connection, knowledge_base_id)
             connection.commit()
 
@@ -319,6 +324,17 @@ class RetriFlowKnowledgeService:
                 )
                 connection.execute(
                     """
+                    delete from ingestion_task_nodes
+                    where task_id in (
+                        select id
+                        from ingestion_tasks
+                        where knowledge_base_id = ? and document_id = ?
+                    )
+                    """,
+                    (knowledge_base_id, document_id),
+                )
+                connection.execute(
+                    """
                     delete from ingestion_tasks
                     where knowledge_base_id = ? and document_id = ?
                     """,
@@ -460,7 +476,7 @@ class RetriFlowKnowledgeService:
             chunk_documents=pipeline_result.chunk_documents,
             node_results=pipeline_result.node_results,
             structured_document=None,
-            persist_ingestion_task=request.process_mode == "data_channel",
+            persist_ingestion_task=True,
         )
 
     def upload_document(
@@ -517,6 +533,7 @@ class RetriFlowKnowledgeService:
                 detail=str(exc),
             ) from exc
 
+        resolved_document_type = document_type or self._infer_upload_document_type(parsed_result.structured_document)
         return self._persist_uploaded_document(
             knowledge_base_id=knowledge_base_id,
             title=parsed_result.title,
@@ -525,7 +542,7 @@ class RetriFlowKnowledgeService:
             source_uri=stored_file.uri,
             source_hash=source_hash,
             processing_config=self._build_processing_config(
-                document_type=document_type or "knowledge_base",
+                document_type=resolved_document_type,
                 process_mode=process_mode,
                 pipeline_id=pipeline_id,
                 chunk_strategy=chunk_strategy,
@@ -537,6 +554,26 @@ class RetriFlowKnowledgeService:
         )
 
     def reindex_document(
+        self,
+        knowledge_base_id: str,
+        document_id: int,
+        request: KnowledgeDocumentReindexRequest,
+    ) -> KnowledgeDocumentItem:
+        with get_distributed_lock_service().acquire(
+            f"knowledge:reindex:{knowledge_base_id}:{document_id}"
+        ) as acquired:
+            if not acquired:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Document is already being chunked",
+                )
+            return self._reindex_document_locked(
+                knowledge_base_id=knowledge_base_id,
+                document_id=document_id,
+                request=request,
+            )
+
+    def _reindex_document_locked(
         self,
         knowledge_base_id: str,
         document_id: int,
@@ -1112,6 +1149,8 @@ class RetriFlowKnowledgeService:
         node_results: list[IngestionPipelineNodeResult],
         structured_document: StructuredDocument | None = None,
         source_uri: str = "",
+        source_hash: str = "",
+        processing_config: dict | None = None,
         persist_ingestion_task: bool = False,
     ) -> KnowledgeDocumentItem:
         vector_records: list[VectorChunkRecord] = []
@@ -1124,13 +1163,15 @@ class RetriFlowKnowledgeService:
                     title,
                     source_type,
                     source_uri,
+                    source_hash,
                     content,
                     status,
                     vector_index_status,
                     vector_chunk_count,
-                    vector_indexed_at
+                    vector_indexed_at,
+                    processing_config_json
                 )
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 returning id
                 """,
                 (
@@ -1138,11 +1179,13 @@ class RetriFlowKnowledgeService:
                     title,
                     source_type,
                     source_uri,
+                    source_hash,
                     normalized_content,
                     "indexed",
                     "pending",
                     0,
                     None,
+                    json.dumps(processing_config or {}, ensure_ascii=False),
                 ),
             )
             document_id = int(cursor.fetchone()[0])
@@ -1928,6 +1971,43 @@ class RetriFlowKnowledgeService:
         ).fetchone()
         return row is not None
 
+    @classmethod
+    def _next_collection_name(cls, connection, *, prefix: str) -> str:
+        rows = connection.execute(
+            """
+            select collection_name
+            from knowledge_bases
+            where collection_name is not null and collection_name <> ''
+            """
+        ).fetchall()
+        existing = {str(row["collection_name"]) for row in rows}
+        index = 1
+        while f"{prefix}{index}" in existing:
+            index += 1
+        return f"{prefix}{index}"
+
+    def _reserve_auto_collection_bucket(self, connection, *, prefix: str) -> str:
+        rows = connection.execute(
+            """
+            select collection_name
+            from knowledge_bases
+            where collection_name is not null and collection_name <> ''
+            """
+        ).fetchall()
+        existing = {str(row["collection_name"]) for row in rows}
+        index = 1
+        while True:
+            collection_name = f"{prefix}{index}"
+            index += 1
+            if collection_name in existing:
+                continue
+            try:
+                self.file_storage.ensure_bucket(collection_name)
+                return collection_name
+            except ValueError:
+                existing.add(collection_name)
+                continue
+
     def _ensure_document_exists(self, knowledge_base_id: str, document_id: int) -> None:
         with get_connection() as connection:
             row = connection.execute(
@@ -1971,7 +2051,7 @@ class RetriFlowKnowledgeService:
             title=row["title"],
             source_type=RetriFlowKnowledgeService._source_type_label(row["source_type"]),
             source_uri=row.get("source_uri") or "",
-            processing_mode=row.get("processing_mode") or processing_config.get("processMode") or "auto",
+            processing_mode=processing_config.get("processMode") or row.get("processing_mode") or "auto",
             status=row["status"],
             enabled=True if min_enabled is None else bool(min_enabled),
             vector_index_status=row.get("vector_index_status", "pending"),

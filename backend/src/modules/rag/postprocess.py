@@ -12,6 +12,9 @@ class RetriFlowAnswerPostprocessor:
     def finalize(self, answer: str, sources: list[ChatSourceItem]) -> str:
         normalized = self._normalize(answer)
         safe_answer = self._apply_safety_filter(normalized)
+        if not sources:
+            safe_answer = self._remove_inline_mcp_citations(safe_answer)
+            safe_answer = self._remove_tool_source_footer(safe_answer)
 
         if not safe_answer.strip():
             return self.DEFAULT_NO_ANSWER
@@ -47,6 +50,19 @@ class RetriFlowAnswerPostprocessor:
     @staticmethod
     def _contains_any_citation(answer: str) -> bool:
         return bool(re.search(r"\[\d+\]", answer))
+
+    @staticmethod
+    def _remove_tool_source_footer(answer: str) -> str:
+        lines = answer.splitlines()
+        while lines and not lines[-1].strip():
+            lines.pop()
+        if lines and re.fullmatch(r"\s*(数据来源|来源|参考来源)\s*[:：]\s*(\[[Mm]\d+\]\s*)+\s*", lines[-1]):
+            lines.pop()
+        return "\n".join(lines).strip()
+
+    @staticmethod
+    def _remove_inline_mcp_citations(answer: str) -> str:
+        return re.sub(r"\s*\[[Mm]\d+\]", "", answer).strip()
 
     def _build_conflict_notice(self, sources: list[ChatSourceItem]) -> str:
         conflict_pairs = self._detect_conflicts(sources)

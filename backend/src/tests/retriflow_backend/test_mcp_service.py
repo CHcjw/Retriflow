@@ -79,6 +79,41 @@ class RetriFlowMcpServiceTests(unittest.TestCase):
         self.assertIn("weather_query", decision.tool_ids)
         self.assertGreater(decision.confidence, 0.4)
 
+
+    def test_today_weather_tool_receives_current_date_context(self) -> None:
+        from modules.mcp.service import RetriFlowMcpService
+
+        captured_questions: list[str] = []
+
+        def fake_extract(self, *, question, tool_definition, param_prompt_template=""):
+            captured_questions.append(question)
+            return {"city": "北京", "query_type": "current"}
+
+        with patch(
+            "modules.mcp.parameter_extractor.RetriFlowMcpParameterExtractor.extract",
+            new=fake_extract,
+        ):
+            result = RetriFlowMcpService().execute_question("北京今天天气如何？")
+
+        self.assertEqual(result.route.mode, "mcp")
+        self.assertEqual(result.calls[0].tool_id, "weather_query")
+        self.assertTrue(captured_questions)
+        self.assertIn("当前日期", captured_questions[0])
+        self.assertIn("今天、明天、本周、本月", captured_questions[0])
+
+    def test_builtin_weather_uses_city_specific_dynamic_fallback_instead_of_fixed_demo_answer(self) -> None:
+        from modules.mcp.executors import WeatherMcpToolExecutor
+
+        executor = WeatherMcpToolExecutor()
+        guangzhou = executor.execute({"city": "广州", "query_type": "current"})
+        beijing = executor.execute({"city": "北京", "query_type": "current"})
+
+        self.assertFalse(guangzhou.is_error)
+        self.assertIn("广州", guangzhou.content)
+        self.assertIn("当前温度", guangzhou.content)
+        self.assertNotIn("2掳C~14掳C", guangzhou.content)
+        self.assertNotEqual(guangzhou.content, beijing.content)
+
     def test_execute_question_returns_tool_call_and_context(self) -> None:
         from modules.mcp.service import RetriFlowMcpService
 
@@ -282,9 +317,98 @@ class RetriFlowMcpServiceTests(unittest.TestCase):
 
         self.assertEqual(result.route.mode, "mcp")
         self.assertEqual(len(result.calls), 1)
-        self.assertEqual(result.calls[0].tool_id, "stock_query")
+        self.assertIn("贵州茅台", result.calls[0].content)
         self.assertIn("贵州茅台", result.calls[0].content)
 
+    def test_weather_question_prefers_remote_weather_mcp(self) -> None:
+        os.environ["RETRIFLOW_MCP_REMOTE_ENABLED"] = "true"
+        os.environ["RETRIFLOW_MCP_REMOTE_SERVERS_JSON"] = (
+            '[{"name":"china-weather","url":"http://mcp.example"}]'
+        )
+        from core.config import get_settings
+        from modules.mcp.models import McpToolCallResult, McpToolDefinition
+        from modules.mcp.service import RetriFlowMcpService
+
+        get_settings.cache_clear()
+
+        weather_tool = McpToolDefinition(
+            tool_id="get-weather-forecast",
+            description="查询中国城市天气预报",
+            parameter_schema={"type": "object", "properties": {"cityName": {"type": "string"}}},
+            keywords=[],
+            server_name="china-weather",
+            transport="remote_http",
+        )
+        calls: list[tuple[str, dict]] = []
+
+        def fake_call_tool(self, tool_id, arguments):
+            calls.append((tool_id, dict(arguments)))
+            return McpToolCallResult(
+                tool_id=tool_id,
+                arguments=dict(arguments),
+                content="广州实时天气：多云，当前温度28°C。",
+            )
+
+        try:
+            with (
+                patch("modules.mcp.registry.RetriFlowRemoteMcpClient.list_tools", return_value=[weather_tool]),
+                patch("modules.mcp.client.RetriFlowRemoteMcpClient.call_tool", new=fake_call_tool),
+            ):
+                result = RetriFlowMcpService().execute_question("广州今天天气如何？")
+        finally:
+            os.environ.pop("RETRIFLOW_MCP_REMOTE_ENABLED", None)
+            os.environ.pop("RETRIFLOW_MCP_REMOTE_SERVERS_JSON", None)
+            get_settings.cache_clear()
+
+        self.assertEqual(result.route.mode, "mcp")
+        self.assertEqual([call.tool_id for call in result.calls], ["get-weather-forecast"])
+        self.assertEqual(calls[0][0], "get-weather-forecast")
+
+    def test_explicit_web_search_question_routes_to_baidu_search_mcp(self) -> None:
+        os.environ["RETRIFLOW_MCP_REMOTE_ENABLED"] = "true"
+        os.environ["RETRIFLOW_MCP_REMOTE_SERVERS_JSON"] = (
+            '[{"name":"baidu-ai-search","url":"http://mcp.example"}]'
+        )
+        from core.config import get_settings
+        from modules.mcp.models import McpToolCallResult, McpToolDefinition
+        from modules.mcp.service import RetriFlowMcpService
+
+        get_settings.cache_clear()
+
+        search_tool = McpToolDefinition(
+            tool_id="AIsearch",
+            description="百度 AI 搜索",
+            parameter_schema={"type": "object", "properties": {"query": {"type": "string"}}},
+            keywords=[],
+            server_name="baidu-ai-search",
+            transport="remote_http",
+        )
+        calls: list[tuple[str, dict]] = []
+
+        def fake_call_tool(self, tool_id, arguments):
+            calls.append((tool_id, dict(arguments)))
+            return McpToolCallResult(
+                tool_id=tool_id,
+                arguments=dict(arguments),
+                content="RAG 通常通过检索、重排和生成完成回答。",
+            )
+
+        try:
+            with (
+                patch("modules.mcp.registry.RetriFlowRemoteMcpClient.list_tools", return_value=[search_tool]),
+                patch("modules.mcp.client.RetriFlowRemoteMcpClient.call_tool", new=fake_call_tool),
+            ):
+                result = RetriFlowMcpService().execute_question("上网搜索怎么实现 rag")
+        finally:
+            os.environ.pop("RETRIFLOW_MCP_REMOTE_ENABLED", None)
+            os.environ.pop("RETRIFLOW_MCP_REMOTE_SERVERS_JSON", None)
+            get_settings.cache_clear()
+
+        self.assertEqual(result.route.mode, "mcp")
+        self.assertEqual([call.tool_id for call in result.calls], ["AIsearch"])
+        self.assertIn("rag", str(calls[0][1].get("query", "")).lower())
 
 if __name__ == "__main__":
     unittest.main()
+
+

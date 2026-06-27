@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import concurrent.futures
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 import json
@@ -142,9 +143,21 @@ class RetriFlowLLMService:
             )
             stream = iter(self._stream_provider_answer(provider=provider, payload=payload))
             try:
-                first_chunk = next(stream)
+                first_chunk = self._next_stream_chunk_with_timeout(
+                    stream,
+                    timeout_seconds=self.settings.llm_stream_first_packet_timeout_seconds,
+                )
             except StopIteration as exc:
                 last_error = RuntimeError("llm stream completed before first content chunk")
+                continue
+            except TimeoutError as exc:
+                last_error = exc
+                self.model_health.record_failure(
+                    capability="chat",
+                    provider_name=provider.name,
+                    model=str(payload.get("model", "")),
+                    error=str(exc),
+                )
                 continue
             except Exception as exc:
                 last_error = exc
@@ -158,6 +171,18 @@ class RetriFlowLLMService:
         if last_error is not None:
             raise RuntimeError(f"all chat stream model candidates failed: {last_error}") from last_error
         raise RuntimeError("no chat provider is configured")
+
+    @staticmethod
+    def _next_stream_chunk_with_timeout(stream: Iterator[str], *, timeout_seconds: float) -> str:
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(next, stream)
+        try:
+            return future.result(timeout=max(0.001, timeout_seconds))
+        except concurrent.futures.TimeoutError as exc:
+            future.cancel()
+            raise TimeoutError(f"llm stream first packet timed out after {timeout_seconds:.3f}s") from exc
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
 
     def _stream_provider_answer(
         self,
@@ -620,6 +645,10 @@ class RetriFlowLLMService:
         return None
 
     def _resolve_model(self, capability: str, provider_name: str) -> str:
+        if provider_name == "lmstudio":
+            if capability == "embedding":
+                return self.settings.lmstudio_embedding_model
+            return self.settings.lmstudio_chat_model
         if provider_name == "ollama":
             if capability == "embedding":
                 return self.settings.ollama_embedding_model
@@ -634,6 +663,8 @@ class RetriFlowLLMService:
         return self.settings.default_chat_model
 
     def _resolve_chat_model(self, provider_name: str, *, deep_thinking: bool) -> str:
+        if provider_name == "lmstudio":
+            return self.settings.lmstudio_chat_model
         if provider_name == "ollama":
             return self.settings.ollama_chat_model
         if deep_thinking:
@@ -689,6 +720,11 @@ class RetriFlowLLMService:
                 base_url=self.settings.groq_base_url,
                 api_key=self.settings.groq_api_key,
             ),
+            "lmstudio": LLMProviderConfig(
+                name="lmstudio",
+                base_url=self.settings.lmstudio_base_url,
+                api_key="",
+            ),
             "ollama": LLMProviderConfig(
                 name="ollama",
                 base_url=self.settings.ollama_base_url,
@@ -698,18 +734,18 @@ class RetriFlowLLMService:
 
     def _provider_fallback_order(self, capability: str) -> tuple[str, ...]:
         if capability == "embedding":
-            return ("siliconflow", "bailian", "aihubmix", "deepseek", "ollama", "groq")
+            return ("siliconflow", "bailian", "aihubmix", "lmstudio", "ollama", "deepseek", "groq")
         if capability == "rerank":
-            return ("siliconflow", "bailian", "aihubmix", "deepseek")
+            return ("bailian", "siliconflow", "aihubmix", "deepseek")
         if capability in {"intent", "rewrite", "route", "memory_summary"}:
-            return ("ollama", "bailian", "siliconflow", "aihubmix", "deepseek", "groq")
-        return ("bailian", "siliconflow", "aihubmix", "deepseek", "groq", "ollama")
+            return ("bailian", "siliconflow", "aihubmix", "deepseek", "groq", "lmstudio", "ollama")
+        return ("bailian", "siliconflow", "aihubmix", "deepseek", "groq", "lmstudio", "ollama")
 
     @staticmethod
     def _provider_is_available(provider: LLMProviderConfig) -> bool:
         if not provider.base_url:
             return False
-        if provider.name in {"ollama", "disabled"}:
+        if provider.name in {"lmstudio", "ollama", "disabled"}:
             return True
         return bool(provider.api_key)
 

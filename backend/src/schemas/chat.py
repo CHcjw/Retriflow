@@ -11,6 +11,7 @@ class ChatMessageRequest(BaseModel):
     session_id: str
     message: str
     deep_thinking: bool = False
+    smart_search: bool = False
 
 
 class ChatMessageResponse(BaseModel):
@@ -34,6 +35,7 @@ class ChatMcpCallItem(BaseModel):
     arguments: dict[str, object] = Field(default_factory=dict)
     content: str
     is_error: bool = False
+    sources: list[dict[str, str]] = Field(default_factory=list)
 
 
 class ChatWorkflowMetadata(BaseModel):
@@ -51,8 +53,12 @@ class ChatWorkflowMetadata(BaseModel):
     rewrite_query_count: int = 0
     pipeline_stages: list[str] = Field(default_factory=list)
     route_mode: str = "global"
+    route_confidence: float = 0.0
+    route_top_k: int | None = None
+    route_candidates: list[dict[str, object]] = Field(default_factory=list)
     mcp_tool_count: int = 0
     deep_thinking: bool = False
+    smart_search: bool = False
 
 
 class ChatMessageWithSourcesResponse(BaseModel):

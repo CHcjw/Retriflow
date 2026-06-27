@@ -6,6 +6,7 @@ from typing import Any
 
 from core.config import get_settings
 from core.state import get_connection
+from infra.distributed_lock import get_distributed_lock_service
 from infra.llm import RetriFlowLLMService
 
 
@@ -512,6 +513,17 @@ class RetriFlowConversationMemoryService:
         if not self.settings.memory_summary_enabled or not session_id.strip():
             return
 
+        with get_distributed_lock_service().acquire(f"memory:short:{session_id}") as acquired:
+            if not acquired:
+                return
+            self._update_short_term_memory_locked(session_id, now=now)
+
+    def _update_short_term_memory_locked(
+        self,
+        session_id: str,
+        *,
+        now: str | None = None,
+    ) -> None:
         current_time = self._resolve_now(now)
         self._cleanup_expired_memory(session_id=session_id, now=current_time)
         active_messages = self._load_active_messages(session_id=session_id, now=current_time)
@@ -575,6 +587,17 @@ class RetriFlowConversationMemoryService:
         if not self.settings.memory_mid_enabled or not session_id.strip():
             return
 
+        with get_distributed_lock_service().acquire(f"memory:mid:{session_id}") as acquired:
+            if not acquired:
+                return
+            self._update_mid_term_memory_locked(session_id, now=now)
+
+    def _update_mid_term_memory_locked(
+        self,
+        session_id: str,
+        *,
+        now: str | None = None,
+    ) -> None:
         current_time = self._resolve_now(now)
         self._cleanup_expired_memory(session_id=session_id, now=current_time)
         active_messages = self._load_active_messages(session_id=session_id, now=current_time)
@@ -611,6 +634,17 @@ class RetriFlowConversationMemoryService:
         if not self.settings.memory_long_enabled or not session_id.strip():
             return
 
+        with get_distributed_lock_service().acquire(f"memory:long:{session_id}") as acquired:
+            if not acquired:
+                return
+            self._update_long_term_memory_locked(session_id, now=now)
+
+    def _update_long_term_memory_locked(
+        self,
+        session_id: str,
+        *,
+        now: str | None = None,
+    ) -> None:
         current_time = self._resolve_now(now)
         self._cleanup_expired_memory(session_id=session_id, now=current_time)
         active_messages = self._load_active_messages(session_id=session_id, now=current_time)

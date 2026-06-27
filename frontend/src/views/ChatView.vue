@@ -8,6 +8,7 @@ import { useRetriFlowChat } from "../composables/useRetriFlowChat";
 
 const draft = shallowRef("");
 const deepThinking = shallowRef(false);
+const smartSearch = shallowRef(false);
 const transcriptContainer = useTemplateRef<HTMLDivElement>("transcriptContainer");
 const {
   activeSessionId,
@@ -41,8 +42,15 @@ const submitPrompt = async (prompt?: string) => {
   if (!message.trim()) {
     return;
   }
-  await ask(message, { deepThinking: deepThinking.value });
   draft.value = "";
+  try {
+    await ask(message, { deepThinking: deepThinking.value, smartSearch: smartSearch.value });
+  } catch (error) {
+    if (!prompt) {
+      draft.value = message;
+    }
+    throw error;
+  }
 };
 
 const scrollToBottom = async () => {
@@ -115,6 +123,7 @@ onMounted(() => {
               :can-retry="canRetry"
               :loading="loading"
               v-model:deep-thinking="deepThinking"
+              v-model:smart-search="smartSearch"
               :status-text="statusText"
               @retry="retryLastQuestion"
               @stop="stopStreaming"
@@ -161,6 +170,7 @@ onMounted(() => {
             :messages="messages"
             :status-text="statusText"
             @feedback="submitFeedback"
+            @regenerate="retryLastQuestion"
           />
         </div>
       </div>
@@ -174,6 +184,7 @@ onMounted(() => {
             :can-retry="canRetry"
             :loading="loading"
             v-model:deep-thinking="deepThinking"
+            v-model:smart-search="smartSearch"
             :status-text="statusText"
             @retry="retryLastQuestion"
             @stop="stopStreaming"

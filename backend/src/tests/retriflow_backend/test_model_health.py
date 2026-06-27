@@ -3,6 +3,7 @@ import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+import asyncio
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
@@ -16,6 +17,10 @@ class RetriFlowModelHealthTests(unittest.TestCase):
             "RETRIFLOW_CHAT_PROVIDER",
             "RETRIFLOW_MODEL_HEALTH_FAILURE_THRESHOLD",
             "RETRIFLOW_MODEL_HEALTH_OPEN_COOLDOWN_SECONDS",
+            "RETRIFLOW_MODEL_HEALTH_PROBE_CAPABILITIES",
+            "RETRIFLOW_MODEL_HEALTH_PROBE_ENABLED",
+            "RETRIFLOW_MODEL_HEALTH_STARTUP_PROBE_ENABLED",
+            "RETRIFLOW_LLM_STREAM_FIRST_PACKET_TIMEOUT_SECONDS",
             "BAILIAN_API_KEY",
             "SILICONFLOW_API_KEY",
         ]
@@ -27,6 +32,24 @@ class RetriFlowModelHealthTests(unittest.TestCase):
 
         get_settings.cache_clear()
         get_model_health_service().reset(reset_config=True)
+
+    def test_model_health_scheduler_probes_configured_capabilities(self) -> None:
+        os.environ["RETRIFLOW_MODEL_HEALTH_PROBE_CAPABILITIES"] = "chat,rewrite"
+
+        from core.config import get_settings
+        from infra.llm.monitor import ModelHealthProbeScheduler
+
+        get_settings.cache_clear()
+        scheduler = ModelHealthProbeScheduler(settings=get_settings())
+
+        with patch("infra.llm.monitor.RetriFlowLLMService") as service_class:
+            asyncio.run(scheduler.probe_once())
+
+        service = service_class.return_value
+        calls = service.probe_model_health.call_args_list
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0].kwargs["capability"], "chat")
+        self.assertEqual(calls[1].kwargs["capability"], "rewrite")
 
     def test_auto_provider_resolution_skips_open_circuit_provider(self) -> None:
         os.environ["RETRIFLOW_CHAT_PROVIDER"] = "auto"
@@ -325,6 +348,58 @@ class RetriFlowModelHealthTests(unittest.TestCase):
 
         self.assertEqual(received, ["first"])
         self.assertEqual(attempted, ["bailian"])
+
+    def test_stream_answer_falls_back_when_first_packet_times_out(self) -> None:
+        os.environ["RETRIFLOW_CHAT_PROVIDER"] = "auto"
+        os.environ["RETRIFLOW_MODEL_HEALTH_FAILURE_THRESHOLD"] = "1"
+        os.environ["RETRIFLOW_LLM_STREAM_FIRST_PACKET_TIMEOUT_SECONDS"] = "0.01"
+        os.environ["BAILIAN_API_KEY"] = "bailian-key"
+        os.environ["SILICONFLOW_API_KEY"] = "siliconflow-key"
+
+        from core.config import get_settings
+        from infra.llm import RetriFlowLLMService
+
+        get_settings.cache_clear()
+        service = RetriFlowLLMService()
+        attempted: list[str] = []
+
+        def fake_stream_provider_answer(self, *, provider, payload):
+            attempted.append(provider.name)
+            if provider.name == "bailian":
+                import time
+
+                time.sleep(0.05)
+                yield "late"
+                return
+
+            self.model_health.record_first_packet(
+                capability="chat",
+                provider_name=provider.name,
+                model=payload["model"],
+                first_packet_ms=7,
+            )
+            yield "fallback"
+            self.model_health.record_success(
+                capability="chat",
+                provider_name=provider.name,
+                model=payload["model"],
+                duration_ms=18,
+            )
+
+        with patch(
+            "infra.llm.service.RetriFlowLLMService._stream_provider_answer",
+            new=fake_stream_provider_answer,
+        ):
+            chunks = list(service.stream_answer(question="hello", sources=[]))
+
+        self.assertEqual(chunks, ["fallback"])
+        self.assertEqual(attempted[:2], ["bailian", "siliconflow"])
+        bailian_snapshot = service.model_health.get_snapshot(
+            capability="chat",
+            provider_name="bailian",
+            model="qwen3-max",
+        )
+        self.assertEqual(bailian_snapshot.state, "open")
 
 
 if __name__ == "__main__":

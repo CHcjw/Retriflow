@@ -162,6 +162,10 @@ class RetriFlowVectorStoreTests(unittest.TestCase):
             "ollama",
         )
         self.assertEqual(
+            PostgresRetriFlowVectorStore._derive_embedding_provider("Qwen/Qwen3-Embedding-8B-GGUF"),
+            "lmstudio",
+        )
+        self.assertEqual(
             PostgresRetriFlowVectorStore._derive_embedding_provider("Qwen/Qwen3-Embedding-8B"),
             "siliconflow",
         )

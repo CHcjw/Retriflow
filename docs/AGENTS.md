@@ -71,12 +71,13 @@ RetriFlow 是一个对齐 ragent 的企业知识问答系统，后端使用 Pyth
    - SSE 队列启用时先发 `event: queue`，payload 使用 limiter `snapshot()`。
    - memory 和 Redis 等待取消都要清理排队项。
    - 超时拒绝要持久化用户问题和助手忙碌回复。
-   - 后续只补真实队列状态和队列位置遥测。
+   - 队列状态和请求级队列位置遥测必须来自 limiter/ticket 真实状态，不要前端估算。
 
 3. Ingestion runtime
    - 改动必须对照 ragent `PipelineDefinition`、`NodeConfig`、`IngestionContext`、`NodeLog`、`ConditionEvaluator`、`NodeOutputExtractor`。
    - 当前节点持久化契约是 `node_id`、`node_type`、`node_order`、`status`、`success`、`message`、`error_message`、`duration_ms`、`output`。
    - pipeline 执行必须保持 ragent 链式语义：校验缺失 next 和环，从第一个起点节点沿 `next_node_id` 执行，不执行断开的孤立节点。
+   - 节点执行必须通过执行器注册表按 `node_type` 分发；未知节点类型要失败并停止链路，不要伪造成功日志。
    - 数据通道上传或重建索引遇到无效 pipeline 时，应返回清晰的 400 业务错误，不要让校验异常冒成 500。
    - 不要新增 retry/count/input 字段，除非 ragent 源码或产品需求明确。
    - 新节点输出遵循 ragent 输出抽取：parser/fetcher 输出来源和文本，enhancer 输出增强文本、关键词和问题，chunker/enricher 输出 chunk count 与 chunks，indexer 输出 settings 与 chunk count。
@@ -85,8 +86,10 @@ RetriFlow 是一个对齐 ragent 的企业知识问答系统，后端使用 Pyth
    - 保持 Redis intent tree cache 的 get/save/clear/exists 语义。
    - admin intent node create/update/delete 后必须清缓存。
    - 父节点命中但没有绑定知识库时，可以 fallback 到子知识库节点，并保留完整路径。
-   - 意图树路由可保留多个阈值以上的 KB 候选，最多 3 个；不要退回只取第一名的实现。
-   - workflow 路由要覆盖 rewrite 后的全部子 query，并合并 KB 范围；不要只使用第一条 rewritten query。
+   - 意图树路由可保留多个阈值以上的 KB 或 MCP 候选，最多 3 个；不要退回只取第一名的实现。
+   - MCP 类型节点必须通过 `mcp_tool_id` 路由到真实 MCP 工具执行，不能伪造成知识库或 OpenAI function calling。
+   - MCP 类型节点的 `param_prompt_template` 必须传给参数提取器，语义对齐 ragent `IntentNode.paramPromptTemplate`。
+   - workflow 路由要覆盖 rewrite 后的全部子 query，并合并 KB/MCP 范围；不要只使用第一条 rewritten query。
    - deeper resolver 需要基于 ragent 的置信度、候选和歧义逻辑实现。
 
 5. 检索插件体系
@@ -110,7 +113,7 @@ RetriFlow 是一个对齐 ragent 的企业知识问答系统，后端使用 Pyth
    - 保持 healthy/open/half_open 三态和半开并发保护。
    - 指定 provider 熔断时仍应按 fallback order 降级。
    - 非流式 LLM 调用失败时应按 ragent `ModelRoutingExecutor` 语义继续尝试下一个健康候选，不要只在调用前选择一次 provider。
-   - 后续补后台面板、定时探测和启动预热前，先核对 ragent 对应实现。
+   - 定时探测和启动预热通过 `infra/llm/monitor.py` 挂到 FastAPI lifespan，默认关闭，开启时必须避免阻塞主服务启动。
 
 8. 后台 UI
    - 后台侧边栏必须保持响应式左侧布局，缩放不能跳到顶部。

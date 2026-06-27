@@ -19,6 +19,13 @@ class RetriFlowAnswerPostprocessorTests(unittest.TestCase):
         self.assertIn("**迁移流程**", finalized)
         self.assertIn("- **迁移流程**", finalized)
 
+    def test_finalize_removes_inline_mcp_citations_when_no_kb_sources(self) -> None:
+        answer = "今天广州天气晴，当前温度约20°C。[M1]"
+
+        finalized = RetriFlowAnswerPostprocessor().finalize(answer, [])
+
+        self.assertEqual(finalized, "今天广州天气晴，当前温度约20°C。")
+
 
 if __name__ == "__main__":
     unittest.main()

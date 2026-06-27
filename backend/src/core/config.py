@@ -21,13 +21,16 @@ class Settings(BaseModel):
     pgvector_table: str = "retriflow_chunk_vectors"
     default_chat_model: str = "qwen3-max"
     deep_thinking_model: str = "qwen3-max"
-    default_embedding_model: str = "qwen-emb-8b"
-    default_rerank_model: str = "Qwen/Qwen3-Reranker-8B"
+    default_embedding_model: str = "Qwen/Qwen3-Embedding-8B"
+    default_rerank_model: str = "qwen3-rerank"
     retrieval_bm25_top_k: int = 80
     retrieval_vector_top_k: int = 80
     retrieval_rrf_top_k: int = 50
     retrieval_rerank_top_k: int = 10
     retrieval_final_top_k: int = 5
+    retrieval_cross_request_cache_enabled: bool = False
+    retrieval_cross_request_cache_ttl_seconds: int = 60
+    retrieval_cross_request_cache_max_entries: int = 256
     default_route_model: str = "qwen3-max"
     sample_knowledge_dir: str = "backend/sample_data/knowledge"
     storage_backend: str = "local"
@@ -40,18 +43,23 @@ class Settings(BaseModel):
     langsmith_project: str = "retriflow"
     llm_provider: str = "auto"
     chat_provider: str = "bailian"
-    rewrite_provider: str = "ollama"
-    route_provider: str = "ollama"
-    memory_summary_provider: str = "ollama"
-    intent_provider: str = "ollama"
+    rewrite_provider: str = "bailian"
+    route_provider: str = "bailian"
+    memory_summary_provider: str = "bailian"
+    intent_provider: str = "bailian"
     embedding_provider: str = "siliconflow"
-    rerank_provider: str = "siliconflow"
+    rerank_provider: str = "bailian"
     intent_confidence_threshold: float = 0.6
     llm_api_key: str = ""
     llm_base_url: str = ""
     llm_request_timeout_seconds: int = 30
+    llm_stream_first_packet_timeout_seconds: float = 60.0
     model_health_failure_threshold: int = 3
     model_health_open_cooldown_seconds: int = 60
+    model_health_probe_enabled: bool = False
+    model_health_startup_probe_enabled: bool = False
+    model_health_probe_interval_seconds: int = 300
+    model_health_probe_capabilities: str = "chat,rewrite,route,intent,embedding,rerank"
     bailian_api_key: str = ""
     dashscope_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     aihubmix_api_key: str = ""
@@ -62,6 +70,9 @@ class Settings(BaseModel):
     deepseek_base_url: str = "https://api.deepseek.com"
     groq_api_key: str = ""
     groq_base_url: str = "https://api.groq.com/openai/v1"
+    lmstudio_base_url: str = "http://127.0.0.1:1234/v1"
+    lmstudio_chat_model: str = "unsloth/Qwen3.5-4B-GGUF"
+    lmstudio_embedding_model: str = "Qwen/Qwen3-Embedding-8B-GGUF"
     ollama_base_url: str = "http://127.0.0.1:11434/v1"
     ollama_chat_model: str = "qwen3:8b"
     ollama_embedding_model: str = "qwen3-embedding:8b"
@@ -89,6 +100,10 @@ class Settings(BaseModel):
     stream_task_cancel_redis_url: str = "redis://127.0.0.1:6379/0"
     stream_task_cancel_key_prefix: str = "retriflow:stream:cancel"
     stream_task_cancel_ttl_seconds: int = 1800
+    distributed_lock_backend: str = "memory"
+    distributed_lock_redis_url: str = "redis://127.0.0.1:6379/0"
+    distributed_lock_key_prefix: str = "retriflow:lock"
+    distributed_lock_ttl_seconds: int = 300
     route_use_llm: bool = False
     route_confidence_threshold: float = 0.45
     intent_tree_cache_enabled: bool = True
@@ -166,13 +181,16 @@ def get_settings() -> Settings:
         pgvector_table=resolve("RETRIFLOW_PGVECTOR_TABLE", "retriflow_chunk_vectors"),
         default_chat_model=resolve("RETRIFLOW_DEFAULT_CHAT_MODEL", "qwen3-max"),
         deep_thinking_model=resolve("RETRIFLOW_DEEP_THINKING_MODEL", "qwen3-max"),
-        default_embedding_model=resolve("RETRIFLOW_DEFAULT_EMBEDDING_MODEL", "qwen-emb-8b"),
-        default_rerank_model=resolve("RETRIFLOW_DEFAULT_RERANK_MODEL", "Qwen/Qwen3-Reranker-8B"),
+        default_embedding_model=resolve("RETRIFLOW_DEFAULT_EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-8B"),
+        default_rerank_model=resolve("RETRIFLOW_DEFAULT_RERANK_MODEL", "qwen3-rerank"),
         retrieval_bm25_top_k=int(resolve("RETRIFLOW_RETRIEVAL_BM25_TOP_K", "80")),
         retrieval_vector_top_k=int(resolve("RETRIFLOW_RETRIEVAL_VECTOR_TOP_K", "80")),
         retrieval_rrf_top_k=int(resolve("RETRIFLOW_RETRIEVAL_RRF_TOP_K", "50")),
         retrieval_rerank_top_k=int(resolve("RETRIFLOW_RETRIEVAL_RERANK_TOP_K", "10")),
         retrieval_final_top_k=int(resolve("RETRIFLOW_RETRIEVAL_FINAL_TOP_K", "5")),
+        retrieval_cross_request_cache_enabled=resolve("RETRIFLOW_RETRIEVAL_CROSS_REQUEST_CACHE_ENABLED", "false").lower() == "true",
+        retrieval_cross_request_cache_ttl_seconds=int(resolve("RETRIFLOW_RETRIEVAL_CROSS_REQUEST_CACHE_TTL_SECONDS", "60")),
+        retrieval_cross_request_cache_max_entries=int(resolve("RETRIFLOW_RETRIEVAL_CROSS_REQUEST_CACHE_MAX_ENTRIES", "256")),
         default_route_model=resolve("RETRIFLOW_DEFAULT_ROUTE_MODEL", "qwen3-max"),
         sample_knowledge_dir=resolve("RETRIFLOW_SAMPLE_KNOWLEDGE_DIR", "backend/sample_data/knowledge"),
         storage_backend=resolve("RETRIFLOW_STORAGE_BACKEND", "local"),
@@ -185,18 +203,29 @@ def get_settings() -> Settings:
         langsmith_project=resolve("LANGSMITH_PROJECT", "retriflow"),
         llm_provider=resolve("RETRIFLOW_LLM_PROVIDER", "auto"),
         chat_provider=resolve("RETRIFLOW_CHAT_PROVIDER", "bailian"),
-        rewrite_provider=resolve("RETRIFLOW_REWRITE_PROVIDER", "ollama"),
-        route_provider=resolve("RETRIFLOW_ROUTE_PROVIDER", "ollama"),
-        memory_summary_provider=resolve("RETRIFLOW_MEMORY_SUMMARY_PROVIDER", "ollama"),
-        intent_provider=resolve("RETRIFLOW_INTENT_PROVIDER", "ollama"),
+        rewrite_provider=resolve("RETRIFLOW_REWRITE_PROVIDER", "bailian"),
+        route_provider=resolve("RETRIFLOW_ROUTE_PROVIDER", "bailian"),
+        memory_summary_provider=resolve("RETRIFLOW_MEMORY_SUMMARY_PROVIDER", "bailian"),
+        intent_provider=resolve("RETRIFLOW_INTENT_PROVIDER", "bailian"),
         embedding_provider=resolve("RETRIFLOW_EMBEDDING_PROVIDER", "siliconflow"),
-        rerank_provider=resolve("RETRIFLOW_RERANK_PROVIDER", "siliconflow"),
+        rerank_provider=resolve("RETRIFLOW_RERANK_PROVIDER", "bailian"),
         intent_confidence_threshold=float(resolve("RETRIFLOW_INTENT_CONFIDENCE_THRESHOLD", "0.6")),
         llm_api_key=resolve("RETRIFLOW_LLM_API_KEY", ""),
         llm_base_url=resolve("RETRIFLOW_LLM_BASE_URL", ""),
         llm_request_timeout_seconds=int(resolve("RETRIFLOW_LLM_REQUEST_TIMEOUT_SECONDS", "30")),
+        llm_stream_first_packet_timeout_seconds=float(
+            resolve("RETRIFLOW_LLM_STREAM_FIRST_PACKET_TIMEOUT_SECONDS", "60")
+        ),
         model_health_failure_threshold=int(resolve("RETRIFLOW_MODEL_HEALTH_FAILURE_THRESHOLD", "3")),
         model_health_open_cooldown_seconds=int(resolve("RETRIFLOW_MODEL_HEALTH_OPEN_COOLDOWN_SECONDS", "60")),
+        model_health_probe_enabled=resolve("RETRIFLOW_MODEL_HEALTH_PROBE_ENABLED", "false").lower() == "true",
+        model_health_startup_probe_enabled=resolve("RETRIFLOW_MODEL_HEALTH_STARTUP_PROBE_ENABLED", "false").lower()
+        == "true",
+        model_health_probe_interval_seconds=int(resolve("RETRIFLOW_MODEL_HEALTH_PROBE_INTERVAL_SECONDS", "300")),
+        model_health_probe_capabilities=resolve(
+            "RETRIFLOW_MODEL_HEALTH_PROBE_CAPABILITIES",
+            "chat,rewrite,route,intent,embedding,rerank",
+        ),
         bailian_api_key=resolve("BAILIAN_API_KEY", ""),
         dashscope_base_url=resolve("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
         aihubmix_api_key=resolve("AIHUBMIX_API_KEY", ""),
@@ -207,6 +236,9 @@ def get_settings() -> Settings:
         deepseek_base_url=resolve("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
         groq_api_key=resolve("GROQ_API_KEY", ""),
         groq_base_url=resolve("GROQ_BASE_URL", "https://api.groq.com/openai/v1"),
+        lmstudio_base_url=resolve("RETRIFLOW_LMSTUDIO_BASE_URL", "http://127.0.0.1:1234/v1"),
+        lmstudio_chat_model=resolve("RETRIFLOW_LMSTUDIO_CHAT_MODEL", "unsloth/Qwen3.5-4B-GGUF"),
+        lmstudio_embedding_model=resolve("RETRIFLOW_LMSTUDIO_EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-8B-GGUF"),
         ollama_base_url=resolve("RETRIFLOW_OLLAMA_BASE_URL", "http://127.0.0.1:11434/v1"),
         ollama_chat_model=resolve("RETRIFLOW_OLLAMA_CHAT_MODEL", "qwen3:8b"),
         ollama_embedding_model=resolve("RETRIFLOW_OLLAMA_EMBEDDING_MODEL", "qwen3-embedding:8b"),
@@ -234,6 +266,10 @@ def get_settings() -> Settings:
         stream_task_cancel_redis_url=resolve("RETRIFLOW_STREAM_TASK_CANCEL_REDIS_URL", "redis://127.0.0.1:6379/0"),
         stream_task_cancel_key_prefix=resolve("RETRIFLOW_STREAM_TASK_CANCEL_KEY_PREFIX", "retriflow:stream:cancel"),
         stream_task_cancel_ttl_seconds=int(resolve("RETRIFLOW_STREAM_TASK_CANCEL_TTL_SECONDS", "1800")),
+        distributed_lock_backend=resolve("RETRIFLOW_DISTRIBUTED_LOCK_BACKEND", "memory"),
+        distributed_lock_redis_url=resolve("RETRIFLOW_DISTRIBUTED_LOCK_REDIS_URL", "redis://127.0.0.1:6379/0"),
+        distributed_lock_key_prefix=resolve("RETRIFLOW_DISTRIBUTED_LOCK_KEY_PREFIX", "retriflow:lock"),
+        distributed_lock_ttl_seconds=int(resolve("RETRIFLOW_DISTRIBUTED_LOCK_TTL_SECONDS", "300")),
         route_use_llm=resolve("RETRIFLOW_ROUTE_USE_LLM", "false").lower() == "true",
         route_confidence_threshold=float(resolve("RETRIFLOW_ROUTE_CONFIDENCE_THRESHOLD", "0.45")),
         intent_tree_cache_enabled=resolve("RETRIFLOW_INTENT_TREE_CACHE_ENABLED", "true").lower() == "true",

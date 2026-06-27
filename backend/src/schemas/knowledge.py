@@ -10,7 +10,7 @@ class KnowledgeBaseItem(BaseModel):
     name: str
     product: str
     document_count: int
-    embedding_model: str = "qwen-emb-8b"
+    embedding_model: str = "Qwen/Qwen3-Embedding-8B"
     collection_name: str = ""
     owner: str = "admin"
     created_at: str = ""
