@@ -137,9 +137,22 @@ Windows PowerShell：
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -U pip
-.\.venv\Scripts\python.exe -m pip install -e .\backend
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m pip install -e .\backend --no-deps
 $env:PYTHONPATH = "backend/src"
 .\.venv\Scripts\python.exe -m uvicorn main:create_app --factory --reload --host 127.0.0.1 --port 8000
+```
+
+Linux / macOS：
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -U pip
+python -m pip install -r requirements.txt
+python -m pip install -e ./backend --no-deps
+export PYTHONPATH=backend/src
+python -m uvicorn main:create_app --factory --reload --host 127.0.0.1 --port 8000
 ```
 
 后端健康检查：
