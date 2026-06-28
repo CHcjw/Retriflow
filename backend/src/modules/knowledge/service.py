@@ -60,7 +60,9 @@ class RetriFlowKnowledgeService:
                     kb.id,
                     kb.name,
                     kb.product,
-                    kb.document_count,
+                    count(distinct kd.id) as document_count,
+                    count(distinct case when kc.id is not null then kd.id end) as indexed_document_count,
+                    count(kc.id) as chunk_count,
                     kb.embedding_model,
                     kb.collection_name,
                     kb.owner,
@@ -70,7 +72,8 @@ class RetriFlowKnowledgeService:
                     max(coalesce(kd.vector_indexed_at, kd.created_at)) as updated_at
                 from knowledge_bases kb
                 left join knowledge_documents kd on kd.knowledge_base_id = kb.id
-                group by kb.id, kb.name, kb.product, kb.document_count, kb.embedding_model, kb.collection_name, kb.owner, kb.created_at, kb.updated_at
+                left join knowledge_chunks kc on kc.knowledge_base_id = kb.id and kc.document_id = kd.id
+                group by kb.id, kb.name, kb.product, kb.embedding_model, kb.collection_name, kb.owner, kb.created_at, kb.updated_at
                 order by kb.id
                 """
             ).fetchall()
@@ -118,6 +121,8 @@ class RetriFlowKnowledgeService:
             name=request.name.strip(),
             product="RetriFlow",
             document_count=0,
+            indexed_document_count=0,
+            chunk_count=0,
             embedding_model=request.embedding_model.strip() or "Qwen/Qwen3-Embedding-8B",
             collection_name=collection_name,
         )
@@ -2030,7 +2035,9 @@ class RetriFlowKnowledgeService:
             id=row["id"],
             name=row["name"],
             product=row["product"],
-            document_count=row["document_count"],
+            document_count=int(row["document_count"] or 0),
+            indexed_document_count=int(row.get("indexed_document_count", 0) or 0),
+            chunk_count=int(row.get("chunk_count", 0) or 0),
             embedding_model=row.get("embedding_model") or "Qwen/Qwen3-Embedding-8B",
             collection_name=row.get("collection_name") or str(row["id"]).replace("-", ""),
             owner=row.get("owner") or "admin",

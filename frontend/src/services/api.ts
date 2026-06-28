@@ -51,6 +51,8 @@ export interface KnowledgeBaseItem {
   name: string;
   product: string;
   document_count: number;
+  indexed_document_count: number;
+  chunk_count: number;
   embedding_model: string;
   collection_name: string;
   owner: string;

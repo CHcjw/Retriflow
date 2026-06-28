@@ -111,7 +111,7 @@ class RetriFlowConversationMemoryServiceTests(unittest.TestCase):
                 """,
                 (
                     session_id,
-                    "用户之前主要在讨论迁移方案和部署限制。",
+                    "用户之前主要在讨论工作流方案和部署限制。",
                     2,
                     "2026-06-09 09:00:00",
                 ),
@@ -128,7 +128,7 @@ class RetriFlowConversationMemoryServiceTests(unittest.TestCase):
         memory = RetriFlowConversationMemoryService().load_short_term_memory(session_id)
 
         self.assertIsNotNone(memory.summary)
-        self.assertIn("迁移方案", memory.summary.content)
+        self.assertIn("工作流方案", memory.summary.content)
         self.assertEqual(len(memory.recent_messages), 4)
         self.assertEqual(memory.recent_messages[0].content, "第二轮用户问题")
         self.assertEqual(memory.recent_messages[-1].content, "第三轮助手回答")
@@ -169,7 +169,7 @@ class RetriFlowConversationMemoryServiceTests(unittest.TestCase):
 
         with patch(
             "modules.memory.service.RetriFlowConversationMemorySummaryGenerator.generate",
-            return_value="用户咨询了前期迁移问题、部署限制和当前待确认事项。",
+            return_value="用户咨询了前期工作流问题、部署限制和当前待确认事项。",
         ) as generate:
             RetriFlowConversationMemoryService().update_short_term_memory(session_id)
 
@@ -185,7 +185,7 @@ class RetriFlowConversationMemoryServiceTests(unittest.TestCase):
             ).fetchall()
 
         self.assertTrue(rows)
-        self.assertIn("迁移问题", rows[0]["content"])
+        self.assertIn("工作流问题", rows[0]["content"])
         self.assertGreater(int(rows[0]["last_message_id"]), 0)
         generate.assert_called_once()
 

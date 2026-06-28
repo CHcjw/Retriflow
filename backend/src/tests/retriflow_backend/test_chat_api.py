@@ -31,6 +31,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
         os.environ["RETRIFLOW_SEED_DEMO_CONTENT"] = "true"
         os.environ["RETRIFLOW_STORAGE_BACKEND"] = "local"
         os.environ["RETRIFLOW_STORAGE_LOCAL_DIR"] = str(Path(self.temp_dir.name) / "uploads")
+        os.environ["LANGSMITH_TRACING"] = "false"
 
         from core.config import get_settings
 
@@ -58,6 +59,8 @@ class RetriFlowChatApiTests(unittest.TestCase):
         os.environ.pop("RETRIFLOW_WORKFLOW_ADAPTER", None)
         os.environ.pop("RETRIFLOW_MEMORY_MID_ENABLED", None)
         os.environ.pop("RETRIFLOW_MEMORY_MID_MAX_ITEMS", None)
+        os.environ.pop("LANGSMITH_TRACING", None)
+        os.environ.pop("LANGSMITH_PROJECT", None)
         from core.config import get_settings
 
         get_settings.cache_clear()
@@ -101,7 +104,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
                     insert into sessions (id, title, message_count, owner_id)
                     values (?, ?, ?, ?)
                     """,
-                    ("session-demo-1", "RetriFlow migration planning", 0, "user-admin"),
+                    ("session-demo-1", "RetriFlow enterprise RAG planning", 0, "user-admin"),
                 )
                 connection.commit()
 
@@ -186,6 +189,81 @@ class RetriFlowChatApiTests(unittest.TestCase):
         self.assertTrue(payload["sources"])
         self.assertIn("LLM workflow note", {source["document_title"] for source in payload["sources"]})
         generate_answer.assert_called_once()
+
+    def test_langgraph_adapter_compiles_real_state_graphs(self) -> None:
+        from modules.rag.workflow_adapter import LangGraphWorkflowAdapter
+
+        adapter = LangGraphWorkflowAdapter()
+
+        self.assertTrue(callable(getattr(adapter.graph, "invoke", None)))
+        self.assertTrue(callable(getattr(adapter.stream_graph, "invoke", None)))
+        graph_nodes = set(adapter.graph.get_graph().nodes)
+        stream_nodes = set(adapter.stream_graph.get_graph().nodes)
+        self.assertIn("memory.load_prompt_messages", graph_nodes)
+        self.assertIn("rag.prepare_context", graph_nodes)
+        self.assertIn("generation.answer", graph_nodes)
+        self.assertIn("memory.load_prompt_messages", stream_nodes)
+        self.assertIn("rag.prepare_context", stream_nodes)
+        self.assertNotIn("generation.answer", stream_nodes)
+
+    def test_langgraph_invocation_uses_langsmith_context_boundary(self) -> None:
+        from core.config import get_settings
+        from modules.rag.workflow_adapter import LangGraphWorkflowAdapter, PreparedWorkflowContext
+
+        get_settings.cache_clear()
+        adapter = LangGraphWorkflowAdapter()
+        with (
+            patch(
+                "modules.rag.workflow_adapter.LangGraphWorkflowAdapter._prepare_context",
+                return_value=PreparedWorkflowContext(
+                    rewritten_queries=["hello"],
+                    pipeline_stages=["memory", "rewrite", "intent", "generation"],
+                    route_mode="chitchat",
+                    retrieval_channels=[],
+                    retrieval_stage_counts={},
+                    sources=[],
+                    mcp_calls=[],
+                    assistant_message_override="你好，我在。",
+                ),
+            ),
+            patch("modules.rag.workflow_adapter.retriflow_langsmith_context") as langsmith_context,
+        ):
+            langsmith_context.return_value.__enter__.return_value = None
+            langsmith_context.return_value.__exit__.return_value = None
+            result = adapter.run("你好", session_id="session-demo-1")
+
+        self.assertEqual(result.assistant_message, "你好，我在。")
+        langsmith_context.assert_called_once()
+        kwargs = langsmith_context.call_args.kwargs
+        self.assertEqual(kwargs["run_name"], "retriflow.chat.run")
+        self.assertEqual(kwargs["metadata"]["session_id"], "session-demo-1")
+
+    def test_langsmith_context_enables_sdk_tracing_when_configured(self) -> None:
+        os.environ["LANGSMITH_TRACING"] = "true"
+        os.environ["LANGSMITH_PROJECT"] = "retriflow-test"
+        from core.config import get_settings
+        from modules.rag import langsmith as langsmith_module
+        from modules.rag.langsmith import retriflow_langsmith_context
+
+        if langsmith_module.ls is None:
+            self.skipTest("langsmith is not installed")
+
+        get_settings.cache_clear()
+        with patch("modules.rag.langsmith.ls.tracing_context") as tracing_context:
+            tracing_context.return_value.__enter__.return_value = None
+            tracing_context.return_value.__exit__.return_value = None
+            with retriflow_langsmith_context(
+                run_name="retriflow.chat.run",
+                metadata={"session_id": "session-demo-1"},
+            ):
+                pass
+
+        tracing_context.assert_called_once()
+        kwargs = tracing_context.call_args.kwargs
+        self.assertTrue(kwargs["enabled"])
+        self.assertEqual(kwargs["project_name"], "retriflow-test")
+        self.assertEqual(kwargs["metadata"]["run_name"], "retriflow.chat.run")
+        self.assertEqual(kwargs["metadata"]["session_id"], "session-demo-1")
 
     def test_llm_generation_uses_three_part_prompt_and_low_temperature(self) -> None:
         self._rebuild_app_with_langgraph()
@@ -522,9 +600,9 @@ class RetriFlowChatApiTests(unittest.TestCase):
         self.client.post(
             f"/api/v1/knowledge-bases/{retriflow_kb_id}/documents",
             json={
-                "title": "RetriFlow migration",
+                "title": "RetriFlow workflow",
                 "source_type": "manual",
-                "content": "RetriFlow migration uses LangGraph and retrieval workflows.",
+                "content": "RetriFlow workflow uses LangGraph and retrieval workflows.",
             },
         )
 
@@ -546,7 +624,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
         with (
             patch(
                 "modules.rag.workflow_adapter.RetriFlowQueryRewriteService.rewrite",
-                return_value=["claim reimbursement", "retriflow migration"],
+                return_value=["claim reimbursement", "retriflow workflow"],
             ),
             patch(
                 "modules.rag.workflow_adapter.RetriFlowKnowledgeRouteService.route_question",
@@ -555,13 +633,13 @@ class RetriFlowChatApiTests(unittest.TestCase):
         ):
             response = self.client.post(
                 "/api/v1/chat/messages",
-                json={"session_id": "session-demo-1", "message": "summarize claims and retriflow migration"},
+                json={"session_id": "session-demo-1", "message": "summarize claims and retriflow workflow"},
             )
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         route_questions = [call.args[0] for call in route_mock.call_args_list]
-        self.assertEqual(route_questions, ["claim reimbursement", "retriflow migration"])
+        self.assertEqual(route_questions, ["claim reimbursement", "retriflow workflow"])
         source_knowledge_bases = {item["knowledge_base_id"] for item in payload["sources"]}
         self.assertIn(insurance_kb_id, source_knowledge_bases)
         self.assertIn(retriflow_kb_id, source_knowledge_bases)
@@ -588,9 +666,9 @@ class RetriFlowChatApiTests(unittest.TestCase):
         self.client.post(
             "/api/v1/knowledge-bases/kb-demo-1/documents",
             json={
-                "title": "Weather migration note",
+                "title": "Weather workflow note",
                 "source_type": "manual",
-                "content": "RetriFlow migration documentation mentions LangGraph deployment in Beijing.",
+                "content": "RetriFlow workflow documentation mentions LangGraph deployment in Beijing.",
             },
         )
 
@@ -601,7 +679,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
                     "mode": "knowledge_base",
                     "knowledge_base_ids": ["kb-demo-1"],
                     "confidence": 0.95,
-                    "reason": "matched migration note",
+                    "reason": "matched workflow note",
                 },
             ),
             patch(
@@ -609,7 +687,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
                 return_value={
                     "intent": "tool_call",
                     "confidence": 0.95,
-                    "reason": "contains both weather and migration intents",
+                    "reason": "contains both weather and workflow intents",
                     "source": "rule",
                     "clarification_question": "",
                 },
@@ -617,7 +695,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
         ):
             response = self.client.post(
                 "/api/v1/chat/messages",
-                json={"session_id": "session-demo-1", "message": "Summarize Beijing weather and RetriFlow migration together"},
+                json={"session_id": "session-demo-1", "message": "Summarize Beijing weather and RetriFlow workflow together"},
             )
 
         self.assertEqual(response.status_code, 200)
@@ -656,7 +734,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
                 """,
                 (
                     "session-demo-1",
-                    "The user previously discussed migration plans, deployment limits, and pending confirmations.",
+                    "The user previously discussed workflow plans, deployment limits, and pending confirmations.",
                     2,
                     "2026-06-09 09:00:00",
                     "2026-07-09 09:00:00",
@@ -967,7 +1045,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
                 KnowledgeRouteCandidate(
                     knowledge_base_id="kb-demo-2",
                     name="RetriFlow KB",
-                    path="RetriFlow / Migration",
+                    path="RetriFlow / Workflow",
                     score=0.84,
                     top_k=8,
                 ),
@@ -1055,7 +1133,7 @@ class RetriFlowChatApiTests(unittest.TestCase):
                 KnowledgeRouteCandidate(
                     knowledge_base_id="kb-demo-2",
                     name="RetriFlow KB",
-                    path="RetriFlow / Migration",
+                    path="RetriFlow / Workflow",
                     score=0.84,
                     top_k=8,
                 ),

@@ -10,6 +10,8 @@ RetriFlow 是一个从零构建的企业级 Agentic RAG 系统。项目使用 Py
 - 检索增强：支持 BM25、向量召回、RRF、rerank、final topK 和来源引用。
 - MCP 工具：支持内置工具、远程 MCP Server、天气查询、联网搜索和节点级 trace。
 - 多轮记忆：支持短期摘要、中期记忆、长期记忆和后台诊断。
+- LangGraph 编排：聊天主链路通过真实 `StateGraph` 执行，非流式和流式准备阶段分别编译 graph。
+- LangSmith 观测：可选开启外部 tracing，默认不影响本地运行。
 - 后台管理：Dashboard、用户、知识库、文档、分块、流水线、意图树、关键词、示例问题、模型健康、Trace 和系统设置。
 - 可观测链路：完整记录 RAG 每个阶段的耗时、输入摘要、输出摘要、错误和 metadata。
 
@@ -119,9 +121,14 @@ RETRIFLOW_STORAGE_BACKEND=rustfs
 RETRIFLOW_S3_ENDPOINT=http://127.0.0.1:9000
 RETRIFLOW_S3_ACCESS_KEY_ID=rustfsadmin
 RETRIFLOW_S3_SECRET_ACCESS_KEY=rustfsadmin
+
+LANGSMITH_TRACING=false
+LANGSMITH_PROJECT=retriflow
 ```
 
 模型配置取决于你的本地或云端服务。项目支持 OpenAI-compatible provider，默认配置集中在 `.env` 与 `backend/src/core/config.py`。
+
+需要接入 LangSmith 时，在 `.env` 中设置 `LANGSMITH_TRACING=true`、`LANGSMITH_PROJECT=<你的项目名>` 和 `LANGSMITH_API_KEY=<你的 key>`。不开启时，RetriFlow 仍使用后台“链路追踪”记录完整 RAG 节点耗时。
 
 ## 5. 安装并启动后端
 
@@ -219,7 +226,7 @@ overlap：0
 预期链路：
 
 1. 前端创建或选中会话。
-2. 后端执行问题重写、意图识别和知识库路由。
+2. 后端进入 LangGraph 工作流，先加载会话记忆，再执行问题重写、意图识别和知识库路由。
 3. 检索 `insurance` 知识库。
 4. 执行 BM25、向量召回、RRF、rerank 和 final topK。
 5. LLM 基于检索上下文生成 Markdown 回答。

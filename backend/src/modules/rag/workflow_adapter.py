@@ -4,7 +4,10 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 import re
+from typing import Any, TypedDict
 
+from langgraph.graph import END, START, StateGraph
+from core.config import get_settings
 from infra.llm import RetriFlowLLMService
 from modules.knowledge import RetriFlowKnowledgeRouteService
 from modules.knowledge.routing import KnowledgeRouteCandidate, KnowledgeRouteDecision
@@ -12,6 +15,7 @@ from modules.mcp import RetriFlowMcpService
 from modules.memory import RetriFlowConversationMemoryService
 from modules.rag.guidance import RetriFlowIntentGuidanceService
 from modules.rag.intent import IntentDecision
+from modules.rag.langsmith import retriflow_langsmith_context
 from modules.rag.intent import RetriFlowIntentClassifier
 from modules.rag.postprocess import RetriFlowAnswerPostprocessor
 from modules.rag.retrieval.engine import RetriFlowRetrievalEngine
@@ -81,6 +85,16 @@ class PreparedWorkflowContext:
     extra_context: str = ""
     mcp_calls: list[ChatMcpCallItem] | None = None
     assistant_message_override: str = ""
+
+
+class RetriFlowWorkflowGraphState(TypedDict, total=False):
+    question: str
+    session_id: str
+    deep_thinking: bool
+    smart_search: bool
+    memory_messages: list[dict[str, str]]
+    context: PreparedWorkflowContext
+    assistant_message: str
 
 
 class TracedAnswerDeltaIterator:
@@ -188,6 +202,8 @@ class LangGraphWorkflowAdapter(WorkflowAdapter):
         self.llm_service = RetriFlowLLMService()
         self.answer_postprocessor = RetriFlowAnswerPostprocessor()
         self.trace_service = RetriFlowTraceService()
+        self.graph = self._build_graph(include_generation=True)
+        self.stream_graph = self._build_graph(include_generation=False)
 
     def run(
         self,
@@ -197,27 +213,18 @@ class LangGraphWorkflowAdapter(WorkflowAdapter):
         deep_thinking: bool = False,
         smart_search: bool = False,
     ) -> WorkflowAdapterResult:
-        with self.trace_service.span(
-            name="memory.load_prompt_messages",
-            node_type="MEMORY",
-            input_summary=f"session={session_id}",
-        ) as span:
-            memory_messages = self.memory_service.load_prompt_messages(
-                session_id=session_id,
-                query=question,
-            )
-            span.finish_success(output_summary=f"messages={len(memory_messages)}")
-        context = self._prepare_context(question, memory_messages=memory_messages, smart_search=smart_search)
-        assistant_message = self._generate_answer(
-            question=question,
-            sources=context.sources or [],
-            extra_context=context.extra_context,
-            mcp_calls=context.mcp_calls or [],
-            memory_messages=memory_messages,
-            assistant_message_override=context.assistant_message_override,
-            intent=context.intent,
-            deep_thinking=deep_thinking,
+        graph_state = self._invoke_graph(
+            self.graph,
+            {
+                "question": question,
+                "session_id": session_id,
+                "deep_thinking": deep_thinking,
+                "smart_search": smart_search,
+            },
+            run_name="retriflow.chat.run",
         )
+        context = graph_state["context"]
+        assistant_message = graph_state.get("assistant_message", "")
         return WorkflowAdapterResult(
             adapter=self.name,
             intent=context.intent,
@@ -246,17 +253,18 @@ class LangGraphWorkflowAdapter(WorkflowAdapter):
         deep_thinking: bool = False,
         smart_search: bool = False,
     ) -> WorkflowStreamAdapterResult:
-        with self.trace_service.span(
-            name="memory.load_prompt_messages",
-            node_type="MEMORY",
-            input_summary=f"session={session_id}",
-        ) as span:
-            memory_messages = self.memory_service.load_prompt_messages(
-                session_id=session_id,
-                query=question,
-            )
-            span.finish_success(output_summary=f"messages={len(memory_messages)}")
-        context = self._prepare_context(question, memory_messages=memory_messages, smart_search=smart_search)
+        graph_state = self._invoke_graph(
+            self.stream_graph,
+            {
+                "question": question,
+                "session_id": session_id,
+                "deep_thinking": deep_thinking,
+                "smart_search": smart_search,
+            },
+            run_name="retriflow.chat.stream.prepare",
+        )
+        memory_messages = graph_state.get("memory_messages", [])
+        context = graph_state["context"]
         return WorkflowStreamAdapterResult(
             adapter=self.name,
             intent=context.intent,
@@ -285,6 +293,80 @@ class LangGraphWorkflowAdapter(WorkflowAdapter):
             route_candidates=context.route_candidates or [],
             mcp_calls=context.mcp_calls or [],
         )
+
+    def _build_graph(self, *, include_generation: bool):
+        graph = StateGraph(RetriFlowWorkflowGraphState)
+        graph.add_node("memory.load_prompt_messages", self._graph_load_memory)
+        graph.add_node("rag.prepare_context", self._graph_prepare_context)
+        graph.add_edge(START, "memory.load_prompt_messages")
+        graph.add_edge("memory.load_prompt_messages", "rag.prepare_context")
+        if include_generation:
+            graph.add_node("generation.answer", self._graph_generate_answer)
+            graph.add_edge("rag.prepare_context", "generation.answer")
+            graph.add_edge("generation.answer", END)
+        else:
+            graph.add_edge("rag.prepare_context", END)
+        return graph.compile()
+
+    def _invoke_graph(
+        self,
+        graph,
+        state: RetriFlowWorkflowGraphState,
+        *,
+        run_name: str,
+    ) -> RetriFlowWorkflowGraphState:
+        settings = get_settings()
+        metadata: dict[str, Any] = {
+            "session_id": state.get("session_id", ""),
+            "deep_thinking": bool(state.get("deep_thinking", False)),
+            "smart_search": bool(state.get("smart_search", False)),
+            "workflow_adapter": self.name,
+            "langsmith_enabled": settings.langsmith_tracing,
+        }
+        config = {
+            "run_name": run_name,
+            "tags": ["retriflow", "rag", "langgraph"],
+            "metadata": metadata,
+        }
+        with retriflow_langsmith_context(run_name=run_name, metadata=metadata):
+            return graph.invoke(state, config=config)
+
+    def _graph_load_memory(self, state: RetriFlowWorkflowGraphState) -> RetriFlowWorkflowGraphState:
+        question = state.get("question", "")
+        session_id = state.get("session_id", "")
+        with self.trace_service.span(
+            name="memory.load_prompt_messages",
+            node_type="MEMORY",
+            input_summary=f"session={session_id}",
+        ) as span:
+            memory_messages = self.memory_service.load_prompt_messages(
+                session_id=session_id,
+                query=question,
+            )
+            span.finish_success(output_summary=f"messages={len(memory_messages)}")
+        return {"memory_messages": memory_messages}
+
+    def _graph_prepare_context(self, state: RetriFlowWorkflowGraphState) -> RetriFlowWorkflowGraphState:
+        context = self._prepare_context(
+            state.get("question", ""),
+            memory_messages=state.get("memory_messages", []),
+            smart_search=bool(state.get("smart_search", False)),
+        )
+        return {"context": context}
+
+    def _graph_generate_answer(self, state: RetriFlowWorkflowGraphState) -> RetriFlowWorkflowGraphState:
+        context = state["context"]
+        assistant_message = self._generate_answer(
+            question=state.get("question", ""),
+            sources=context.sources or [],
+            extra_context=context.extra_context,
+            mcp_calls=context.mcp_calls or [],
+            memory_messages=state.get("memory_messages", []),
+            assistant_message_override=context.assistant_message_override,
+            intent=context.intent,
+            deep_thinking=bool(state.get("deep_thinking", False)),
+        )
+        return {"assistant_message": assistant_message}
 
     def _prepare_context(
         self,
@@ -807,7 +889,6 @@ class LangGraphWorkflowAdapter(WorkflowAdapter):
         except Exception:
             return "你好，我在。你可以直接告诉我想查询、分析或处理的问题。"
 
-    @staticmethod
     @staticmethod
     def _build_assessment_count_answer(*, question: str, sources: list[ChatSourceItem]) -> str:
         normalized_question = re.sub(r"\s+", "", question)

@@ -250,9 +250,9 @@ class RetriFlowKnowledgeRouteTests(unittest.TestCase):
         knowledge_service.create_document(
             "kb-2",
             KnowledgeDocumentCreateRequest(
-                title="RetriFlow migration guide",
+                title="RetriFlow workflow guide",
                 source_type="manual",
-                content="RetriFlow migration uses LangGraph, LangChain, RAG and retrieval workflows.",
+                content="RetriFlow workflow uses LangGraph, LangChain, RAG and retrieval workflows.",
             ),
         )
 
@@ -272,27 +272,27 @@ class RetriFlowKnowledgeRouteTests(unittest.TestCase):
         )
         admin_service.create_intent_node(
             AdminIntentNodeCreateRequest(
-                name="RetriFlow Migration",
-                code="multi_retriflow_migration",
+                name="RetriFlow Workflow",
+                code="multi_retriflow_workflow",
                 level="INTENT",
                 node_type="KB",
                 knowledge_base_id="kb-2",
-                description="retriflow migration langgraph rag",
-                sample_questions=["How does RetriFlow migration work?"],
-                rule_snippet="retriflow migration langgraph rag",
+                description="retriflow workflow langgraph rag",
+                sample_questions=["How does RetriFlow workflow work?"],
+                rule_snippet="retriflow workflow langgraph rag",
                 sort_order=2,
             )
         )
 
         decision = RetriFlowKnowledgeRouteService().route_question(
-            "claim reimbursement and retriflow migration"
+            "claim reimbursement and retriflow workflow"
         )
 
         self.assertEqual(decision.mode, "knowledge_base")
         self.assertEqual(decision.knowledge_base_ids, ["kb-1", "kb-2"])
         self.assertLessEqual(len(decision.knowledge_base_ids), 3)
         self.assertIn("Insurance Claims", decision.reason)
-        self.assertIn("RetriFlow Migration", decision.reason)
+        self.assertIn("RetriFlow Workflow", decision.reason)
         self.assertEqual([candidate.knowledge_base_id for candidate in decision.candidates], ["kb-1", "kb-2"])
 
         from modules.rag.guidance import RetriFlowIntentGuidanceService
@@ -300,7 +300,7 @@ class RetriFlowKnowledgeRouteTests(unittest.TestCase):
         guidance = RetriFlowIntentGuidanceService().detect("policy workflow", decision)
         self.assertTrue(guidance.is_prompt)
         self.assertIn("Insurance Claims", guidance.prompt)
-        self.assertIn("RetriFlow Migration", guidance.prompt)
+        self.assertIn("RetriFlow Workflow", guidance.prompt)
 
     def test_intent_tree_is_cached_in_redis_and_cleared_on_admin_change(self) -> None:
         import redis

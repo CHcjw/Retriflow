@@ -69,6 +69,13 @@ RetriFlow 是一个从零构建的企业级知识问答系统，后端使用 Pyt
 - 断流时将运行中节点标记为 `cancelled`。
 - Trace 详情保持执行耗时表，避免恢复杂乱树详情卡片。
 
+### LangGraph 与 LangSmith
+
+- 聊天工作流必须继续通过 `LangGraphWorkflowAdapter` 的真实 `StateGraph` 执行，不要绕回手写顺序调用。
+- 非流式 graph 包含 memory、context prepare、generation 三类节点；流式 graph 只负责 prepare，SSE 负责流式 generation。
+- LangSmith 只能作为可选外部观测层，默认关闭；不得要求没有 LangSmith key 的本地环境才能运行。
+- RetriFlow 自有 `rag_trace_nodes` 仍是后台链路追踪事实来源，LangSmith 不能替代或删减本地 trace。
+
 ### Redis 队列
 
 - SSE 队列启用时先发 `event: queue`，payload 使用 limiter `snapshot()`。

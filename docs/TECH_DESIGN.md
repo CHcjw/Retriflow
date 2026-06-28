@@ -5,7 +5,7 @@
 - 前端：Vue 3 + TypeScript + Vite + Vue Router + Pinia。
 - 样式：项目内 CSS，后台组件保持统一表格、表单、下拉框和响应式布局。
 - 后端：Python 3.12 + FastAPI + Pydantic。
-- RAG 编排：LangChain、LangGraph、OpenAI-compatible LLM。
+- RAG 编排：LangGraph `StateGraph`、LangChain 生态组件、OpenAI-compatible LLM。
 - 数据库：PostgreSQL，测试兼容 SQLite。
 - 向量存储：pgvector，测试和降级场景支持 memory vector store。
 - 文档解析：Apache Tika，OCR 服务可选。
@@ -76,8 +76,11 @@ RetriFlow/
 - `admin_intent_nodes`：后台意图树节点。
 - `admin_keyword_mappings`：关键词映射配置。
 - `admin_sample_questions`：聊天欢迎页示例问题与推荐问法配置。
+- LangSmith：通过 `modules.rag.langsmith.retriflow_langsmith_context()` 包裹 LangGraph invoke。默认关闭；设置 `LANGSMITH_TRACING=true`、`LANGSMITH_PROJECT=<project>` 和 `LANGSMITH_API_KEY` 后写入外部 tracing，不替代后台 trace。
 
 ## 聊天 RAG 流程
+
+`LangGraphWorkflowAdapter` 使用真实 `StateGraph` 编排问答主链路。非流式请求编译为 `memory.load_prompt_messages -> rag.prepare_context -> generation.answer`；流式请求编译为 `memory.load_prompt_messages -> rag.prepare_context`，答案生成交给 SSE 生命周期中的 detached `generation.answer`。
 
 1. 加载短期、中期、长期会话记忆。
 2. 执行 `query-rewrite-and-split` 查询改写和多问题拆分。
@@ -143,6 +146,10 @@ RetriFlow/
 ## 配置与外部服务
 
 - `.env` / `.env.example` 保存数据库、模型、向量库、Redis、Tika、OCR、对象存储和队列配置。
+- LangSmith 可选观测配置：
+  - `LANGSMITH_TRACING=false`
+  - `LANGSMITH_PROJECT=retriflow`
+  - `LANGSMITH_API_KEY=<optional>`
 - 文件存储配置：
   - `RETRIFLOW_STORAGE_BACKEND=local`
   - `RETRIFLOW_STORAGE_LOCAL_DIR=backend/data/uploads`

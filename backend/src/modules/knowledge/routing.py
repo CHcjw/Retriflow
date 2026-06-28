@@ -50,7 +50,7 @@ class RetriFlowKnowledgeRouteService:
     MAX_INTENT_COUNT = 3
     DOMAIN_SYNONYMS: dict[str, list[str]] = {
         "insurance": ["保险", "理赔", "核保", "保单", "赔付", "underwriting", "claim", "policy", "premium"],
-        "retriflow": ["retriflow", "langgraph", "langchain", "rag", "migration"],
+        "retriflow": ["retriflow", "langgraph", "langchain", "rag", "workflow", "企业知识问答"],
     }
 
     def __init__(self) -> None:

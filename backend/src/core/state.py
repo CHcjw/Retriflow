@@ -1000,7 +1000,7 @@ def _seed_demo_data(connection: DatabaseConnection) -> None:
             insert into sessions (id, title, message_count, owner_id)
             values (?, ?, ?, ?)
             """,
-            ("session-demo-1", "RetriFlow migration planning", 6, ""),
+            ("session-demo-1", "RetriFlow enterprise RAG planning", 6, ""),
         )
 
     knowledge_count = connection.execute("select count(*) from knowledge_bases").fetchone()[0]
@@ -1026,9 +1026,9 @@ def _seed_demo_data(connection: DatabaseConnection) -> None:
             """,
             (
                 "kb-demo-1",
-                "RetriFlow product knowledge base migration python vue rag langgraph langchain",
-                '["RetriFlow 是什么？", "RetriFlow 的迁移目标是什么？"]',
-                '["retriflow", "langgraph", "langchain", "migration", "rag"]',
+                "RetriFlow product knowledge base enterprise rag workflow python vue langgraph langchain",
+                '["RetriFlow 是什么？", "RetriFlow 的企业知识问答链路是什么？"]',
+                '["retriflow", "langgraph", "langchain", "workflow", "rag"]',
             ),
         )
 

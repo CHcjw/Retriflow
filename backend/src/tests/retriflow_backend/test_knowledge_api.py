@@ -144,6 +144,52 @@ class RetriFlowKnowledgeApiTests(unittest.TestCase):
         self.assertEqual(listed["items"], [])
         refreshed_kb = self.client.get("/api/v1/knowledge-bases").json()["items"][0]
         self.assertEqual(refreshed_kb["document_count"], 0)
+        self.assertEqual(refreshed_kb["indexed_document_count"], 0)
+        self.assertEqual(refreshed_kb["chunk_count"], 0)
+
+    def test_knowledge_base_list_returns_global_chunk_statistics(self) -> None:
+        first = self.client.post(
+            "/api/v1/knowledge-bases",
+            json={"name": "Stats KB A", "collection_name": "statskba"},
+        ).json()
+        second = self.client.post(
+            "/api/v1/knowledge-bases",
+            json={"name": "Stats KB B", "collection_name": "statskbb"},
+        ).json()
+
+        first_doc = self.client.post(
+            f"/api/v1/knowledge-bases/{first['id']}/documents",
+            json={
+                "title": "Stats Document A",
+                "content": "Chunk stats document A. " * 60,
+                "document_type": "manual",
+                "chunk_strategy": "fixed",
+                "chunk_size": 120,
+                "chunk_overlap": 0,
+            },
+        ).json()
+        second_doc = self.client.post(
+            f"/api/v1/knowledge-bases/{second['id']}/documents",
+            json={
+                "title": "Stats Document B",
+                "content": "Chunk stats document B. " * 80,
+                "document_type": "manual",
+                "chunk_strategy": "fixed",
+                "chunk_size": 160,
+                "chunk_overlap": 0,
+            },
+        ).json()
+
+        payload = self.client.get("/api/v1/knowledge-bases").json()
+        by_id = {item["id"]: item for item in payload["items"]}
+
+        self.assertEqual(by_id[first["id"]]["document_count"], 1)
+        self.assertEqual(by_id[first["id"]]["indexed_document_count"], 1)
+        self.assertEqual(by_id[first["id"]]["chunk_count"], first_doc["vector_chunk_count"])
+        self.assertEqual(by_id[second["id"]]["document_count"], 1)
+        self.assertEqual(by_id[second["id"]]["indexed_document_count"], 1)
+        self.assertEqual(by_id[second["id"]]["chunk_count"], second_doc["vector_chunk_count"])
+        self.assertGreater(sum(item["chunk_count"] for item in payload["items"]), 1)
 
     def test_update_and_delete_document_chunks(self) -> None:
         created = self.client.post(

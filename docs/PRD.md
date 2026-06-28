@@ -67,6 +67,7 @@ RetriFlow 是一个从零构建的企业级 Agentic RAG 系统，使用 Python +
 - 检索流程抽象为 SearchChannel 和 SearchResultPostProcessor。
 - 意图树路由可保留多个阈值以上的 KB 或 MCP 候选，最多 3 个目标参与后续检索和工具调用。
 - workflow metadata 暴露检索 stage counts、stage metrics、候选 KB、候选路径、置信度和 route topK。
+- 聊天主链路通过 LangGraph `StateGraph` 编排，非流式请求覆盖记忆加载、上下文准备和答案生成，流式请求先完成上下文准备再由 SSE 承接生成。
 - 使用场景化 Prompt 模板加载和渲染，覆盖 rewrite、intent、guidance、memory、context 和 answer 场景。
 - 答案后处理包含引用补齐、来源展示、安全过滤、Markdown 格式整理和兜底回复。
 
@@ -91,6 +92,7 @@ RetriFlow 是一个从零构建的企业级 Agentic RAG 系统，使用 Python +
 - 同步和流式聊天均记录真实运行节点。
 - 后台 Trace 列表支持按 trace id、session id、task id、用户、状态和起止时间分页筛选。
 - Trace 详情以执行耗时表展示完整 RAG 链路中每个环节的耗时、输入摘要、输出摘要和错误信息。
+- 可选开启 LangSmith 外部 tracing，用于研发观测；后台 trace 仍是产品内链路诊断的事实来源。
 
 ### 队列限流
 

@@ -307,7 +307,7 @@ const pipelinePage = shallowRef(1);
 const ingestionTaskPage = shallowRef(1);
 const userPage = shallowRef(1);
 
-const { dashboardStats } = useAdminDashboardSummary(knowledgeBases, documents);
+const { dashboardStats } = useAdminDashboardSummary(knowledgeBases);
 
 const filteredKnowledgeBases = computed(() => {
   const query = knowledgeSearch.value.trim().toLowerCase();
