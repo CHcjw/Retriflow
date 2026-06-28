@@ -33,10 +33,14 @@ export function normalizeMessage(value: string): string {
   const normalized = value
     .replace(/\r\n/g, "\n")
     .replace(/\u00a0/g, " ")
+    .replace(/＊/g, "*")
+    .replace(/\\([*_`])/g, "$1")
     .replace(/[ \t]+\n/g, "\n")
     .trim();
 
-  return normalizeInlineMarkdownTables(normalizeMarkdownOutsideFences(normalizeFenceBoundaries(normalized)));
+  return normalizeInlineMarkdownTables(
+    normalizeMarkdownOutsideFences(normalizeFenceBoundaries(normalized))
+  );
 }
 
 function normalizeFenceBoundaries(value: string): string {
@@ -90,11 +94,21 @@ function normalizeMarkdownOutsideFences(value: string): string {
 
 function normalizeMarkdownLine(line: string): string {
   return line
+    .replace(/^([ \t]*)-(?=\d{1,2}\s*月\s*\d{1,2}\s*日)/, "$1")
+    .replace(/([℃°C])\s*-\s*(风向|风向风力)/g, "$1\n$2")
+    .replace(/\*\*([“‘《（(])([^*\n]+?)([”’》）)])\*\*/g, "$1**$2**$3")
+    .replace(/\*\*\s+([^*\n][\s\S]*?[^*\n])\s+\*\*/g, "**$1**")
+    .replace(/\*\*([^*\n][^*\n]*?)\s+\*\*/g, "**$1**")
+    .replace(/(\*\*[^*\n]+?\*\*)(?=\d{1,2}[.)]\s*\S)/g, "$1\n\n")
+    .replace(/([^\n#])\s+#{1,6}\s*$/g, "$1")
     .replace(/(^|\n)([ \t]*)\\(#{1,6})(?=\s*\S)/g, "$1$2$3")
     .replace(/([^\n])\s+(\\?#{1,6})\s+(?=\S)/g, "$1\n\n$2 ")
     .replace(/(^|\n)([ \t]*\\?#{1,6})\s*(?=\S)/g, (_match, lineStart: string, marker: string) => {
       return `${lineStart}${marker.replace("\\", "")} `;
     })
+    .replace(/^([一二三四五六七八九十]+、[^-\n]{2,80})\s*-\s+/, "### $1\n\n- ")
+    .replace(/^([^-\n|]{2,80}?[\u4e00-\u9fffA-Za-z）)])-\s+/, "$1\n\n- ")
+    .replace(/([^\n])\s+-\s+(?=\S)/g, "$1\n- ")
     .replace(/([\u3002\uff01\uff1f\uff1b:：]\s*)([-*+]\s+)/g, "$1\n\n$2")
     .replace(/([\u3002\uff01\uff1f\uff1b:：]\s*)(\d{1,2}[.)]\s+)/g, "$1\n\n$2")
     .replace(/([^\n])\s+([-*+]\s+)(?=\S)/g, "$1\n$2")
@@ -128,9 +142,14 @@ function splitInlineTableSegments(rawLine: string): string[] {
     return [rawLine];
   }
 
-  const titledTable = line.match(/^(.+?[\uff1a:])\s*(\|?\s*[^|\n]+\s*\|\s*[^|\n]+.*)$/);
+  const titledTable = line.match(/^(.+?[：:])\s*(\|?\s*[^|\n]+\s*\|\s*[^|\n]+.*)$/);
   if (titledTable && !titledTable[1].includes("|")) {
     return [titledTable[1].trim(), ...splitInlineTableSegments(titledTable[2].trim())].filter(Boolean);
+  }
+
+  const headingTable = line.match(/^(#{1,6}\s+[^|\n]+?)\s*(\|.*)$/);
+  if (headingTable && headingTable[2].includes("|")) {
+    return [headingTable[1].trim(), ...splitInlineTableSegments(headingTable[2].trim())].filter(Boolean);
   }
 
   const repeatedRows = splitRepeatedTableRows(line);

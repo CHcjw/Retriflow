@@ -125,11 +125,14 @@ const onKeydown = (event: KeyboardEvent) => {
 
 .composer-box {
   width: 100%;
-  background: rgba(255, 255, 255, 0.94);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 252, 252, 0.96));
   border-radius: 20px;
-  box-shadow: 0 12px 34px rgba(23, 32, 51, 0.08);
-  border: 1px solid var(--border-light);
-  padding: 16px 20px;
+  box-shadow:
+    0 18px 46px rgba(23, 32, 51, 0.12),
+    0 0 0 1px rgba(255, 255, 255, 0.8) inset;
+  border: 1px solid rgba(15, 143, 130, 0.22);
+  padding: 14px;
   display: flex;
   flex-direction: column;
   transition: all 0.2s;
@@ -137,8 +140,10 @@ const onKeydown = (event: KeyboardEvent) => {
 }
 
 .composer-box:focus-within {
-  border-color: rgba(15, 143, 130, 0.34);
-  box-shadow: 0 16px 42px rgba(15, 143, 130, 0.14);
+  border-color: rgba(15, 143, 130, 0.48);
+  box-shadow:
+    0 20px 52px rgba(15, 143, 130, 0.16),
+    0 0 0 3px rgba(15, 143, 130, 0.1);
 }
 
 .auto-resize-textarea {
@@ -146,15 +151,25 @@ const onKeydown = (event: KeyboardEvent) => {
   min-height: 80px;
   max-height: 200px;
   resize: none;
-  border: none;
+  border: 1px solid rgba(130, 146, 164, 0.22);
+  border-radius: 15px;
   font-size: 15px;
   color: var(--text-main);
-  background: transparent;
+  line-height: 1.65;
+  background: rgba(255, 255, 255, 0.78);
   outline: none;
+  padding: 12px 14px;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.9) inset;
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.auto-resize-textarea:focus {
+  border-color: rgba(15, 143, 130, 0.28);
+  background: rgba(255, 255, 255, 0.94);
 }
 
 .auto-resize-textarea::placeholder {
-  color: var(--text-light);
+  color: #8a98a8;
 }
 
 .composer-footer {
@@ -182,7 +197,8 @@ const onKeydown = (event: KeyboardEvent) => {
   gap: 6px;
   padding: 6px 12px;
   border-radius: 999px;
-  background: var(--sidebar-bg);
+  border: 1px solid rgba(130, 146, 164, 0.18);
+  background: rgba(255, 255, 255, 0.72);
   color: var(--text-muted);
   font-size: 13px;
   font-weight: 500;
@@ -193,6 +209,7 @@ const onKeydown = (event: KeyboardEvent) => {
 .mode-btn:hover,
 .mode-btn.active {
   background: var(--primary-soft);
+  border-color: rgba(15, 143, 130, 0.24);
   color: var(--primary);
 }
 

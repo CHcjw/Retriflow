@@ -179,6 +179,22 @@ class RetriFlowChatMcpApiTests(unittest.TestCase):
         tool_ids = [item["tool_id"] for item in payload["mcp_calls"]]
         self.assertIn("AIsearch", tool_ids)
 
+    def test_smart_search_prefers_search_mcp_over_builtin_sales_tool(self) -> None:
+        response = self.client.post(
+            "/api/v1/chat/messages",
+            json={
+                "session_id": "session-demo-1",
+                "message": "所有地区销售额，以及销售占比分析",
+                "smart_search": True,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["workflow"]["route_mode"], "mcp_only")
+        self.assertTrue(payload["workflow"]["smart_search"])
+        self.assertEqual([item["tool_id"] for item in payload["mcp_calls"]], ["AIsearch"])
+
     def test_chat_message_returns_mcp_error_items_without_raising_500(self) -> None:
         from modules.mcp.models import McpExecutionResult, McpRouteDecision, McpToolCallResult
 

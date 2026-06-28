@@ -27,11 +27,16 @@ export function useAdminIntentTree(options: {
       .map((node) => {
         const kb = options.knowledgeBases.value.find((item) => item.id === node.knowledge_base_id);
         const parent = options.adminIntentNodes.value.find((item) => item.id === node.parent_id);
+        const path = parent && parent.id !== "ROOT" ? `${parent.name} / ${node.name}` : node.name;
+        const resource =
+          node.node_type === "SYSTEM"
+            ? "系统策略"
+            : node.mcp_tool_id || node.collection_name || kb?.collection_name || node.knowledge_base_id || "-";
         return {
           ...node,
           type: node.node_type,
-          path: `${parent?.name ?? "ROOT"} / ${node.name}`,
-          resource: node.mcp_tool_id || kb?.name || node.collection_name || node.knowledge_base_id || "-",
+          path,
+          resource,
           sampleCount: node.sample_questions.length,
           status: node.enabled ? "启用" : "停用"
         };
@@ -42,6 +47,8 @@ export function useAdminIntentTree(options: {
           item.name.toLowerCase().includes(query) ||
           item.code.toLowerCase().includes(query) ||
           item.mcp_tool_id.toLowerCase().includes(query) ||
+          item.collection_name.toLowerCase().includes(query) ||
+          item.resource.toLowerCase().includes(query) ||
           item.id.toLowerCase().includes(query)
         );
       });

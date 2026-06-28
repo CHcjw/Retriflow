@@ -4,21 +4,12 @@
 
 1. `schema_pg.sql`
 2. `init_data_pg.sql`
+3. 在前端创建需要绑定的知识库，例如发票知识库使用 `collection_name = finance`
+4. `init_intent_nodes_pg.sql`
 
+## 脚本说明
 
-
-1. `drop_all_tables_pg.spg.sql`
-
-## 每个脚本的作用
-
-- `schema_pg.sql`
-
-  - 初始化当前版本完整表结构
-  - 适合全新空数据库
-- `init_data_pg.sql`
-
-  - 插入演示管理员、演示会话、演示知识库、演示文档与入库任务
-  - 不是须脚本
-- `drop_all_tables_pg.spg.sql`
-
-  - 删除数据库表
+- `schema_pg.sql`：初始化当前版本完整表结构，适合全新空数据库。
+- `init_data_pg.sql`：初始化管理员、流水线、关键词映射和欢迎页示例问题，不初始化知识库和意图节点。
+- `init_intent_nodes_pg.sql`：初始化意图树节点。建议在知识库创建完成后执行，这样发票节点可以自动绑定 `finance` collection 对应的知识库。
+- `drop_all_tables_pg.sql`：删除数据库表。

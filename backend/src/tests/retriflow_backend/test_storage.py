@@ -59,7 +59,7 @@ class _FakeS3Client:
 
 
 class RetriFlowStorageTests(unittest.TestCase):
-    def test_s3_storage_upload_open_and_delete_uses_ragent_style_uri(self) -> None:
+    def test_s3_storage_upload_open_and_delete_uses_stable_content_hash_uri(self) -> None:
         from infra.storage import S3FileStorageService
 
         fake_client = _FakeS3Client()

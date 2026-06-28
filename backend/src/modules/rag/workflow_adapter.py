@@ -413,6 +413,7 @@ class LangGraphWorkflowAdapter(WorkflowAdapter):
                 original_question=f"联网搜索 {question}" if smart_search else question,
                 rewritten_queries=rewritten_queries,
                 memory_messages=memory_messages,
+                search_only=smart_search,
             )
             span.finish_success(output_summary=f"calls={len(mcp_result.calls)}")
         mcp_calls = [
@@ -863,6 +864,7 @@ class LangGraphWorkflowAdapter(WorkflowAdapter):
         original_question: str = "",
         forced_tool_ids: list[str] | None = None,
         forced_tool_param_prompts: dict[str, str] | None = None,
+        search_only: bool = False,
     ):
         from modules.mcp.models import McpExecutionResult, McpRouteDecision
 
@@ -870,6 +872,11 @@ class LangGraphWorkflowAdapter(WorkflowAdapter):
         selected_tool_ids: list[str] = []
         reasons: list[str] = []
         confidence = 0.0
+        effective_forced_tool_ids = forced_tool_ids
+        if search_only and not forced_tool_ids:
+            search_tool_id = self.mcp_service._find_preferred_search_tool_id()
+            if search_tool_id:
+                effective_forced_tool_ids = [search_tool_id]
         query_candidates = self._mcp_query_candidates(
             original_question=original_question,
             rewritten_queries=rewritten_queries,
@@ -878,7 +885,7 @@ class LangGraphWorkflowAdapter(WorkflowAdapter):
             result = self.mcp_service.execute_question(
                 query,
                 memory_messages=memory_messages,
-                forced_tool_ids=forced_tool_ids,
+                forced_tool_ids=effective_forced_tool_ids,
                 forced_tool_param_prompts=forced_tool_param_prompts,
             )
             if result.route.mode == "mcp":

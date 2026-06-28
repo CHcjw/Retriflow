@@ -16,10 +16,10 @@ class RetriFlowSessionService:
                 select id, title, message_count, owner_id
                 from sessions
                 where owner_id = ? or owner_id = ''
-                order by id desc
                 """,
                 (user_id,),
             ).fetchall()
+        rows = sorted(rows, key=lambda row: self._session_sort_key(str(row["id"])), reverse=True)
         return SessionListResponse(
             items=[
                 SessionItem(
@@ -178,3 +178,12 @@ class RetriFlowSessionService:
             if suffix.isdigit():
                 max_suffix = max(max_suffix, int(suffix))
         return max_suffix + 1
+
+    @staticmethod
+    def _session_sort_key(session_id: str) -> tuple[int, int, str]:
+        prefix = "session-"
+        if session_id.startswith(prefix):
+            suffix = session_id[len(prefix):]
+            if suffix.isdigit():
+                return (1, int(suffix), session_id)
+        return (0, 0, session_id)

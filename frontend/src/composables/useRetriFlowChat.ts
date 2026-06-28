@@ -31,6 +31,7 @@ export interface ChatMessage {
 
 type RequestPhase = "idle" | "retrieving" | "stopping" | "streaming";
 type StreamStage = "idle" | "analyzing" | "retrieving" | "organizing" | "answering" | "stopping";
+type ChatSessionItem = Awaited<ReturnType<typeof fetchSessions>>["items"][number];
 
 interface ChatSessionRuntimeState {
   messages: ChatMessage[];
@@ -175,8 +176,9 @@ function normalizeForFinalComparison(value: string): string {
 }
 
 export function useRetriFlowChat() {
-  const sessions = ref<Awaited<ReturnType<typeof fetchSessions>>["items"]>([]);
+  const sessions = ref<ChatSessionItem[]>([]);
   const activeSessionId = shallowRef("");
+  const pinnedTopSessionId = shallowRef("");
   const sessionStates = ref<Record<string, ChatSessionRuntimeState>>({});
   const starterPrompts = ref<string[]>([
     "询问助手是做什么的、是谁、能做什么等",
@@ -239,9 +241,27 @@ export function useRetriFlowChat() {
     }
   };
 
+  const orderSessions = (items: ChatSessionItem[]): ChatSessionItem[] => {
+    if (!pinnedTopSessionId.value) {
+      return items;
+    }
+    return [...items].sort((left, right) => {
+      if (left.id === pinnedTopSessionId.value) {
+        return -1;
+      }
+      if (right.id === pinnedTopSessionId.value) {
+        return 1;
+      }
+      return 0;
+    });
+  };
+
   const loadSessions = async () => {
     const data = await fetchSessions();
-    sessions.value = data.items;
+    sessions.value = orderSessions(data.items);
+    if (pinnedTopSessionId.value && !sessions.value.some((session) => session.id === pinnedTopSessionId.value)) {
+      pinnedTopSessionId.value = "";
+    }
     touchKnownSessionStates();
     if (!sessions.value.find((item) => item.id === activeSessionId.value) && sessions.value[0]) {
       activeSessionId.value = sessions.value[0].id;
@@ -283,7 +303,8 @@ export function useRetriFlowChat() {
       const created = await createSession(nextTitle);
       getSessionState(created.id);
       activeSessionId.value = created.id;
-      sessions.value = [created, ...sessions.value.filter((session) => session.id !== created.id)];
+      pinnedTopSessionId.value = created.id;
+      sessions.value = orderSessions([created, ...sessions.value.filter((session) => session.id !== created.id)]);
       const state = getSessionState(created.id);
       state.messages = [];
       state.latestSources = [];
@@ -305,6 +326,9 @@ export function useRetriFlowChat() {
   const removeSession = async (sessionId: string) => {
     const wasActiveSession = activeSessionId.value === sessionId;
     const previousSessions = sessions.value;
+    if (pinnedTopSessionId.value === sessionId) {
+      pinnedTopSessionId.value = "";
+    }
     sessions.value = sessions.value.filter((session) => session.id !== sessionId);
     try {
       await deleteSession(sessionId);
@@ -526,6 +550,9 @@ export function useRetriFlowChat() {
             state.messages = [...state.messages];
             await nextTick();
             await loadSessions();
+            if (pinnedTopSessionId.value === streamSessionId) {
+              pinnedTopSessionId.value = "";
+            }
           }
         },
         controller.signal,

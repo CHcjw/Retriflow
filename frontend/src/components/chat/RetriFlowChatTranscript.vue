@@ -1,8 +1,9 @@
 <script setup lang="ts">
+import MarkdownRender from "markstream-vue";
 import { computed, shallowRef } from "vue";
 import type { ChatMessage } from "../../composables/useRetriFlowChat";
 import type { ChatMcpCallItem, ChatMcpSourceItem, ChatSourceItem, ChatWorkflow } from "../../services/chatApi";
-import { renderMessageHtml } from "../../utils/markdownRenderer";
+import { normalizeMessage } from "../../utils/markdownRenderer";
 
 const props = defineProps<{
   errorMessage: string;
@@ -268,7 +269,19 @@ function canUseAssistantActions(message: ChatMessage): boolean {
             <p v-for="(line, index) in (message.thinkingContent ? messageThinkingLines(message) : thinkingSummary)" :key="`${line}-${index}`">{{ line }}</p>
           </div>
         </div>
-        <div class="prose-message" v-html="renderMessageHtml(message.content)"></div>
+        <MarkdownRender
+          class="prose-message"
+          mode="chat"
+          html-policy="escape"
+          :content="normalizeMessage(message.content || '正在等待模型返回...')"
+          :final="message.state !== 'streaming'"
+          :fade="false"
+          :render-code-blocks-as-pre="true"
+          :max-live-nodes="0"
+          :batch-rendering="true"
+          :render-batch-size="18"
+          :render-batch-delay="8"
+        />
         <div v-if="message.state === 'streaming'" class="streaming-caret"></div>
         <div v-if="message.state === 'error'" class="error-badge">回复失败</div>
         <div v-if="canUseAssistantActions(message)" class="message-actions">
@@ -405,6 +418,10 @@ function canUseAssistantActions(message: ChatMessage): boolean {
   line-height: 1.7;
   color: var(--text-main);
   word-wrap: break-word;
+  --ms-text-body: 15px;
+  --ms-leading-body: 1.7;
+  --ms-info: 174 79% 32%;
+  --ms-radius: 8px;
 }
 
 .prose-message p {
@@ -448,17 +465,27 @@ function canUseAssistantActions(message: ChatMessage): boolean {
   text-decoration: underline;
 }
 
-.prose-message blockquote {
+.prose-message blockquote,
+.prose-message .blockquote-node {
   margin: 14px 0;
-  padding: 12px 16px;
-  border-left: 3px solid var(--primary);
-  border-radius: 10px;
-  background: var(--sidebar-bg);
-  color: var(--text-muted);
+  padding: 14px 18px;
+  border: 1px solid rgba(15, 143, 130, 0.18);
+  border-left: 4px solid var(--primary);
+  border-radius: 12px;
+  background:
+    linear-gradient(90deg, rgba(15, 143, 130, 0.12), rgba(255, 255, 255, 0.84));
+  color: #455569;
+  box-shadow: 0 10px 28px rgba(23, 32, 51, 0.07);
 }
 
-.prose-message blockquote p {
+.prose-message blockquote p,
+.prose-message .blockquote-node p {
   margin-bottom: 8px;
+}
+
+.prose-message blockquote p:last-child,
+.prose-message .blockquote-node p:last-child {
+  margin-bottom: 0;
 }
 
 .prose-message hr {
@@ -467,38 +494,85 @@ function canUseAssistantActions(message: ChatMessage): boolean {
   margin: 20px 0;
 }
 
-.prose-message table {
-  width: 100%;
-  border-collapse: collapse;
-  margin: 16px 0;
-  overflow: hidden;
-  border: 1px solid var(--border-light);
-  border-radius: 12px;
-  display: block;
+.prose-message table,
+.prose-message .table-node table {
+  width: auto;
+  min-width: min(100%, 420px);
   max-width: 100%;
-  overflow-x: auto;
+  table-layout: auto;
+  border-collapse: separate;
+  border-spacing: 0;
+  margin: 16px 0;
+  border: 1px solid rgba(130, 146, 164, 0.28);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--surface-strong);
+  box-shadow: 0 10px 26px rgba(23, 32, 51, 0.06);
+}
+
+.prose-message .table-node,
+.prose-message .table-wrapper {
+  display: inline-block;
+  width: auto;
+  max-width: 100%;
+  margin: 14px 0;
+  overflow: visible;
+  vertical-align: top;
 }
 
 .prose-message th,
-.prose-message td {
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--border-light);
-  border-right: 1px solid var(--border-light);
+.prose-message td,
+.prose-message .table-node th,
+.prose-message .table-node td {
+  padding: 9px 12px;
+  border-bottom: 1px solid rgba(130, 146, 164, 0.22);
+  border-right: 1px solid rgba(130, 146, 164, 0.22);
   text-align: left;
-  white-space: nowrap;
+  white-space: normal;
+  word-break: break-word;
+  vertical-align: top;
 }
 
-.prose-message th {
-  background: var(--sidebar-bg);
+.prose-message th,
+.prose-message .table-node th {
+  background: rgba(241, 246, 248, 0.94);
+  color: var(--text-main);
   font-weight: 700;
 }
 
-.prose-message .citation {
-  display: inline-flex;
-  align-items: center;
-  margin: 0 2px;
-  color: var(--primary);
+.prose-message tr:last-child td {
+  border-bottom: 0;
+}
+
+.prose-message th:last-child,
+.prose-message td:last-child {
+  border-right: 0;
+}
+
+.prose-message .citation,
+.prose-message .reference-node {
+  display: inline;
+  margin: 0 2px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  color: var(--primary) !important;
+  font-size: 13px;
   font-weight: 700;
+  line-height: inherit;
+  vertical-align: baseline;
+  box-shadow: none !important;
+}
+
+.prose-message .reference-node::before {
+  content: "[";
+  color: var(--primary) !important;
+}
+
+.prose-message .reference-node::after {
+  content: "]";
+  color: var(--primary) !important;
 }
 
 .prose-message strong {
@@ -586,11 +660,31 @@ function canUseAssistantActions(message: ChatMessage): boolean {
 }
 
 .message-content.bubble {
-  background: var(--sidebar-bg);
-  padding: 12px 20px;
-  border-radius: 20px;
+  display: flex;
+  align-items: center;
+  min-height: 46px;
+  background:
+    linear-gradient(135deg, rgba(15, 143, 130, 0.18), rgba(68, 190, 166, 0.12));
+  padding: 10px 18px;
+  border: 1px solid rgba(15, 143, 130, 0.18);
+  border-radius: 18px;
   border-top-right-radius: 4px;
   color: var(--text-main);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+}
+
+.message-content.bubble :deep(.prose-message) {
+  line-height: 1.45;
+  color: #0f2630;
+}
+
+.message-content.bubble :deep(.prose-message p) {
+  margin: 0;
+}
+
+.message-content.bubble :deep(.prose-message > *) {
+  margin-top: 0;
+  margin-bottom: 0;
 }
 
 .streaming-caret {

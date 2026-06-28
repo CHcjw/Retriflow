@@ -47,7 +47,6 @@ class RetriFlowIntentClassifier:
         "对比",
         "总结",
         "retriflow",
-        "ragent",
         "langchain",
         "langgraph",
         "rag",

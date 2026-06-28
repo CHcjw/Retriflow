@@ -1102,7 +1102,7 @@ class RetriFlowKnowledgeDocumentApiTests(unittest.TestCase):
         self.assertTrue(all(item["source_type"] == "manual" for item in matching_tasks))
 
     def test_import_sample_knowledge_directory_creates_documents(self) -> None:
-        sample_source = PROJECT_ROOT / "ragent" / "resources" / "docs" / "knowledge"
+        sample_source = PROJECT_ROOT / "resource" / "sample_data"
         sample_target = Path(self.temp_dir.name) / "sample_knowledge"
         shutil.copytree(sample_source, sample_target)
         os.environ["RETRIFLOW_SAMPLE_KNOWLEDGE_DIR"] = str(sample_target)

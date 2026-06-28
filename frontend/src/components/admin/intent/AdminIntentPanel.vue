@@ -40,7 +40,7 @@ const emit = defineEmits<{
   <div class="page-head">
     <div>
       <h1>意图管理</h1>
-      <p>维护意图树、意图列表和节点路由配置，数据持久化在后台 admin_intent_nodes 表。</p>
+      <p>维护意图树、意图列表和节点路由配置，数据持久化在后端 admin_intent_nodes 表。</p>
     </div>
     <div class="page-actions">
       <div class="segmented-tabs">
@@ -184,7 +184,10 @@ const emit = defineEmits<{
         </thead>
         <tbody>
           <tr v-for="item in pagedRealIntentRows" :key="item.id">
-            <td><strong>{{ item.name }}</strong><p class="muted-line">{{ item.code }} · {{ item.id }}</p></td>
+            <td>
+              <strong>{{ item.name }}</strong>
+              <p class="muted-line">{{ item.code }} · {{ item.id }}</p>
+            </td>
             <td><span class="badge">{{ item.level }}</span></td>
             <td>{{ item.type }}</td>
             <td>{{ item.path }}</td>
@@ -225,6 +228,35 @@ const emit = defineEmits<{
   margin: 0;
   color: #172033;
   font-size: 18px;
+}
+
+.segmented-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid #dbe4f0;
+  border-radius: 14px;
+  background: #f6f9fc;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+.segmented-tabs button {
+  min-height: 38px;
+  border: 0;
+  border-radius: 10px;
+  padding: 0 16px;
+  background: transparent;
+  color: #51627a;
+  font-weight: 800;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.segmented-tabs button.active {
+  background: #ffffff;
+  color: var(--primary);
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.08);
 }
 
 .intent-tree-panel {
@@ -302,18 +334,18 @@ const emit = defineEmits<{
 }
 
 .intent-tag.type-mcp {
-  background: #fef3c7;
-  color: #a16207;
+  background: #eef2ff;
+  color: #4338ca;
 }
 
 .intent-tag.type-system {
-  background: #fee2e2;
-  color: #b91c1c;
+  background: #f1f5f9;
+  color: #475569;
 }
 
 .intent-tag.type-kb {
-  background: #ede9fe;
-  color: #6d28d9;
+  background: #edf7ff;
+  color: #24557a;
 }
 
 .intent-tag.disabled {

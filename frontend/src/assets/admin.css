@@ -32,6 +32,36 @@
   justify-content: flex-end;
 }
 
+.segmented-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--border-light);
+  border-radius: 14px;
+  background: #f6f9fc;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+.segmented-tabs button {
+  min-height: 38px;
+  border: 0;
+  border-radius: 10px;
+  padding: 0 16px;
+  background: transparent;
+  color: #51627a;
+  font: inherit;
+  font-weight: 800;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.segmented-tabs button.active {
+  background: #ffffff;
+  color: var(--primary);
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.08);
+}
+
 .table-card {
   overflow: hidden;
   border: 1px solid var(--border-light);
@@ -516,7 +546,7 @@ button:disabled {
   width: min(1040px, 100%);
   max-height: min(860px, calc(100vh - 56px));
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 18px;
   overflow: hidden;
   border: 1px solid rgba(226, 232, 240, 0.9);
@@ -539,6 +569,25 @@ button:disabled {
 
 .admin-modal-wide {
   width: min(1040px, 100%);
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.admin-modal:has(> .intent-node-form) {
+  grid-template-rows: auto auto auto;
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+}
+
+.admin-modal > .modal-form,
+.admin-modal > .intent-node-form,
+.admin-modal > .pipeline-node-panel,
+.admin-modal > .document-preview-box {
+  min-height: 0;
+}
+
+.admin-modal > .intent-node-form {
+  overflow: visible;
+  max-height: none;
 }
 
 .modal-head,

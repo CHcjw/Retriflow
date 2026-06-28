@@ -77,6 +77,23 @@ class RetriFlowSessionApiTests(unittest.TestCase):
         payload = response.json()
         self.assertTrue(payload["owner_id"])
 
+    def test_sessions_are_sorted_by_numeric_suffix_desc(self) -> None:
+        for index in range(10):
+            response = self.client.post(
+                "/api/v1/sessions",
+                json={"title": f"Session {index + 1}"},
+                headers={"Authorization": f"Bearer {self.token}"},
+            )
+            self.assertEqual(response.status_code, 201)
+
+        listed = self.client.get(
+            "/api/v1/sessions",
+            headers={"Authorization": f"Bearer {self.token}"},
+        ).json()
+
+        self.assertEqual(listed["items"][0]["id"], "session-10")
+        self.assertEqual(listed["items"][1]["id"], "session-9")
+
     def test_delete_session_removes_owned_session(self) -> None:
         created = self.client.post(
             "/api/v1/sessions",

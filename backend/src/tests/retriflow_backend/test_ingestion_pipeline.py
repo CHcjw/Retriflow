@@ -61,7 +61,7 @@ class RetriFlowIngestionPipelineTests(unittest.TestCase):
         self.assertGreaterEqual(len(result.chunk_documents), 2)
         self.assertTrue(all(document.metadata["strategy"] == "fixed" for document in result.chunk_documents))
 
-    def test_fixed_size_alias_uses_ragent_config_names(self) -> None:
+    def test_fixed_size_alias_accepts_camel_case_config_names(self) -> None:
         from modules.ingestion import RetriFlowIngestionPipeline
 
         pipeline = RetriFlowIngestionPipeline(
@@ -248,7 +248,7 @@ class RetriFlowIngestionPipelineTests(unittest.TestCase):
         )
         self.assertTrue(any("qwen3-embedding:8b" in node.message for node in result.node_results))
 
-    def test_pipeline_node_results_include_ragent_runtime_fields_and_output(self) -> None:
+    def test_pipeline_node_results_include_runtime_fields_and_output(self) -> None:
         from schemas.knowledge import IngestionPipelineNodeConfig
         from modules.ingestion import RetriFlowIngestionPipeline
 
@@ -347,7 +347,7 @@ class RetriFlowIngestionPipelineTests(unittest.TestCase):
         self.assertEqual(enhance_node.output["questions"], ["What is the policy?"])
         self.assertEqual(enhance_node.output["enhancedText"], "Quarterly revenue policy with generated metadata.")
 
-    def test_pipeline_node_condition_reads_ragent_context_identity_fields(self) -> None:
+    def test_pipeline_node_condition_reads_context_identity_fields(self) -> None:
         from schemas.knowledge import IngestionPipelineNodeConfig
         from modules.ingestion import RetriFlowIngestionPipeline
 
@@ -384,7 +384,7 @@ class RetriFlowIngestionPipelineTests(unittest.TestCase):
         index_node = next(node for node in result.node_results if node.node_id == "index")
         self.assertEqual(index_node.status, "success")
 
-    def test_pipeline_node_output_matches_ragent_fetcher_parser_shape(self) -> None:
+    def test_pipeline_node_output_matches_fetcher_parser_shape(self) -> None:
         from schemas.knowledge import IngestionPipelineNodeConfig
         from modules.ingestion import RetriFlowIngestionPipeline
 
@@ -513,7 +513,7 @@ class RetriFlowIngestionPipelineTests(unittest.TestCase):
         ]
 
         pipeline = RetriFlowIngestionPipeline.from_pipeline_nodes(nodes)
-        result = pipeline.run("Unknown node types should fail like ragent.")
+        result = pipeline.run("Unknown node types should fail in the ingestion runtime.")
 
         self.assertEqual([node.node_id for node in result.node_results], ["parse", "custom"])
         custom_node = result.node_results[-1]
@@ -555,7 +555,7 @@ class RetriFlowIngestionPipelineTests(unittest.TestCase):
         self.assertEqual(audit_node.message, "Audit node executed.")
         self.assertEqual(audit_node.output["metadata"]["audit_node"], "audit")
 
-    def test_enhancer_tasks_update_ragent_runtime_context(self) -> None:
+    def test_enhancer_tasks_update_runtime_context(self) -> None:
         from schemas.knowledge import IngestionPipelineNodeConfig
         from modules.ingestion import RetriFlowIngestionPipeline
 

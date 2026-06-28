@@ -11,11 +11,11 @@ const { loading, error, meta, sessions, knowledgeBases, bootstrap } = useRetriFl
     <div class="home-content">
       <section class="hero-card">
         <p class="eyebrow">项目概览</p>
-        <h2 class="hero-title" v-if="meta">{{ meta.name }} / {{ meta.frontend_name }}</h2>
-        <h2 class="hero-title" v-else>RetriFlow 概览加载中</h2>
+        <h2 v-if="meta" class="hero-title">{{ meta.name }} / {{ meta.frontend_name }}</h2>
+        <h2 v-else class="hero-title">RetriFlow 概览加载中</h2>
         <p class="hero-copy">
-          当前项目已经从 Java SpringBoot + React 迁移到 Python + FastAPI + Vue，并逐步补齐
-          LangChain、LangGraph、LangSmith 所需的 Agentic RAG 能力。首页默认展示公共信息，登录后再加载你的会话与知识库概览。
+          RetriFlow 是从零构建的企业级 Agentic RAG 系统，基于 Python、FastAPI、Vue、LangChain、LangGraph、MCP、
+          混合检索和链路追踪实现完整知识问答链路。首页默认展示公共信息，登录后加载你的会话、知识库与聊天能力摘要。
         </p>
         <p v-if="loading" class="status-copy">正在加载 RetriFlow 数据...</p>
         <p v-else-if="error" class="status-copy error-copy">{{ error }}</p>
@@ -47,10 +47,10 @@ const { loading, error, meta, sessions, knowledgeBases, bootstrap } = useRetriFl
           <p class="feature-number">{{ knowledgeBases.length }}</p>
         </article>
       </section>
-      
+
       <div class="home-actions">
-         <router-link to="/chat" class="btn primary-btn">进入对话</router-link>
-         <router-link to="/admin" class="btn outline-btn">进入后台</router-link>
+        <router-link to="/chat" class="btn primary-btn">进入对话</router-link>
+        <router-link to="/admin" class="btn outline-btn">进入后台</router-link>
       </div>
     </div>
   </div>
@@ -101,7 +101,7 @@ const { loading, error, meta, sessions, knowledgeBases, bootstrap } = useRetriFl
   font-size: 16px;
   color: var(--text-muted);
   line-height: 1.6;
-  max-width: 600px;
+  max-width: 660px;
 }
 
 .status-copy {
@@ -153,35 +153,37 @@ const { loading, error, meta, sessions, knowledgeBases, bootstrap } = useRetriFl
 }
 
 .home-actions {
-   display: flex;
-   gap: 16px;
-   margin-top: 16px;
+  display: flex;
+  gap: 16px;
+  margin-top: 16px;
 }
 
 .btn {
-   padding: 12px 24px;
-   border-radius: 999px;
-   font-size: 15px;
-   font-weight: 600;
-   transition: all 0.2s;
-   text-align: center;
+  padding: 12px 24px;
+  border-radius: 999px;
+  font-size: 15px;
+  font-weight: 600;
+  transition: all 0.2s;
+  text-align: center;
 }
 
 .primary-btn {
-   background: var(--primary);
-   color: white;
+  background: var(--primary);
+  color: white;
 }
+
 .primary-btn:hover {
-   background: var(--primary-hover);
-   transform: translateY(-1px);
+  background: var(--primary-hover);
+  transform: translateY(-1px);
 }
 
 .outline-btn {
-   background: white;
-   color: var(--text-main);
-   border: 1px solid var(--border-light);
+  background: white;
+  color: var(--text-main);
+  border: 1px solid var(--border-light);
 }
+
 .outline-btn:hover {
-   background: #F8FAFC;
+  background: #f8fafc;
 }
 </style>

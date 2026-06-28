@@ -126,6 +126,40 @@ class RetriFlowMcpServiceTests(unittest.TestCase):
         self.assertIn("华东", result.calls[0].content)
         self.assertIn("Tool: sales_query", result.context)
 
+    def test_sales_tool_answers_compound_region_ranking_and_customer_question(self) -> None:
+        from modules.mcp.service import RetriFlowMcpService
+
+        service = RetriFlowMcpService()
+        result = service.execute_question(
+            "所有地区销售额，以及销售占比分析；同时列出每个地区下销售人员的排行榜，以及所售企业的销售额"
+        )
+
+        self.assertEqual(result.route.mode, "mcp")
+        self.assertEqual(result.calls[0].tool_id, "sales_query")
+        content = result.calls[0].content
+        self.assertIn("按地区销售额与占比", content)
+        self.assertIn("地区内销售人员排行", content)
+        self.assertIn("所售企业销售额", content)
+        self.assertIn("| 地区 | 销售额", content)
+        self.assertIn("| 地区 | 排名 | 销售人员 | 销售额", content)
+        self.assertIn("| 企业 | 销售额", content)
+
+    def test_ticket_tool_answers_pending_and_urgent_questions(self) -> None:
+        from modules.mcp.service import RetriFlowMcpService
+
+        service = RetriFlowMcpService()
+        pending = service.execute_question("华东区有多少待处理工单？")
+        urgent = service.execute_question("紧急工单有哪些？")
+
+        self.assertEqual(pending.route.mode, "mcp")
+        self.assertEqual(pending.calls[0].tool_id, "ticket_query")
+        self.assertIn("客户工单汇总概览", pending.calls[0].content)
+        self.assertIn("筛选条件：地区：华东；状态：待处理", pending.calls[0].content)
+        self.assertIn("工单总数", pending.calls[0].content)
+        self.assertEqual(urgent.calls[0].tool_id, "ticket_query")
+        self.assertIn("工单列表", urgent.calls[0].content)
+        self.assertIn("优先级：紧急", urgent.calls[0].content)
+
     def test_execute_question_persists_tool_level_trace_node(self) -> None:
         temp_dir = tempfile.TemporaryDirectory()
         db_path = Path(temp_dir.name) / f"retriflow-{uuid.uuid4().hex}.db"

@@ -39,7 +39,7 @@ class RetriFlowModelRoutingTests(unittest.TestCase):
 
         get_settings.cache_clear()
 
-    def test_settings_expose_ragent_aligned_provider_defaults_and_local_fallback_models(self) -> None:
+    def test_settings_expose_enterprise_provider_defaults_and_local_fallback_models(self) -> None:
         from core.config import get_settings
 
         get_settings.cache_clear()
