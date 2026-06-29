@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, nextTick } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, shallowRef, useTemplateRef } from "vue";
 import { useRouter } from "vue-router";
 import type { SessionItem } from "../../services/chatApi";
 import { useAuthStore } from "../../stores/auth";
@@ -20,9 +20,19 @@ const emit = defineEmits<{
 const router = useRouter();
 const authStore = useAuthStore();
 
-const activeMenuSessionId = ref("");
-const editingSessionId = ref("");
-const editingSessionTitle = ref("");
+const activeMenuSessionId = shallowRef("");
+const editingSessionId = shallowRef("");
+const editingSessionTitle = shallowRef("");
+const searchQuery = shallowRef("");
+const searchInputRef = useTemplateRef<HTMLInputElement>("searchInputRef");
+
+const visibleSessions = computed(() => {
+  const query = searchQuery.value.trim().toLowerCase();
+  if (!query) {
+    return props.sessions;
+  }
+  return props.sessions.filter((session) => (session.title || "新对话").toLowerCase().includes(query));
+});
 
 function toggleMenu(sessionId: string) {
   if (activeMenuSessionId.value === sessionId) {
@@ -55,6 +65,17 @@ function cancelRename() {
   editingSessionId.value = "";
 }
 
+async function focusSearch() {
+  await nextTick();
+  searchInputRef.value?.focus();
+  searchInputRef.value?.select();
+}
+
+function clearSearch() {
+  searchQuery.value = "";
+  searchInputRef.value?.blur();
+}
+
 function confirmDelete(sessionId: string) {
   emit("deleteSession", sessionId);
   activeMenuSessionId.value = "";
@@ -79,6 +100,11 @@ function handleLogout() {
   authStore.logout();
   router.push({ name: "login" });
 }
+
+defineExpose({
+  clearSearch,
+  focusSearch
+});
 </script>
 
 <template>
@@ -124,15 +150,21 @@ function handleLogout() {
       </div>
       <div class="search-input">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
-        <input type="text" placeholder="搜索对话..." />
+        <input
+          ref="searchInputRef"
+          v-model="searchQuery"
+          type="text"
+          placeholder="搜索对话..."
+          @keydown.esc.prevent="clearSearch"
+        />
       </div>
     </div>
 
     <div class="history-list">
-      <div class="history-label">更早</div>
+      <div class="history-label">{{ searchQuery.trim() ? `搜索结果 · ${visibleSessions.length}` : "更早" }}</div>
       <ul>
         <li
-          v-for="session in sessions"
+          v-for="session in visibleSessions"
           :key="session.id"
           class="history-item"
           :class="{ active: session.id === activeSessionId }"
@@ -169,6 +201,7 @@ function handleLogout() {
             </div>
           </template>
         </li>
+        <li v-if="visibleSessions.length === 0" class="empty-history-item">没有匹配的对话</li>
       </ul>
     </div>
 
@@ -423,6 +456,13 @@ function handleLogout() {
   background: rgba(15, 143, 130, 0.12);
   color: var(--primary);
   font-weight: 500;
+}
+
+.empty-history-item {
+  padding: 14px 12px;
+  color: var(--text-light);
+  font-size: 13px;
+  text-align: center;
 }
 
 .session-title {

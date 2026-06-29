@@ -1,7 +1,10 @@
 <script setup lang="ts">
+import { nextTick, useTemplateRef } from "vue";
+
 const draft = defineModel<string>("draft", { required: true });
 const deepThinking = defineModel<boolean>("deepThinking", { default: false });
 const smartSearch = defineModel<boolean>("smartSearch", { default: false });
+const textareaRef = useTemplateRef<HTMLTextAreaElement>("textareaRef");
 
 defineProps<{
   canStop: boolean;
@@ -22,12 +25,32 @@ const onKeydown = (event: KeyboardEvent) => {
     emit("submit");
   }
 };
+
+async function focusInput() {
+  await nextTick();
+  textareaRef.value?.focus();
+}
+
+function toggleDeepThinking() {
+  deepThinking.value = !deepThinking.value;
+}
+
+function toggleSmartSearch() {
+  smartSearch.value = !smartSearch.value;
+}
+
+defineExpose({
+  focusInput,
+  toggleDeepThinking,
+  toggleSmartSearch
+});
 </script>
 
 <template>
   <div class="composer-wrapper">
     <div class="composer-box">
       <textarea
+        ref="textareaRef"
         v-model="draft"
         :disabled="loading"
         placeholder="输入你的问题..."
@@ -42,8 +65,8 @@ const onKeydown = (event: KeyboardEvent) => {
             type="button"
             class="mode-btn"
             :class="{ active: deepThinking }"
-            title="深度思考"
-            @click="deepThinking = !deepThinking"
+            title="深度思考（Alt + D）"
+            @click="toggleDeepThinking"
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
@@ -54,8 +77,8 @@ const onKeydown = (event: KeyboardEvent) => {
             type="button"
             class="mode-btn"
             :class="{ active: smartSearch }"
-            title="开启后优先使用联网搜索或天气 MCP"
-            @click="smartSearch = !smartSearch"
+            title="开启后优先使用联网搜索或天气 MCP（Alt + S）"
+            @click="toggleSmartSearch"
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <circle cx="12" cy="12" r="10" />
@@ -109,7 +132,7 @@ const onKeydown = (event: KeyboardEvent) => {
     </div>
 
     <div class="composer-hints">
-      Enter 发送，Shift + Enter 换行
+      Enter 发送，Shift + Enter 换行，/ 聚焦输入，Alt + S 智能搜索，Alt + D 深度思考
       <span v-if="statusText" class="status-text"> · {{ statusText }}</span>
     </div>
   </div>

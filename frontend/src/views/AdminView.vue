@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, shallowRef, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, useTemplateRef, watch } from "vue";
 import { useRouter } from "vue-router";
 
 import AdminChunkEditModal from "../components/admin/chunks/AdminChunkEditModal.vue";
@@ -187,6 +187,7 @@ const {
 } = useRetriFlowAdmin();
 
 const knowledgeSearch = shallowRef("");
+const adminSearchInput = useTemplateRef<HTMLInputElement>("adminSearchInput");
 const documentSearch = shallowRef("");
 const documentStatusFilter = shallowRef("all");
 const chunkStatusFilter = shallowRef("all");
@@ -554,6 +555,26 @@ watch(infoMessage, (message) => {
   }
   pushToast(message, "success");
   infoMessage.value = "";
+});
+
+function handleAdminGlobalKeydown(event: KeyboardEvent) {
+  if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "k") {
+    return;
+  }
+  event.preventDefault();
+  activateTab("knowledge");
+  void nextTick(() => {
+    adminSearchInput.value?.focus();
+    adminSearchInput.value?.select();
+  });
+}
+
+onMounted(() => {
+  window.addEventListener("keydown", handleAdminGlobalKeydown);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("keydown", handleAdminGlobalKeydown);
 });
 
 function settingValue(key: string, fallback = "-") {
@@ -1193,6 +1214,7 @@ async function deletePipelineFromRow(pipelineId: number) {
         <div class="search-box">
           <span>⌕</span>
           <input
+            ref="adminSearchInput"
             v-model="knowledgeSearch"
             type="text"
             placeholder="筛选知识库..."

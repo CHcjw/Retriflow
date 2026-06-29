@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, onMounted, shallowRef, useTemplateRef, watch } from "vue";
+import { nextTick, onBeforeUnmount, onMounted, shallowRef, useTemplateRef, watch } from "vue";
 
 import RetriFlowChatComposer from "../components/chat/RetriFlowChatComposer.vue";
 import RetriFlowChatSessionList from "../components/chat/RetriFlowChatSessionList.vue";
@@ -10,6 +10,9 @@ const draft = shallowRef("");
 const deepThinking = shallowRef(false);
 const smartSearch = shallowRef(false);
 const transcriptContainer = useTemplateRef<HTMLDivElement>("transcriptContainer");
+const sessionListRef = useTemplateRef<InstanceType<typeof RetriFlowChatSessionList>>("sessionListRef");
+const emptyComposerRef = useTemplateRef<InstanceType<typeof RetriFlowChatComposer>>("emptyComposerRef");
+const stickyComposerRef = useTemplateRef<InstanceType<typeof RetriFlowChatComposer>>("stickyComposerRef");
 const {
   activeSessionId,
   ask,
@@ -62,6 +65,52 @@ const scrollToBottom = async () => {
   container.scrollTop = container.scrollHeight;
 };
 
+function isTypingTarget(target: EventTarget | null) {
+  const element = target as HTMLElement | null;
+  return Boolean(element?.closest("input, textarea, select, [contenteditable='true']"));
+}
+
+function currentComposer() {
+  return hasMessages.value || loading.value ? stickyComposerRef.value : emptyComposerRef.value;
+}
+
+function handleGlobalKeydown(event: KeyboardEvent) {
+  const key = event.key.toLowerCase();
+  const typingTarget = isTypingTarget(event.target);
+
+  if ((event.ctrlKey || event.metaKey) && key === "k") {
+    event.preventDefault();
+    void sessionListRef.value?.focusSearch();
+    return;
+  }
+
+  if (typingTarget) {
+    return;
+  }
+
+  if (event.key === "/") {
+    event.preventDefault();
+    void currentComposer()?.focusInput();
+    return;
+  }
+
+  if (event.altKey && key === "s") {
+    event.preventDefault();
+    currentComposer()?.toggleSmartSearch();
+    return;
+  }
+
+  if (event.altKey && key === "d") {
+    event.preventDefault();
+    currentComposer()?.toggleDeepThinking();
+    return;
+  }
+
+  if (event.key === "Escape") {
+    sessionListRef.value?.clearSearch();
+  }
+}
+
 watch(
   () => [
     messages.value.length,
@@ -77,6 +126,7 @@ watch(
 );
 
 onMounted(() => {
+  window.addEventListener("keydown", handleGlobalKeydown);
   void (async () => {
     await loadSessions();
     await loadStarterPrompts();
@@ -84,11 +134,16 @@ onMounted(() => {
     await scrollToBottom();
   })();
 });
+
+onBeforeUnmount(() => {
+  window.removeEventListener("keydown", handleGlobalKeydown);
+});
 </script>
 
 <template>
   <div class="chat-layout">
     <RetriFlowChatSessionList
+      ref="sessionListRef"
       :active-session-id="activeSessionId"
       :loading="false"
       :sessions="sessions"
@@ -118,6 +173,7 @@ onMounted(() => {
 
           <div class="composer-container center-composer">
             <RetriFlowChatComposer
+              ref="emptyComposerRef"
               v-model:draft="draft"
               :can-stop="canStop"
               :can-retry="canRetry"
@@ -179,6 +235,7 @@ onMounted(() => {
       <div v-if="hasMessages || loading" class="sticky-composer">
         <div class="composer-container">
           <RetriFlowChatComposer
+            ref="stickyComposerRef"
             v-model:draft="draft"
             :can-stop="canStop"
             :can-retry="canRetry"
